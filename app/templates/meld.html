@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}meld — {{ meld.code }}{% endblock %}
+
+{% block content %}
+{% if expired %}
+<div class="card" style="text-align:center; padding:3rem 2rem;">
+  <h1>Gone</h1>
+  <p style="max-width:400px; margin:0.5rem auto 1.5rem;">
+    This meld has expired and was destroyed. Ephemeral by design — no trace left behind.
+  </p>
+  <a href="/" class="btn">Create a new meld</a>
+</div>
+
+{% elif resolved %}
+<div class="card" style="border-color:var(--accent);">
+  <div style="display:flex; align-items:center; gap:0.75rem; margin-bottom:1.5rem;">
+    <span class="status-dot resolved" style="width:10px;height:10px;"></span>
+    <h1 style="margin:0;">Exchange complete</h1>
+  </div>
+  <p style="margin-bottom:1.5rem;">Both contexts have been merged. The bridge is closing.</p>
+
+  <div class="two-pane">
+    <div>
+      <label class="label">Party A's context</label>
+      <div class="context-box">{{ meld.context_a }}</div>
+    </div>
+    <div>
+      <label class="label">Party B's context</label>
+      <div class="context-box">{{ meld.context_b }}</div>
+    </div>
+  </div>
+
+  <div class="merge-line">ephemeral</div>
+  <p style="font-size:0.8125rem; color:var(--text-muted); text-align:center;">
+    This meld will expire and be destroyed. No history, no threads, no permanent record.
+  </p>
+</div>
+
+{% else %}
+<div class="card" id="resolve-card">
+  <h1>Meld received</h1>
+  <p>Someone shared context with you. Add your side to complete the exchange.</p>
+
+  <div class="flash flash-info" style="margin-bottom:1.5rem;">
+    <strong>From the other party:</strong>
+  </div>
+  <div class="context-box" style="margin-bottom:1.5rem;">
+    {{- meld.context_a -}}
+  </div>
+
+  <div id="resolve-form">
+    <label class="label" for="ctx">Your context</label>
+    <textarea id="ctx" placeholder="Paste your response — whatever they need in context."></textarea>
+    <div style="margin-top: 1.25rem; display:flex; align-items:center; gap:0.75rem;">
+      <button class="btn" id="resolve-btn" onclick="resolveMeld()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        Resolve meld
+      </button>
+      <span id="resolve-status" style="font-size:0.875rem; color:var(--text-dim);"></span>
+    </div>
+  </div>
+
+  <div id="resolve-result" style="display:none;">
+    <div class="flash flash-success">Exchange complete. The bridge dissolves.</div>
+    <div class="two-pane">
+      <div>
+        <label class="label">Their context</label>
+        <div class="context-box" id="their-ctx"></div>
+      </div>
+      <div>
+        <label class="label">Your context</label>
+        <div class="context-box" id="your-ctx"></div>
+      </div>
+    </div>
+    <p style="margin-top:1rem; font-size:0.8125rem; color:var(--text-dim);">
+      This link will expire and be destroyed. The exchange is ephemeral by design.
+    </p>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const code = '{{ meld.code }}';
+
+async function resolveMeld() {
+  const btn = document.getElementById('resolve-btn');
+  const status = document.getElementById('resolve-status');
+  btn.disabled = true;
+  status.innerHTML = '<span class="spinner"></span>';
+
+  try {
+    const data = await api(`/api/melds/${code}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({
+        context: document.getElementById('ctx').value
+      })
+    });
+
+    document.getElementById('resolve-form').style.display = 'none';
+    const result = document.getElementById('resolve-result');
+    result.style.display = 'block';
+    document.getElementById('their-ctx').textContent = data.context_a || '(empty)';
+    document.getElementById('your-ctx').textContent = data.context_b || '(empty)';
+    status.textContent = '';
+  } catch (e) {
+    status.textContent = e.message;
+    btn.disabled = false;
+  }
+}
+</script>
+{% endblock %}

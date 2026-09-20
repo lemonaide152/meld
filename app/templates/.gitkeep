@@ -1,0 +1,4 @@
+"""HTML templates for meld web app — Jinja2."""
+
+TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+STATIC_DIR.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} — meld{% endblock %}
+
+{% block content %}
+<div class="card" style="text-align:center; padding:3rem 2rem;">
+  <div style="font-size:3rem; margin-bottom:0.5rem;">
+    {% if code == 404 %}🔗
+    {% elif code == 410 %}💨
+    {% elif code == 429 %}⏳
+    {% else %}⚠️{% endif %}
+  </div>
+  <h1>
+    {% if code == 404 %}Not found
+    {% elif code == 410 %}Gone
+    {% elif code == 429 %}Slow down
+    {% else %}Something went wrong{% endif %}
+  </h1>
+  <p style="max-width:400px; margin:0.5rem auto 1.5rem; color:var(--text-dim);">
+    {{ message }}
+  </p>
+  <a href="/" class="btn">Create a meld</a>
+</div>
+{% endblock %}

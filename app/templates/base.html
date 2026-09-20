@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}meld — ephemeral context bridge{% endblock %}</title>
+  <meta name="description" content="One link. Pour in context. Done. Meld is a minimal context-sharing primitive for humans and agents. Ephemeral by design.">
+  <meta property="og:title" content="meld — ephemeral context bridge">
+  <meta property="og:description" content="One link. Pour in context. Done. No history, no threads, no accounts.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="{{ request.url_for('index') if 'request' in kwargs else '/' }}">
+  <meta property="og:image" content="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='2' y='14' width='12' height='4' rx='2' fill='%238b5cf6'/><rect x='18' y='14' width='12' height='4' rx='2' fill='%23a78bfa'/><circle cx='8' cy='14' r='3' fill='%238b5cf6'/><circle cx='24' cy='14' r='3' fill='%23a78bfa'/></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='2' y='14' width='12' height='4' rx='2' fill='%23a78bfa'/><rect x='18' y='14' width='12' height='4' rx='2' fill='%238b5cf6'/><circle cx='8' cy='14' r='3' fill='%23a78bfa'/><circle cx='24' cy='14' r='3' fill='%238b5cf6'/></svg>">
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --bg-card: #12121a;
+      --bg-input: #1a1a25;
+      --border: #2a2a3a;
+      --border-hover: #3a3a5a;
+      --text: #e4e4f0;
+      --text-dim: #8888a0;
+      --text-muted: #5a5a72;
+      --accent: #8b5cf6;
+      --accent-hover: #a78bfa;
+      --accent-glow: rgba(139, 92, 246, 0.25);
+      --accent-subtle: rgba(139, 92, 246, 0.08);
+      --success: #34d399;
+      --code-bg: #181825;
+      --radius: 12px;
+      --radius-sm: 8px;
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      --font-mono: 'SF Mono', 'JetBrains Mono', 'Fira Code', monospace;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { font-size: 16px; }
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: var(--accent-hover); }
+    .link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+    .link:hover { color: var(--accent-hover); }
+
+    .layout { max-width: 680px; margin: 0 auto; padding: 2.5rem 1.5rem; min-height: 100vh; display: flex; flex-direction: column; }
+    .header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 3rem; flex-shrink: 0; }
+    .logo {
+      display: flex; align-items: center; gap: 0.45rem;
+      font-size: 1.25rem; font-weight: 700; letter-spacing: -0.02em;
+      color: var(--text);
+    }
+    .logo svg { width: 28px; height: 28px; }
+    .nav { margin-left: auto; display: flex; gap: 1.5rem; align-items: center; }
+    .nav a { font-size: 0.875rem; color: var(--text-dim); transition: color 0.15s; }
+    .nav a:hover { color: var(--text); }
+
+    .main { flex: 1; }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2rem;
+    }
+    .card h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.5rem; }
+    .card p { color: var(--text-dim); margin-bottom: 1.5rem; }
+
+    .tagline {
+      font-size: 2.5rem; font-weight: 800; letter-spacing: -0.03em;
+      line-height: 1.15; margin-bottom: 1rem;
+    }
+    .tagline em { font-style: normal; color: var(--accent); }
+
+    .hero-tagline {
+      font-size: 2.75rem; font-weight: 800; letter-spacing: -0.03em;
+      line-height: 1.1; margin-bottom: 0.75rem;
+    }
+    .hero-tagline em { font-style: normal; color: var(--accent); }
+    .hero-tagline .muted { color: var(--text-dim); font-weight: 500; }
+
+    .subtitle {
+      font-size: 1.05rem; color: var(--text-dim);
+      max-width: 500px; margin-bottom: 2rem;
+    }
+
+    textarea {
+      width: 100%;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 0.875rem;
+      padding: 0.875rem;
+      resize: vertical;
+      min-height: 120px;
+      transition: border-color 0.2s;
+    }
+    textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+    input[type="text"], input[type="email"] {
+      width: 100%;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-size: 0.9375rem;
+      padding: 0.75rem 0.875rem;
+      transition: border-color 0.2s;
+    }
+    input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      background: var(--accent); color: white; font-weight: 600;
+      border: none; border-radius: var(--radius-sm);
+      padding: 0.75rem 1.5rem; font-size: 0.9375rem;
+      cursor: pointer; transition: all 0.2s;
+    }
+    .btn:hover { background: var(--accent-hover); transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .btn-outline {
+      background: transparent; color: var(--accent);
+      border: 1px solid var(--border); font-weight: 500;
+    }
+    .btn-outline:hover { background: var(--accent-subtle); border-color: var(--accent); }
+    .btn-ghost {
+      background: var(--accent-subtle); color: var(--accent);
+      border: none; font-weight: 500;
+    }
+    .btn-ghost:hover { background: var(--accent-glow); }
+    .btn-sm { padding: 0.5rem 1rem; font-size: 0.8125rem; }
+
+    .result-link {
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 0.875rem 1rem;
+      display: flex; align-items: center; gap: 0.75rem;
+      font-family: var(--font-mono); font-size: 0.875rem;
+      word-break: break-all;
+    }
+    .result-link .copy-btn {
+      margin-left: auto; flex-shrink: 0;
+      background: var(--accent-subtle); border: none;
+      color: var(--accent); cursor: pointer;
+      padding: 0.375rem 0.75rem; border-radius: 4px;
+      font-size: 0.75rem; font-weight: 600;
+      transition: all 0.15s;
+    }
+    .result-link .copy-btn:hover { background: var(--accent); color: white; }
+    .result-link .copy-btn.copied { background: var(--success); color: #000; }
+
+    .context-box {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 1.25rem;
+      font-family: var(--font-mono); font-size: 0.8125rem;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      max-height: 300px;
+      overflow-y: auto;
+      color: var(--text);
+    }
+    .context-box:empty::before { content: '(empty)'; color: var(--text-muted); }
+
+    .label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 0.5rem; display: block; }
+
+    .flash { font-size: 0.875rem; padding: 0.75rem 1rem; border-radius: var(--radius-sm); margin-bottom: 1rem; }
+    .flash-error { background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.25); color: #fca5a5; }
+    .flash-success { background: rgba(52, 211, 153, 0.12); border: 1px solid rgba(52, 211, 153, 0.25); color: #34d399; }
+    .flash-info { background: var(--accent-subtle); border: 1px solid var(--accent-glow); color: var(--accent); }
+
+    .badge { display: inline-block; font-size: 0.6875rem; font-weight: 600; padding: 0.25rem 0.5rem; border-radius: 4px; }
+    .badge-free { background: var(--accent-subtle); color: var(--accent); }
+    .badge-pro { background: rgba(52, 211, 153, 0.12); color: var(--success); }
+
+    .merge-line {
+      display: flex; align-items: center; gap: 1rem; margin: 1.5rem 0;
+      color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .merge-line::before, .merge-line::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+
+    .empty-state { text-align: center; padding: 2rem 0; }
+    .empty-state p { color: var(--text-dim); font-size: 0.9375rem; }
+
+    .status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; }
+    .status-dot.resolved { background: var(--success); }
+
+    .spinner {
+      display: inline-block; width: 16px; height: 16px;
+      border: 2px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .toast {
+      position: fixed; bottom: 1.5rem; right: 1.5rem;
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 0.875rem 1.25rem;
+      font-size: 0.875rem; font-weight: 500;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      opacity: 0; transform: translateY(8px);
+      transition: all 0.3s;
+      pointer-events: none;
+      z-index: 100;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    .footer {
+      margin-top: auto; padding-top: 4rem; text-align: center;
+      font-size: 0.8125rem; color: var(--text-muted); flex-shrink: 0;
+    }
+    .footer a { color: var(--text-dim); }
+    .footer a:hover { color: var(--text); }
+
+    /* Pricing */
+    .pricing-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem; }
+    .pricing-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 1.5rem;
+      text-align: center; transition: border-color 0.2s;
+    }
+    .pricing-card:hover { border-color: var(--accent); }
+    .pricing-card.featured { border-color: var(--accent); background: rgba(139, 92, 246, 0.04); }
+    .pricing-card .price { font-size: 2rem; font-weight: 800; letter-spacing: -0.03em; margin: 0.5rem 0; }
+    .pricing-card .price span { font-size: 0.875rem; font-weight: 500; color: var(--text-dim); }
+    .pricing-card .features { list-style: none; margin: 1rem 0; }
+    .pricing-card .features li { font-size: 0.8125rem; color: var(--text-dim); padding: 0.25rem 0; }
+
+    @media (max-width: 540px) {
+      .pricing-grid { grid-template-columns: 1fr; }
+      .tagline, .hero-tagline { font-size: 1.75rem; }
+      .layout { padding: 1.5rem 1rem; }
+      .header { flex-wrap: wrap; gap: 0.5rem; }
+      .nav { margin-left: 0; }
+    }
+
+    .two-pane { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 540px) { .two-pane { grid-template-columns: 1fr; } }
+
+    .step-row { display: flex; gap: 0.75rem; align-items: flex-start; margin: 1.5rem 0; }
+    .step-num {
+      flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%;
+      background: var(--accent-subtle); color: var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.75rem; font-weight: 700;
+    }
+    .step-content { padding-top: 0.125rem; }
+    .step-content strong { display: block; font-size: 0.9375rem; margin-bottom: 0.125rem; }
+    .step-content p { font-size: 0.875rem; color: var(--text-dim); margin: 0; }
+
+    /* Agent code block in landing */
+    .code-block {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 1rem;
+      font-family: var(--font-mono);
+      font-size: 0.8125rem;
+      line-height: 1.6;
+      overflow-x: auto;
+    }
+    .code-block .comment { color: var(--text-muted); }
+    .code-block .output { color: var(--accent); }
+  </style>
+  {% block head_extra %}{% endblock %}
+</head>
+<body>
+  <div class="layout">
+    <div class="header">
+      <div class="logo">
+        <svg viewBox="0 0 32 32" fill="none">
+          <rect x="2" y="14" width="12" height="4" rx="2" fill="currentColor" opacity="0.6"/>
+          <rect x="18" y="14" width="12" height="4" rx="2" fill="currentColor"/>
+          <circle cx="8" cy="14" r="3" fill="currentColor" opacity="0.6"/>
+          <circle cx="24" cy="14" r="3" fill="currentColor"/>
+        </svg>
+        meld<span></span>
+      </div>
+      <div class="nav">
+        <a href="/">Create</a>
+        <a href="/upgrade">Pricing</a>
+        <a href="https://meld.sh/docs" target="_blank" rel="noopener">Docs</a>
+      </div>
+    </div>
+
+    <div class="main">
+      {% block content %}{% endblock %}
+    </div>
+
+    <div class="footer">
+      <p><em>Don't meet. Meld.</em> &nbsp;·&nbsp; ephemeral by design &nbsp;·&nbsp; <a href="/upgrade">Pro</a></p>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+  function showToast(msg, type) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast show flash-' + (type || 'info');
+    setTimeout(() => t.classList.remove('show'), 3000);
+  }
+
+  function copyToClipboard(text) {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(() => true).catch(() => false);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch(e) {}
+      document.body.removeChild(ta);
+    }
+  }
+
+  async function api(path, opts = {}) {
+    const res = await fetch(path, {
+      headers: { 'Content-Type': 'application/json', ...opts.headers },
+      ...opts
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

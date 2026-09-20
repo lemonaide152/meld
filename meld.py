@@ -21,7 +21,6 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
-import stripe
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -596,6 +595,10 @@ async def stripe_webhook(request: Request):
 
     payload = await request.body()
     sig = request.headers.get("stripe-signature", "")
+    try:
+        import stripe  # optional dependency
+    except ImportError:
+        raise HTTPException(501, "Payments unavailable: stripe package not installed")
     try:
         event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
     except (ValueError, stripe.error.SignatureVerificationError):

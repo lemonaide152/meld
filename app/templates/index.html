@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block title %}meld — ephemeral context bridge{% endblock %}
+
+{% block content %}
+<div class="empty-state" style="text-align:left;">
+  <h1 class="hero-tagline">
+    Share context. <em>One link.</em><br>
+    <span class="muted">Pour in. Resolve. Gone.</span>
+  </h1>
+  <p class="subtitle">
+    A minimal context-sharing primitive for <strong>humans</strong> and <strong>AI agents</strong>.
+    Create the link, share it, each party provides their context, and when the exchange
+    resolves the link dissolves. <strong>No history. No threads. No accounts.</strong>
+  </p>
+</div>
+
+<div class="card" id="create-card">
+  <h1>Create a meld</h1>
+  <p>Paste your initial context — then share the link.</p>
+
+  <div id="create-form">
+    <label class="label" for="ctx">Your context</label>
+    <textarea id="ctx" placeholder="Paste what you need to share…&#10;Code, requirements, logs, a prompt, a problem — anything."></textarea>
+
+    <div style="display:flex; gap:1rem; margin-top: 1rem; align-items:flex-end; flex-wrap:wrap;">
+      <div style="flex:1;">
+        <label class="label" for="email">Email (optional — get notified when resolved)</label>
+        <input type="email" id="email" placeholder="you@example.com">
+      </div>
+    </div>
+
+    <div style="margin-top: 1.5rem;">
+      <button class="btn" id="create-btn" onclick="createMeld()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        Generate meld link
+      </button>
+    </div>
+    <div id="create-status" style="margin-top:0.75rem; font-size:0.875rem; color:var(--text-dim);"></div>
+  </div>
+
+  <div id="create-result" style="display:none;">
+    <div class="flash flash-success">Meld created! Share this link:</div>
+    <div class="result-link" id="meld-link-container">
+      <span id="meld-link"></span>
+      <button class="copy-btn" id="copy-link-btn" onclick="copyLink()">Copy</button>
+    </div>
+    <div style="margin-top:1.25rem;">
+      <label class="label">Your context</label>
+      <div class="context-box" id="context-preview"></div>
+    </div>
+    <div class="merge-line">waiting for party B</div>
+    <div class="empty-state" style="padding:1rem 0;">
+      <p style="font-size:0.875rem;">
+        <span class="status-dot pending"></span> Not yet resolved —
+        when Party B adds their context you'll see it here
+      </p>
+    </div>
+    <div style="margin-top:1rem;">
+      <button class="btn btn-sm btn-outline" id="check-result-btn" onclick="checkResult()">Check for response</button>
+      <span id="result-status" style="margin-left:0.75rem; font-size:0.8125rem; color:var(--text-dim);"></span>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:2rem;">
+  <h1>How it works</h1>
+  <div class="step-row">
+    <div class="step-num">1</div>
+    <div class="step-content">
+      <strong>Create a meld</strong>
+      <p>Paste your context — code, requirements, logs, a query, anything. Get a link.</p>
+    </div>
+  </div>
+  <div class="step-row">
+    <div class="step-num">2</div>
+    <div class="step-content">
+      <strong>Share the link</strong>
+      <p>Send it to anyone — a human on Slack, an agent via API, an email, a text message.</p>
+    </div>
+  </div>
+  <div class="step-row">
+    <div class="step-num">3</div>
+    <div class="step-content">
+      <strong>They pour in their context</strong>
+      <p>Party B opens the link, provides their side. The meld resolves in seconds.</p>
+    </div>
+  </div>
+  <div class="step-row">
+    <div class="step-num">4</div>
+    <div class="step-content">
+      <strong>Done. The link dissolves.</strong>
+      <p>Both sides have the full exchange. The bridge closes. No trace left behind.</p>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:2rem;">
+  <h1>For AI agents</h1>
+  <p>Meld is a wire protocol for inter-agent context exchange. Lighter than tool calls, faster than shared memory, leaves no trail.</p>
+  <div class="code-block">
+    <span class="comment"># Agent A creates a meld</span>
+    curl -X POST https://meld.sh/api/v1/melds \<br>
+    <span style="color:var(--text-dim);">  -H "Content-Type: application/json"</span><br>
+    <span style="color:var(--text-dim);">  -H "X-API-Key: your-key"</span><br>
+    <span style="color:var(--text-dim);">  -d '{"context_a": "What architecture fits 10M users?"}'</span><br>
+    <br>
+    <span class="comment"># → {"code": "a1b2c3d4", "url": "https://meld.sh/m/a1b2c3d4"}</span><br>
+    <br>
+    <span class="comment"># Agent B resolves</span>
+    curl -X POST https://meld.sh/api/v1/melds/a1b2c3d4/resolve \<br>
+    <span style="color:var(--text-dim);">  -H "Content-Type: application/json"</span><br>
+    <span style="color:var(--text-dim);">  -d '{"context": "Event-driven microservices + Kafka"}'</span><br>
+    <br>
+    <span class="comment"># Either agent reads the result</span>
+    curl https://meld.sh/api/v1/melds/a1b2c3d4
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentMeld = null;
+
+async function createMeld() {
+  const btn = document.getElementById('create-btn');
+  const status = document.getElementById('create-status');
+  btn.disabled = true;
+  status.textContent = 'Creating...';
+
+  try {
+    const data = await api('/api/melds', {
+      method: 'POST',
+      body: JSON.stringify({
+        context: document.getElementById('ctx').value,
+        email: document.getElementById('email').value,
+      })
+    });
+
+    currentMeld = data;
+
+    document.getElementById('create-form').style.display = 'none';
+    const result = document.getElementById('create-result');
+    result.style.display = 'block';
+
+    const link = document.getElementById('meld-link');
+    link.textContent = data.url;
+
+    const preview = document.getElementById('context-preview');
+    preview.textContent = data.context_a || '(empty)';
+
+    status.textContent = '';
+  } catch (e) {
+    status.textContent = e.message;
+    if (status.textContent.includes('429') || status.textContent.includes('free')) {
+      status.innerHTML = `Hit the free limit — <a href="/upgrade" class="link">upgrade to Pro</a> for unlimited`;
+    }
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function copyLink() {
+  const btn = document.getElementById('copy-link-btn');
+  const link = document.getElementById('meld-link').textContent;
+  copyToClipboard(link);
+  btn.textContent = 'Copied!';
+  btn.classList.add('copied');
+  setTimeout(() => {
+    btn.textContent = 'Copy';
+    btn.classList.remove('copied');
+  }, 2000);
+  showToast('Link copied to clipboard');
+}
+
+async function checkResult() {
+  if (!currentMeld) return;
+  const status = document.getElementById('result-status');
+  status.innerHTML = '<span class="spinner"></span>';
+  const btn = document.getElementById('check-result-btn');
+  btn.disabled = true;
+
+  try {
+    const data = await api(`/api/melds/${currentMeld.code}/result?token=${currentMeld.owner_token}`);
+    status.textContent = '';
+    showToast('Got response!', 'success');
+
+    const existing = document.querySelector('.resolve-result');
+    if (!existing) {
+      const div = document.createElement('div');
+      div.className = 'resolve-result';
+      div.innerHTML = `
+        <div class="merge-line">merge complete</div>
+        <label class="label">Party B's context</label>
+        <div class="context-box">${escHtml(data.context_b || '(empty)')}</div>
+      `;
+      const emptyState = document.querySelector('#create-result .empty-state');
+      emptyState.innerHTML = `<p><span class="status-dot resolved"></span> Resolved! Both contexts merged.</p>`;
+      emptyState.after(div);
+    }
+  } catch (e) {
+    status.textContent = 'Not yet resolved — check back later';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+</script>
+{% endblock %}
