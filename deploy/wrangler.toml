@@ -1,0 +1,16 @@
+
+name = "meld"
+main = "worker.py"
+compatibility_date = "2026-09-18"
+compatibility_flags = ["python_workers"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "meld-prod"
+database_id = "a550ad8f-9359-4666-ac10-c440ad461464"
+
+workers_dev = true
+
+[vars]
+STRIPE_PRICE_MONTHLY = "price_1UHfKoAcnRkrntEzklV8qs0o"
+STRIPE_PRICE_YEARLY = "price_1UHfKpAcnRkrntEz9aqzhwqe"

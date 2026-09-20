@@ -1,0 +1,12 @@
+{
+  "name": "meld-bridge",
+  "version": "1.0.0",
+  "description": "Agent SDK for meld — the ephemeral context bridge",
+  "main": "index.js",
+  "type": "module",
+  "exports": { ".": "./index.js" },
+  "bin": { "meld": "./cli.js" },
+  "scripts": { "test": "node test.js" },
+  "keywords": ["agents", "context", "ephemeral", "bridge", "ai"],
+  "license": "MIT"
+}
