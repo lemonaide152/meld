@@ -4,76 +4,74 @@
 
 One link. Pour in context. Done.
 
-meld is a minimal context-sharing primitive for humans and agents. Create a link, share it, each party provides their context, and when the exchange resolves the link dissolves. No history, no threads, no accounts.
+meld is a minimal context-sharing primitive for humans and AI agents. Create a link, share it, each party provides their context, and when the exchange resolves the link dissolves. No history, no threads, no accounts.
 
-## Get started (self-host)
+## Live
+
+https://meld.lemonaide152.workers.dev
+
+## Quick start (agents)
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install fastapi uvicorn
-uvicorn meld:app --host 0.0.0.0 --port 8080
-
-# Open
-open http://localhost:8080
-```
-
-No config required. Payments are disabled unless Stripe env keys are set
-(`MELD_SELF_HOSTED=1` declares it explicitly).
-
-## API
-
-### Create a meld (human flow)
-```bash
-curl -X POST http://localhost:8080/api/melds \
+# Create a meld
+curl -X POST https://meld.lemonaide152.workers.dev/api/melds \
   -H "Content-Type: application/json" \
-  -d '{"context": "What architecture supports 10M users?"}'
-# → {"code": "abc123…", "url": "…/m/abc123", "owner_token": "…", "owner_url": "…#t=…"}
-```
-Keep the `owner_url` (bookmark it) — it's the only way to read the result.
+  -d '{"context": "Auth flow: OAuth2+PKCE, JWT tokens, refresh rotation"}'
+# → {"code": "abc123", "url": "https://…/m/abc123", "owner_token": "…"}
 
-### Resolve a meld (Party B)
-```bash
-curl -X POST http://localhost:8080/api/melds/<code>/resolve \
+# Share the link. Party B (human or agent) resolves:
+curl -X POST https://meld.lemonaide152.workers.dev/api/melds/abc123/resolve \
   -H "Content-Type: application/json" \
-  -d '{"context": "Event-driven microservices + Kafka"}'
-```
+  -d '{"context": "Looks good, but add rate limiting to token refresh"}'
 
-### Agent flow — the meld link speaks JSON
-```bash
-# Same URL humans open, with a JSON Accept header:
-curl -H "Accept: application/json" http://localhost:8080/m/<code>
-# → context_a + api hints for resolve/result
-
-curl -X POST http://localhost:8080/api/melds/<code>/resolve \
-  -H "Content-Type: application/json" \
-  -d '{"context": "K8s HPA + Nginx"}'
-```
-
-### Read the result (owner only)
-```bash
-curl -H "X-Meld-Token: $OWNER_TOKEN" http://localhost:8080/api/melds/<code>/result
+# Read the merged result:
+curl https://meld.lemonaide152.workers.dev/api/melds/abc123/result \
+  -H "X-Meld-Token: <owner_token>"
 ```
 
 ## Trust model
 
-meld has **no accounts** — authority comes from secrets you hold. The short
-version: standard melds are readable by the server while they exist (max 1
-hour, 10 minutes after resolution); **end-to-end encrypted melds** (checkbox
-on create) are client-side AES-256-GCM — the server stores only ciphertext,
-and the key lives solely in your link's `#k=` fragment. Lose the link, lose
-the meld.
+No accounts. Authority comes from held secrets, never from identity.
 
-Full statement, including what we *cannot* protect you from:
-**[TRUST.md](TRUST.md)** — served live at `/trust` on any instance.
+- **Capability-based**: the code admits, the PIN authenticates, the token reads
+- **E2E encrypted** (optional): AES-256-GCM in the browser, key in `#k=` fragment, server stores only ciphertext
+- **Rotating tokens**: a leaked owner token dies on the next read
+- **Ephemeral**: melds expire (1 hour standard, 10 minutes after resolution)
+- **Leased pro status**: 35-day leases, append-only audit ledger, emails hashed at rest
 
-## Security
+Full statement: [TRUST.md](TRUST.md)
 
-- Capability-based: the code admits, the PIN (optional) authenticates the
-  answerer, the token (rotating on every read) reads the result
-- Rate limits per IP, 200KB body cap, 100K char contexts, global live-meld guard
-- Subscriber emails stored only as SHA-256 hashes at rest
-- Proof-of-work abuse gate (dormant, env-enabled)
+## Self-host
 
-## Stack
+```bash
+git clone https://github.com/lemonaide152/meld.git
+cd meld
+python3 -m venv .venv && source .venv/bin/activate
+pip install fastapi uvicorn
+uvicorn meld:app --host 0.0.0.0 --port 8080
+```
 
-Python / FastAPI, one file, in-memory store, SQLite-free, zero accounts.
+For Cloudflare Workers deployment, see `deploy/`.
+
+## API
+
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/api/melds` | POST | None | Create a meld |
+| `/api/melds/{code}` | GET | None | View a meld |
+| `/api/melds/{code}/resolve` | POST | None (or PIN) | Resolve a meld |
+| `/api/melds/{code}/result` | GET | Owner token | Read the merged result |
+| `/v1/melds` | POST | API key | Create (agent tier, 10K limit) |
+| `/v1/usage` | GET | API key | Check usage |
+
+## Pricing
+
+| Tier | Price | Limits |
+|---|---|---|
+| Free | $0 | 3 melds/hour |
+| Pro | $5/mo | Unlimited melds |
+| Agent | $20/mo | 10,000 API melds |
+
+## License
+
+AGPL-3.0
