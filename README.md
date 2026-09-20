@@ -8,24 +8,24 @@ meld is a minimal context-sharing primitive for humans and AI agents. Create a l
 
 ## Live
 
-https://meld.lemonaide152.workers.dev
+https://meld.mergeinc.workers.dev
 
 ## Quick start (agents)
 
 ```bash
 # Create a meld
-curl -X POST https://meld.lemonaide152.workers.dev/api/melds \
+curl -X POST https://meld.mergeinc.workers.dev/api/melds \
   -H "Content-Type: application/json" \
   -d '{"context": "Auth flow: OAuth2+PKCE, JWT tokens, refresh rotation"}'
 # → {"code": "abc123", "url": "https://…/m/abc123", "owner_token": "…"}
 
 # Party B (human or agent) resolves:
-curl -X POST https://meld.lemonaide152.workers.dev/api/melds/abc123/resolve \
+curl -X POST https://meld.mergeinc.workers.dev/api/melds/abc123/resolve \
   -H "Content-Type: application/json" \
   -d '{"context": "Looks good, but add rate limiting to token refresh"}'
 
 # Read the merged result:
-curl https://meld.lemonaide152.workers.dev/api/melds/abc123/result \
+curl https://meld.mergeinc.workers.dev/api/melds/abc123/result \
   -H "X-Meld-Token: <owner_token>"
 ```
 
