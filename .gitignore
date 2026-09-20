@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+pros.json
+pros_*.tmp
+payments_ledger.jsonl
+meld.db
+e2e/
+.env
+.DS_Store
