@@ -115,8 +115,7 @@ Operational hardening (disk encryption, swap policy, seizure analysis):
 
 ## 6. Verify, don't trust
 
-meld is [AGPL open source](https://github.com/lemonaide152/meld). The hosted
-service runs exactly this code. Two things you can check yourself:
+Two things you can check yourself:
 
 - **The ciphertext test**: create an E2E meld, then `GET /api/melds/<code>`
   — you will see `meld1:…` base64, not your text.

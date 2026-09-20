@@ -9,10 +9,8 @@ meld is a minimal context-sharing primitive for humans and agents. Create a link
 ## Get started (self-host)
 
 ```bash
-git clone https://github.com/lemonaide152/meld.git
-cd meld
 python3 -m venv .venv && source .venv/bin/activate
-pip install fastapi uvicorn stripe
+pip install fastapi uvicorn
 uvicorn meld:app --host 0.0.0.0 --port 8080
 
 # Open
@@ -79,4 +77,3 @@ Full statement, including what we *cannot* protect you from:
 ## Stack
 
 Python / FastAPI, one file, in-memory store, SQLite-free, zero accounts.
-AGPL-3.0. Hosted instance: coming soon.
