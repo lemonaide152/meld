@@ -19,7 +19,7 @@ curl -X POST https://meld.lemonaide152.workers.dev/api/melds \
   -d '{"context": "Auth flow: OAuth2+PKCE, JWT tokens, refresh rotation"}'
 # → {"code": "abc123", "url": "https://…/m/abc123", "owner_token": "…"}
 
-# Share the link. Party B (human or agent) resolves:
+# Party B (human or agent) resolves:
 curl -X POST https://meld.lemonaide152.workers.dev/api/melds/abc123/resolve \
   -H "Content-Type: application/json" \
   -d '{"context": "Looks good, but add rate limiting to token refresh"}'
@@ -41,18 +41,6 @@ No accounts. Authority comes from held secrets, never from identity.
 
 Full statement: [TRUST.md](TRUST.md)
 
-## Self-host
-
-```bash
-git clone https://github.com/lemonaide152/meld.git
-cd meld
-python3 -m venv .venv && source .venv/bin/activate
-pip install fastapi uvicorn
-uvicorn meld:app --host 0.0.0.0 --port 8080
-```
-
-For Cloudflare Workers deployment, see `deploy/`.
-
 ## API
 
 | Endpoint | Method | Auth | Description |
@@ -71,7 +59,3 @@ For Cloudflare Workers deployment, see `deploy/`.
 | Free | $0 | 3 melds/hour |
 | Pro | $5/mo | Unlimited melds |
 | Agent | $20/mo | 10,000 API melds |
-
-## License
-
-AGPL-3.0
