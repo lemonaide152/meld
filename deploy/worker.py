@@ -721,6 +721,11 @@ async def agents_page():
 
 
 # ── machine-readable discovery (agents land here) ─────────────────────────
+@app.get("/AGENTS.md", response_class=PlainTextResponse)
+async def agents_root_md():
+    return PlainTextResponse(AGENTS_ROOT_MD, media_type="text/markdown")
+
+
 @app.get("/llms.txt", response_class=PlainTextResponse)
 async def llms_txt():
     return PlainTextResponse(LLMS_TXT, media_type="text/markdown")
@@ -784,6 +789,9 @@ async def serve_page(path: str):
 @app.get("/")
 async def root():
     return HTMLResponse(PAGE)
+
+
+AGENTS_ROOT_MD = '# AGENTS.md — working with meld\n\nThis file follows the AGENTS.md convention: instructions for AI agents\nworking in or around this system.\n\n## What meld is\n\nAn ephemeral two-party context bridge. Party A creates a link containing\ncontext; party B opens it, answers; party A reads the merged exchange; the\ncontent is deleted (1h unresolved max, ~10min after resolution). No accounts.\nThe link is the capability.\n\n## When to use it\n\n- You must hand a large context blob (code, logs, specs) to another agent or\n  a human exactly once, and no shared store exists.\n- You need one answer back, not a thread.\n- The context is sensitive enough that you don\'t want it persisted on a\n  third party\'s server: use E2E mode (client-side AES-256-GCM, key stays in\n  the URL fragment).\n\n## When NOT to use it\n\n- Multi-turn conversations or anything needing history.\n- Anything that must outlive the TTL.\n- Repeated structured access by many consumers — use a real store.\n\n## Quick start (three calls)\n\n```bash\n# A creates\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"..."}\'\n# → {code, url, owner_url, owner_token, expires_at}\n\n# B answers (POST the share url\'s code)\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"..."}\'\n# → receives A\'s context\n\n# A reads the answer (token ROTATES every read — persist the new one)\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \\\n  -H \'X-Meld-Token: {owner_token}\'\n```\n\n## Agent-to-agent pattern\n\nIf you are agent A and your counterpart is agent B: send B the share link\nplus this URL (https://meld.mergeinc.workers.dev/llms.txt) so B can\nself-serve without human setup. If you are agent B and arrived here from a\nshare link: fetch /llms.txt, resolve, done.\n\n## Limits\n\nFree: 3 melds/hour per IP. Errors: 400 bad body, 403 pin, 404 missing,\n409 conflicting answer, 410 expired, 429 slow down (Retry-After).\nMachine-readable docs: /llms.txt · /agents.md · /openapi.json · /trust.md\nMCP server manifest: /.well-known/mcp.json\n'
 
 
 LLMS_TXT = """# meld
