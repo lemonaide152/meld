@@ -12,5 +12,5 @@ database_id = "a550ad8f-9359-4666-ac10-c440ad461464"
 workers_dev = true
 
 [vars]
-STRIPE_PRICE_MONTHLY = "price_1UHfKoAcnRkrntEzklV8qs0o"
-STRIPE_PRICE_YEARLY = "price_1UHfKpAcnRkrntEz9aqzhwqe"
+STRIPE_PRICE_MONTHLY = "price_1UHtujPTIIvyU9JK0XeMmCbn"
+STRIPE_PRICE_YEARLY = "price_1UHtukPTIIvyU9JKz5U2arNz"

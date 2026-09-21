@@ -1,0 +1,11 @@
+{
+  "name": "meld-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for meld \u2014 ephemeral context bridges from any MCP client",
+  "type": "module",
+  "bin": {
+    "meld-mcp": "./meld-mcp.mjs"
+  },
+  "main": "meld-mcp.mjs",
+  "license": "UNLICENSED"
+}

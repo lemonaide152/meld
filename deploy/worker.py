@@ -19,6 +19,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from workers import asgi
 from spa_content import _SPA_HTML
+from agents_content import AGENTS_HTML
+from app_content import APP_HTML
+from agents_content import AGENTS_HTML
 
 app = FastAPI(title="meld", version="1.0.0", docs_url=None, redoc_url=None)
 
@@ -40,6 +43,17 @@ def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
+async def _funnel(db_conn, event: str):
+    """Daily aggregate funnel counter. No PII: day + event + count only."""
+    try:
+        day = _now()[:10]
+        await db_conn.prepare(
+            "INSERT INTO funnel_events (day, event, n) VALUES (?, ?, 1) "
+            "ON CONFLICT(day, event) DO UPDATE SET n = n + 1").bind(day, event).run()
+    except Exception:
+        pass  # analytics must never break the product
+
+
 def _code() -> str:
     return "".join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(CODE_LEN))
 
@@ -49,7 +63,12 @@ def _token() -> str:
 
 
 def _client_ip(request: Request) -> str:
-    """LAST X-Forwarded-For hop (Cloudflare appends the real client IP)."""
+    """Real client IP. On Cloudflare Workers: CF-Connecting-IP is authoritative
+    (XFF is empty and request.client is None in the ASGI bridge). XFF last-hop
+    fallback covers self-hosted reverse-proxy deployments."""
+    cf_ip = request.headers.get("cf-connecting-ip", "")
+    if cf_ip:
+        return cf_ip.strip()
     fwd = request.headers.get("x-forwarded-for", "")
     if fwd:
         return fwd.split(",")[-1].strip()
@@ -81,31 +100,41 @@ def _rl_bucket() -> int:
 
 
 async def _rate_limit(db_conn, kind: str, ip: str) -> bool:
-    """D1-backed fixed-window limiter (per-minute buckets, self-pruning)."""
-    key = _rl_key(kind, ip)
+    """D1-backed fixed-window limiter (per-minute buckets, self-pruning).
+    Atomic: the limit check happens inside a conditional UPSERT, so concurrent
+    requests cannot read stale counts and burst past the cap (TOCTOU fix).
+    The stale-window prune stays best-effort outside the atomic path."""
     limit = {"create": 20, "resolve": 10, "view": 60}.get(kind, 60)
+    key = _rl_key(kind, ip)
+    bucket = _rl_bucket()
+    # Atomic admit: increments only when the bucket is fresh or count < limit.
     row = await db_conn.prepare(
-        "SELECT count FROM rate WHERE key = ?").bind(key).first()
-    count = row["count"] if row else 0
-    if count >= limit:
-        return False
-    await db_conn.prepare(
         "INSERT INTO rate (key, count, bucket) VALUES (?, 1, ?) "
-        "ON CONFLICT(key) DO UPDATE SET count = count + 1").bind(key, _rl_bucket()).run()
-    bucket = int(time.time() // 60)
-    await db_conn.prepare("DELETE FROM rate WHERE bucket < ?").bind(bucket - 2).run()
-    return True
+        "ON CONFLICT(key) DO UPDATE SET "
+        "  count = CASE WHEN bucket < ? THEN 1 "
+        "                WHEN count < ? THEN count + 1 ELSE count END, "
+        "  bucket = ? "
+        "WHERE bucket < ? OR count < ? "
+        "RETURNING count, bucket"
+    ).bind(key, bucket, bucket, limit, bucket, bucket, limit).first()
+    if row is None:
+        return False  # conditional write matched nothing => window exhausted
+    if row["bucket"] < bucket:
+        await db_conn.prepare("DELETE FROM rate WHERE bucket < ?").bind(bucket - 2).run()
+    return row["count"] <= limit and row["bucket"] == bucket
 
 
-async def _check_meld_limit(db_conn, ip: str) -> bool:
-    """Free users: FREE_LIMIT melds per hour. Pro (valid lease): unlimited."""
-    lease = await db_conn.prepare(
-        "SELECT pro_until FROM pros WHERE email_key = ? OR customer_id = ?").bind(ip, ip).first()
-    if lease:
-        if lease["pro_until"] > _now():
-            return True
-        await db_conn.prepare("DELETE FROM pros WHERE email_key = ? OR customer_id = ?").bind(ip, ip).run()
-        return True  # expired lease: allow, cleanup happened
+async def _check_meld_limit(db_conn, ip: str, email: str | None = None) -> bool:
+    """Free users: FREE_LIMIT melds per hour. Pro (valid lease): unlimited.
+    Lease lookup matches ONLY hashed email keys — never raw IPs — so a pro
+    lease can never be claimed by controlling your source IP."""
+    lease = None
+    if email and email.startswith("sha256:"):
+        lease = await db_conn.prepare(
+            "SELECT pro_until, email_key FROM pros WHERE email_key = ?").bind(email).first()
+        if lease and lease["pro_until"] <= _now():
+            await db_conn.prepare("DELETE FROM pros WHERE email_key = ?").bind(lease["email_key"]).run()
+            lease = None  # expired: fall through to free-limit count
     cutoff = (datetime.datetime.now(datetime.timezone.utc)
               - datetime.timedelta(hours=FREE_EXPIRY_HOURS)).isoformat()
     row = await db_conn.prepare(
@@ -113,9 +142,23 @@ async def _check_meld_limit(db_conn, ip: str) -> bool:
     return row["c"] < FREE_LIMIT
 
 
-# ── middleware: security headers + JSON body cap ─────────────────────────
+# ── middleware: staging IP allowlist + security headers + JSON body cap ──
 @app.middleware("http")
 async def security(request: Request, call_next):
+    # staging lockdown: when ALLOWED_IPS is set (comma-separated), only those
+    # client IPs may use the instance. Webhook path exempt (Stripe egress IPs
+    # vary). Stealth 404 — don't advertise the staging instance's existence.
+    env = request.scope.get("env")
+    allowed_raw = getattr(env, "ALLOWED_IPS", "") if env else ""
+    allowed = {s.strip() for s in (allowed_raw or "").split(",") if s.strip()}
+    if allowed and request.url.path != "/api/stripe/webhook":
+        if _client_ip(request) not in allowed:
+            # beta bypass: valid beta key admits non-allowlisted callers
+            beta_raw = getattr(env, "BETA_KEYS", "") if env else ""
+            beta_keys = {s.strip() for s in (beta_raw or "").split(",") if s.strip()}
+            presented = request.headers.get("x-meld-beta-key", "")
+            if not presented or presented not in beta_keys:
+                return JSONResponse({"detail": "Not Found"}, status_code=404)
     resp = await call_next(request)
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
@@ -141,7 +184,16 @@ async def create_meld(request: Request):
     if not await _rate_limit(conn, "create", ip):
         raise HTTPException(429, "Too many requests. Please slow down.",
                             headers={"Retry-After": "60"})
-    if not await _check_meld_limit(conn, ip):
+    email = body.get("email")
+    # Amortized sweeper: piggyback cleanup of expired melds on create traffic
+    try:
+        await conn.prepare("DELETE FROM melds WHERE expires_at <= ?").bind(_now()).run()
+    except Exception:
+        pass  # never block create on sweep failure
+    email_key = ("sha256:" + hashlib.sha256(email.encode()).hexdigest()
+                 if isinstance(email, str) and 3 <= len(email) <= 254 and "@" in email else None)
+    if not await _check_meld_limit(conn, ip, email_key):
+        await _funnel(conn, "free_limit_hit")
         raise HTTPException(429, "Free limit reached. <a href='/upgrade'>Go Pro</a>")
 
     code = _code()
@@ -160,6 +212,7 @@ async def create_meld(request: Request):
         ip, now, expiry,
         hashlib.sha256(pin.encode()).hexdigest() if isinstance(pin, str) and 0 < len(pin) <= 128 else None,
     ).run()
+    await _funnel(conn, "created")
     return {
         "code": code,
         "url": f"{request.url.scheme}://{request.headers.get('host', 'localhost')}/m/{code}",
@@ -167,6 +220,7 @@ async def create_meld(request: Request):
         "owner_token": token,
         "context_a": context,
         "resolved": False,
+        "expires_at": expiry,
     }
 
 
@@ -185,7 +239,7 @@ async def get_meld(code: str, request: Request):
         raise HTTPException(410, "This meld has expired")
     return {"code": code, "context_a": row["context_a"],
             "context_b": row["context_b"], "resolved": bool(row["resolved"]),
-            "resolved_at": row["resolved_at"]}
+            "resolved_at": row["resolved_at"], "expires_at": row["expires_at"]}
 
 
 @app.post("/api/melds/{code}/resolve")
@@ -207,6 +261,7 @@ async def resolve_meld(code: str, request: Request):
     if not row:
         raise HTTPException(404, "Meld not found")
     if row["expires_at"] <= _now():
+        await conn.prepare("DELETE FROM melds WHERE code = ?").bind(code).run()
         raise HTTPException(410, "This meld has expired")
 
     pin = row["pin"]
@@ -231,9 +286,10 @@ async def resolve_meld(code: str, request: Request):
                    + datetime.timedelta(minutes=10)).isoformat()
     await conn.prepare(
         "UPDATE melds SET context_b = ?, resolved = 1, resolved_at = ?,"
-        " responder_pubkey = ?, signature = ?,"
+        " responder_pubkey = ?, signature = ?, resolver_ip = ?,"
         " expires_at = MIN(expires_at, ?) WHERE code = ?").bind(
-        context, _now(), pk, sig, fast_expiry, code).run()
+        context, _now(), pk, sig, ip, fast_expiry, code).run()
+    await _funnel(conn, "resolved")
     return {"code": code, "context_a": row["context_a"], "context_b": context,
             "resolved": True}
 
@@ -251,6 +307,9 @@ async def get_result(code: str, request: Request, token: str = ""):
         raise HTTPException(404, "Meld not found")
     if not secrets.compare_digest(row["owner_token"], token or ""):
         raise HTTPException(403, "Invalid token")
+    if row["expires_at"] <= _now():
+        await conn.prepare("DELETE FROM melds WHERE code = ?").bind(code).run()
+        raise HTTPException(410, "This meld has expired")
     if not row["resolved"]:
         raise HTTPException(400, "Not yet resolved")
     fresh = _token()
@@ -259,7 +318,7 @@ async def get_result(code: str, request: Request, token: str = ""):
             "context_b": row["context_b"], "resolved": True,
             "owner_token": fresh,
             "responder_pubkey": row["responder_pubkey"],
-            "signature": row["signature"]}
+            "signature": row["signature"], "expires_at": row["expires_at"]}
 
 
 @app.get("/api/pro-status")
@@ -281,12 +340,8 @@ async def stripe_webhook(request: Request):
         raise HTTPException(501, "Webhook not configured")
     payload = await request.body()
     sig = request.headers.get("stripe-signature", "")
-    try:
-        import stripe
-        event = stripe.Webhook.construct_event(payload, sig, secret)
-    except ImportError:
-        raise HTTPException(501, "Payments unavailable")
-    except Exception:
+    event = _verify_stripe_sig(payload, sig, secret)
+    if event is None:
         raise HTTPException(400, "Invalid signature")
     if event["type"] == "checkout.session.completed":
         sess = event["data"]["object"]
@@ -326,6 +381,29 @@ def _get_stripe_cfg(request):
     }
 
 
+def _verify_stripe_sig(payload: bytes, sig_header: str, secret: str):
+    """Stripe webhook signature verification, stdlib-only (Workers has no
+    stripe SDK). Mirrors stripe.Webhook.construct_event: t=...,v1=... over
+    '{t}.{payload}', constant-time compare, 5-min replay window."""
+    import hmac as _hmac
+    if not sig_header or not secret:
+        return None
+    parts = dict(p.strip().split("=", 1) for p in sig_header.split(",") if "=" in p)
+    t, v1 = parts.get("t"), parts.get("v1")
+    if not t or not v1:
+        return None
+    if abs(time.time() - int(t)) > 300:
+        return None
+    expected = _hmac.new(secret.encode(), f"{t}.".encode() + payload,
+                         hashlib.sha256).hexdigest()
+    if not _hmac.compare_digest(expected, v1):
+        return None
+    try:
+        return json.loads(payload)
+    except Exception:
+        return None
+
+
 async def _stripe_call(method: str, path: str, params: dict = None):
     """Direct Stripe REST API call via JS fetch."""
     from urllib.parse import urlencode
@@ -353,6 +431,7 @@ async def create_checkout(request: Request):
     price_id = cfg["monthly"] if plan == "monthly" else cfg["yearly"]
     if not price_id:
         raise HTTPException(500, "Price not configured")
+    await _funnel(db(request), "checkout_clicked")
 
     host = request.headers.get("host", "localhost")
     scheme = "https" if "workers.dev" in host or "genberg" in host else request.url.scheme
@@ -516,6 +595,7 @@ async def v1_resolve_meld(code: str, request: Request):
     if not row:
         raise HTTPException(404, "Meld not found")
     if row["expires_at"] <= _now():
+        await conn.prepare("DELETE FROM melds WHERE code = ?").bind(code).run()
         raise HTTPException(410, "This meld has expired")
 
     pin = row["pin"]
@@ -538,6 +618,7 @@ async def v1_resolve_meld(code: str, request: Request):
         " expires_at = MIN(expires_at, ?) WHERE code = ?").bind(
         context, _now(), fast_expiry, code).run()
     await _meter_meld(conn, key_row["key_hash"], code)
+    await _funnel(conn, "resolved")
     return {"code": code, "context_a": row["context_a"], "context_b": context,
             "resolved": True}
 
@@ -582,7 +663,7 @@ async def v1_usage(request: Request):
 # ── SPA ──────────────────────────────────────────────────────────────────
 
 # ── SPA ──────────────────────────────────────────────────────────────────
-PAGE = _SPA_HTML
+PAGE = APP_HTML
 
 
 @app.get("/m/{code}")
@@ -597,6 +678,7 @@ async def serve_meld(request: Request, code: str):
         if not row:
             raise HTTPException(404, "Meld not found")
         if row["expires_at"] <= _now():
+            await conn.prepare("DELETE FROM melds WHERE code = ?").bind(code).run()
             raise HTTPException(410, "This meld has expired")
         return {"code": code, "context_a": row["context_a"],
                 "context_b": row["context_b"], "resolved": bool(row["resolved"]),
@@ -605,9 +687,15 @@ async def serve_meld(request: Request, code: str):
     return HTMLResponse(PAGE)
 
 
+
 @app.get("/trust", response_class=HTMLResponse)
 async def trust():
     return HTMLResponse(TRUST_HTML)
+
+
+@app.get("/agents", response_class=HTMLResponse)
+async def agents_page():
+    return HTMLResponse(AGENTS_HTML)
 
 
 @app.get("/{path:path}")
