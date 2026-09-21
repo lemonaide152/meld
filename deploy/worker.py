@@ -30,6 +30,9 @@ FREE_EXPIRY_HOURS = 1
 LEASE_DAYS = 35
 CODE_LEN = 12
 MAX_CONTEXT = 100_000
+# R4: the only origins a checkout success/cancel may redirect to. Never
+# derived from the Host header (open-redirect-via-checkout).
+ALLOWED_HOSTS = {"meld.mergeinc.workers.dev", "meld.sh", "www.meld.sh"}
 # rate limits: (max, window_seconds)
 RL = {"create": (20, 60), "resolve": (10, 60), "view": (60, 60)}
 
@@ -362,27 +365,59 @@ async def stripe_webhook(request: Request):
         raise HTTPException(501, "Webhook not configured")
     payload = await request.body()
     sig = request.headers.get("stripe-signature", "")
+    # W1: HMAC-SHA256 over raw bytes with 5-minute timestamp tolerance —
+    # replays are rejected here, before any state is touched.
     event = _verify_stripe_sig(payload, sig, secret)
     if event is None:
         raise HTTPException(400, "Invalid signature")
-    if event["type"] == "checkout.session.completed":
+    conn = db(request)
+    event_id = event.get("id", "")
+    etype = event.get("type", "")
+    # W2: idempotency keyed on the Stripe event id. The pre-SELECT filters the
+    # common redelivery; the conditional INSERT (changes==0) closes the
+    # concurrent-race window. A duplicate must never re-grant or extend a
+    # lease, so a lost race is treated as already-processed.
+    seen = await conn.prepare(
+        "SELECT 1 FROM webhook_events WHERE stripe_event_id = ?").bind(event_id).first()
+    if seen:
+        return {"ok": True, "dedup": True}
+    if etype == "checkout.session.completed":
         sess = event["data"]["object"]
         email = (sess.get("customer_details") or {}).get("email", "")
         customer = sess.get("customer", "")
+        subscription = sess.get("subscription", "")
+        inserted = await conn.prepare(
+            "INSERT INTO webhook_events (stripe_event_id, type, customer_id,"
+            " subscription_id, received_at) VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT(stripe_event_id) DO NOTHING").bind(
+            event_id, etype, customer, subscription, _now()).run()
+        if _d1_changes(inserted) == 0:
+            return {"ok": True, "dedup": True}
         if email:
             key = _email_key(email)
             until = (datetime.datetime.now(datetime.timezone.utc)
                      + datetime.timedelta(days=LEASE_DAYS)).isoformat()
-            await db(request).prepare(
+            await conn.prepare(
                 "INSERT INTO pros (email_key, customer_id, pro_until, since)"
                 " VALUES (?, ?, ?, ?) ON CONFLICT(email_key) DO UPDATE SET"
                 " pro_until = ?, customer_id = ?").bind(
                 key, customer, until, _now(), until, customer).run()
-            await db(request).prepare(
+            await conn.prepare(
                 "INSERT INTO ledger (at, event, customer_id, email_key, days)"
                 " VALUES (?, 'lease.grant', ?, ?, ?)").bind(
                 _now(), customer, key, LEASE_DAYS).run()
     return {"ok": True}
+
+
+def _d1_changes(result) -> int:
+    """D1 write metadata: number of rows changed (-1 if unreadable)."""
+    try:
+        return int(result["meta"]["changes"])
+    except Exception:
+        try:
+            return int(result.meta.changes)
+        except Exception:
+            return -1
 
 
 @app.get("/api")
@@ -447,23 +482,43 @@ async def create_checkout(request: Request):
     STRIPE_KEY = cfg["key"]
     if not STRIPE_KEY:
         raise HTTPException(501, "Payments not configured")
-    body = await request.json()
-    email = body.get("email", "")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    # R1: the client chooses at most a plan enum. Amount, currency and price
+    # are pinned server-side (Price IDs live in wrangler.toml env) — the
+    # request body can never set them.
     plan = body.get("plan", "monthly")
+    if plan not in ("monthly", "yearly"):
+        raise HTTPException(400, "plan must be 'monthly' or 'yearly'")
+    email = body.get("email", "")
+    if not isinstance(email, str) or not 3 <= len(email) <= 254 or "@" not in email:
+        email = None  # optional field; garbage in, ignored
     price_id = cfg["monthly"] if plan == "monthly" else cfg["yearly"]
     if not price_id:
         raise HTTPException(500, "Price not configured")
-    await _funnel(db(request), "checkout_clicked")
+    conn = db(request)
+    await _funnel(conn, "checkout_clicked")
 
-    host = request.headers.get("host", "localhost")
-    scheme = "https" if "workers.dev" in host or "genberg" in host else request.url.scheme
-    base_url = f"{scheme}://{host}"
+    # R3: opaque per-checkout token, minted Worker-side, correlated to the
+    # funnel click so a completed session can be tied to its click row
+    # without persisting any user data.
+    checkout_ref = secrets.token_hex(16)
+    await conn.prepare(
+        "INSERT INTO checkout_clicks (checkout_ref, plan, clicked_at)"
+        " VALUES (?, ?, ?)").bind(checkout_ref, plan, _now()).run()
+
+    # R4: success/cancel origins are allow-listed constants. The Host header
+    # is attacker-controlled on Workers and must never build a redirect.
+    base_url = "https://meld.mergeinc.workers.dev"
 
     from urllib.parse import urlencode as _ue
     params = {
-        "mode": "subscription",
-        "success_url": base_url + "/pro",
-        "cancel_url": base_url,
+        "mode": "subscription",  # R2: pinned; client cannot change it
+        "success_url": base_url + "/pro?ref=" + checkout_ref,
+        "cancel_url": base_url + "/upgrade",
+        "client_reference_id": checkout_ref,
         "line_items[0][price]": price_id,
         "line_items[0][quantity]": "1",
     }
@@ -483,7 +538,8 @@ async def create_checkout(request: Request):
     d = _j.loads(resp_text)
     if d.get("error"):
         raise HTTPException(500, d["error"].get("message", "Stripe error"))
-    return {"url": d["url"], "session_id": d["id"]}
+    # R5: return only what the browser needs to redirect.
+    return {"url": d["url"]}
 
 
 @app.get("/pro")

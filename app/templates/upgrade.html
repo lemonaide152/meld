@@ -60,7 +60,10 @@ async function checkout(plan) {
   const email = prompt('Email for your subscription:');
   if (!email) return;
   try {
-    const data = await api(`/api/checkout?plan=${plan}&email=${encodeURIComponent(email)}`);
+    const data = await api('/api/checkout', {
+      method: 'POST',
+      body: JSON.stringify({ plan: plan, email: email })
+    });
     window.location.href = data.url;
   } catch (e) {
     showToast(e.message, 'error');

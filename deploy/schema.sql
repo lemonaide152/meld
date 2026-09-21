@@ -38,3 +38,20 @@ CREATE TABLE IF NOT EXISTS rate (
   bucket INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_rate_bucket ON rate(bucket);
+
+-- W2 (MELD-PAY-002): webhook idempotency, keyed on the Stripe event id.
+CREATE TABLE IF NOT EXISTS webhook_events (
+  stripe_event_id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  customer_id TEXT,
+  subscription_id TEXT,
+  received_at TEXT NOT NULL
+);
+
+-- R3 (MELD-PAY-002): opaque per-checkout correlation token minted
+-- Worker-side at click time; no user data, no PII.
+CREATE TABLE IF NOT EXISTS checkout_clicks (
+  checkout_ref TEXT PRIMARY KEY,
+  plan TEXT NOT NULL,
+  clicked_at TEXT NOT NULL
+);
