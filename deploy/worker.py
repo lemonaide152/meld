@@ -15,7 +15,7 @@ import time
 import datetime
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from workers import asgi
 from spa_content import _SPA_HTML
@@ -160,6 +160,11 @@ async def security(request: Request, call_next):
             if not presented or presented not in beta_keys:
                 return JSONResponse({"detail": "Not Found"}, status_code=404)
     resp = await call_next(request)
+    # CORS: browser agents + remote MCP clients need to call the API directly
+    if request.url.path.startswith("/api") or request.url.path.startswith("/v1"):
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Meld-Token, Authorization, X-Forwarded-For"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Referrer-Policy"] = "no-referrer"
@@ -167,6 +172,16 @@ async def security(request: Request, call_next):
         "default-src 'self'; script-src 'unsafe-inline'; "
         "style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'")
     return resp
+
+
+@app.options("/api/{rest:path}")
+@app.options("/v1/{rest:path}")
+async def cors_preflight(rest: str = ""):
+    return JSONResponse({}, status_code=204, headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Content-Type, X-Meld-Token, Authorization",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Max-Age": "86400"})
 
 
 # ── API ──────────────────────────────────────────────────────────────────
@@ -194,7 +209,7 @@ async def create_meld(request: Request):
                  if isinstance(email, str) and 3 <= len(email) <= 254 and "@" in email else None)
     if not await _check_meld_limit(conn, ip, email_key):
         await _funnel(conn, "free_limit_hit")
-        raise HTTPException(429, "Free limit reached. <a href='/upgrade'>Go Pro</a>")
+        raise HTTPException(429, "Free limit reached (3/hour). Retry-After applies. Upgrade for unlimited: https://meld.mergeinc.workers.dev/upgrade")
 
     code = _code()
     token = _token()
@@ -237,9 +252,15 @@ async def get_meld(code: str, request: Request):
     if row["expires_at"] <= _now():
         await conn.prepare("DELETE FROM melds WHERE code = ?").bind(code).run()
         raise HTTPException(410, "This meld has expired")
+    try:
+        delta = datetime.datetime.fromisoformat(row["expires_at"]) - datetime.datetime.now(datetime.timezone.utc)
+        remaining = max(0, int(delta.total_seconds()))
+    except Exception:
+        remaining = None
     return {"code": code, "context_a": row["context_a"],
             "context_b": row["context_b"], "resolved": bool(row["resolved"]),
-            "resolved_at": row["resolved_at"], "expires_at": row["expires_at"]}
+            "resolved_at": row["resolved_at"], "expires_at": row["expires_at"],
+            "seconds_remaining": remaining}
 
 
 @app.post("/api/melds/{code}/resolve")
@@ -314,9 +335,10 @@ async def get_result(code: str, request: Request, token: str = ""):
         raise HTTPException(400, "Not yet resolved")
     fresh = _token()
     await conn.prepare("UPDATE melds SET owner_token = ? WHERE code = ?").bind(fresh, code).run()
-    return {"code": code, "context_a": row["context_a"],
-            "context_b": row["context_b"], "resolved": True,
-            "owner_token": fresh,
+    return {"owner_token": fresh,
+            "code": code, "resolved": True,
+            "context_a": row["context_a"],
+            "context_b": row["context_b"],
             "responder_pubkey": row["responder_pubkey"],
             "signature": row["signature"], "expires_at": row["expires_at"]}
 
@@ -698,6 +720,47 @@ async def agents_page():
     return HTMLResponse(AGENTS_HTML)
 
 
+# ── machine-readable discovery (agents land here) ─────────────────────────
+@app.get("/llms.txt", response_class=PlainTextResponse)
+async def llms_txt():
+    return PlainTextResponse(LLMS_TXT, media_type="text/markdown")
+
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+async def robots_txt():
+    return PlainTextResponse(ROBOTS_TXT, media_type="text/plain")
+
+
+@app.get("/agents.md", response_class=PlainTextResponse)
+async def agents_md():
+    return PlainTextResponse(AGENTS_MD, media_type="text/markdown")
+
+
+@app.get("/trust.md", response_class=PlainTextResponse)
+async def trust_md():
+    return PlainTextResponse(TRUST_MD, media_type="text/markdown")
+
+
+@app.get("/recipes.md", response_class=PlainTextResponse)
+async def recipes_md():
+    return PlainTextResponse(RECIPES_MD, media_type="text/markdown")
+
+
+@app.get("/upgrade.md", response_class=PlainTextResponse)
+async def upgrade_md():
+    return PlainTextResponse(UPGRADE_MD, media_type="text/markdown")
+
+
+@app.get("/.well-known/mcp.json")
+async def mcp_manifest():
+    return JSONResponse(MCP_MANIFEST)
+
+
+@app.get("/api/health")
+async def health():
+    return {"ok": True, "service": "meld", "api": "/llms.txt"}
+
+
 @app.get("/{path:path}")
 async def serve_page(path: str):
     return HTMLResponse(PAGE)
@@ -708,7 +771,190 @@ async def root():
     return HTMLResponse(PAGE)
 
 
-TRUST_HTML = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>meld — trust</title></head><body><h1>meld trust model</h1><p>See TRUST.md in the repository.</p></body></html>"""
+LLMS_TXT = """# meld
+> One link. Party A pours context. Party B answers. The link dissolves. No accounts.
+
+Base URL: https://meld.mergeinc.workers.dev
+Auth: none on create/read/resolve. Owner token required only for GET /result.
+Content limit: context string, max 100000 chars.
+TTL: unresolved 1 hour; after resolve 10 minutes. Then 410 Gone.
+
+When to use
+- Hand a large context blob to another agent or a human without a shared store
+- Get a single answer back, then forget the payload
+- Optional client-side AES-256-GCM (meld1: + base64(nonce||ciphertext), key in URL fragment #k=)
+
+Do not use
+- Long-lived memory, chat history, or multi-turn threads
+- Anything that must survive past the TTL
+
+Quick start
+
+  curl -s https://meld.mergeinc.workers.dev/api/melds -H 'content-type: application/json' -d '{"context":"..."}'
+
+Flow
+1. POST /api/melds  {"context":"..."}  -> code, url, owner_token, expires_at
+2. GET  /api/melds/{code}              -> context_a
+3. POST /api/melds/{code}/resolve {"context":"..."}
+4. GET  /api/melds/{code}/result  header X-Meld-Token: <owner_token>
+   Token rotates on every result read. Persist the new token immediately.
+
+Errors: 400 bad body, 403 bad pin, 404 missing, 409 different answer already stored, 410 expired, 429 rate limit.
+Free: 3 melds/hour. Pro: POST /v1/keys (requires subscription).
+
+Docs
+- Agent API: https://meld.mergeinc.workers.dev/agents.md
+- OpenAPI: https://meld.mergeinc.workers.dev/openapi.json
+- Trust model: https://meld.mergeinc.workers.dev/trust.md
+- Pricing: https://meld.mergeinc.workers.dev/upgrade.md
+- Recipes: https://meld.mergeinc.workers.dev/recipes.md
+"""
+
+
+ROBOTS_TXT = """User-agent: GPTBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: *
+Allow: /
+
+# Machine-readable docs for agents
+# See: /llms.txt /agents.md /openapi.json /trust.md
+"""
+
+
+AGENTS_MD = """# meld — agent API
+
+Ephemeral two-party context drop. One link carries context from party A to
+party B, B answers, both read the merged exchange, then everything dissolves.
+No accounts. The link is the protocol.
+
+## Quick start
+
+```bash
+# 1. Create (party A)
+curl -s https://meld.mergeinc.workers.dev/api/melds \
+  -H 'content-type: application/json' \
+  -d '{"context":"What architecture fits 10M users?"}'
+
+# 2. Party B opens the share link (or you hand them the code), then resolves
+curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \
+  -H 'content-type: application/json' \
+  -d '{"context":"Event-driven services + a queue."}'
+
+# 3. Party A reads the answer (owner_token from step 1)
+curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \
+  -H 'X-Meld-Token: {owner_token}'
+```
+
+## Endpoints
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| POST | /api/melds | none | Create. Body: {context, email?, pin?}. Returns code, url, owner_url, owner_token, expires_at. |
+| GET | /api/melds/{code} | none | Read context_a + status. Poll until resolved: true. |
+| POST | /api/melds/{code}/resolve | pin if set | Answer. Body: {context, pin?}. Idempotent for identical context (200 retry:true), 409 for a different answer. |
+| GET | /api/melds/{code}/result | X-Meld-Token header | Owner read. Token ROTATES every read — persist the new owner_token immediately. |
+| POST | /v1/keys | requires Pro lease | Create agent API key (mk_...). |
+| GET | /api/health | none | Liveness probe. |
+
+## Semantics
+
+- TTL: unresolved 1 hour; after resolve ~10 minutes; then 410 Gone and the row is deleted.
+- Idempotency: resolving twice with the IDENTICAL context returns 200 {retry: true}. A different answer returns 409 — do not retry with another answer; read /result instead if you hold the owner token.
+- E2E encryption (optional): encrypt client-side with AES-256-GCM before POST. Wire format: "meld1:" + base64(nonce || ciphertext). Key goes in the URL fragment #k= and never reaches the server.
+- Errors: 400 bad body, 403 wrong/missing pin, 404 no such meld, 409 conflicting answer, 410 expired, 429 rate limited (honor Retry-After).
+- Free tier: 3 creates/hour per IP. Programmatic volume: see /upgrade.md.
+
+## MCP
+
+MCP server (Claude Desktop, Cursor, etc.): tools meld_create / meld_resolve / meld_read.
+Manifest: /.well-known/mcp.json
+"""
+
+
+TRUST_MD = """# meld — trust model
+
+See the full trust model at /trust (human page). Summary for agents:
+
+- No accounts, no user database. Authority = held secrets (links, tokens, keys).
+- Owner token: capability to read the result. Rotates on every read; old token dies.
+- PIN (optional): second factor for the answering party.
+- E2E mode: server stores AES-256-GCM ciphertext only; key lives in the URL fragment, never sent to the server.
+- Retention: expired melds are deleted (lazy sweep on access + amortized sweep on create). Free tier max 1 hour; post-resolve ~10 minutes.
+- Emails: only stored as SHA-256 hashes. No logs of content.
+- We cannot read E2E melds. We can read plaintext melds while they exist (your choice per meld).
+
+Commitments we will not add: accounts, content scanning, read receipts, long-term persistence.
+"""
+
+
+UPGRADE_MD = """# meld — pricing
+
+Free: 3 melds/hour per IP. 1-hour TTL. No account.
+
+Pro — $5/month (or $49/year):
+- Unlimited melds
+- 7-day TTL for unresolved melds
+- Agent API keys: POST /v1/keys -> mk_... key, 10,000 melds/key, 7-day TTL, usage metered at /v1/usage
+
+Subscribe: open https://meld.mergeinc.workers.dev/upgrade in a browser
+(Stripe Checkout). After payment, POST /v1/keys with your email to mint keys.
+
+Rate limits (all tiers): 20 creates/min, 10 resolves/min, 60 views/min per IP.
+"""
+
+
+RECIPES_MD = '# meld recipes — concrete triggers, not a manifesto\n\nThree flows that make an agent choose meld over a gist, a pastebin, or a\nSlack message. Base URL: https://meld.mergeinc.workers.dev\n\n---\n\n## 1. Human-in-the-loop review\n\nA coding agent needs plan approval before touching main. Instead of dumping\na diff into chat and losing it:\n\n```\nAgent:   POST /api/melds  {"context": "<patch + rationale>"}\n         → sends the share link to the human\nHuman:   opens link, reads the patch, answers in the form:\n         "approve" or "change X first"\nAgent:   GET /api/melds/{code}/result  (X-Meld-Token)\n         → reads verdict, proceeds or revises\n```\n\nWhy meld: no repo pollution for un-approved plans, no chat scrollback to\nsearch, the review payload self-destructs after both parties are done.\n\n## 2. Agent-to-agent handoff\n\nA planner agent hands constraints to a worker agent without shared memory:\n\n```\nPlanner: POST /api/melds  {"context": "<constraints, budgets, interfaces>"}\n         → passes the share link in the task payload\nWorker:  resolves with the implementation plan\n         → gets the full constraint context in return\nPlanner: reads the result, validates the plan against its constraints\n```\n\nWhy meld: works across frameworks and vendors — the link is the only\ncontract. No shared database, no queue, no account on either side.\n\n## 3. Encrypted drop (air-gapped secret)\n\nSame flow, but the payload must never exist in plaintext on the server:\n\n```\nSender:  encrypt context client-side (AES-256-GCM)\n         POST /api/melds {"context": "meld1:<ciphertext>"}\n         → sends share link over one channel, the #k= key over another\nReceiver: opens link, decrypts in browser, resolves\n         → server stored only ciphertext for the TTL, then deleted it\n```\n\nWhy meld: the server is honest-but-blind by construction. Even a full\ndatabase dump does not contain the secret.\n'
+
+
+MCP_MANIFEST = {
+    "name": "meld",
+    "description": "Ephemeral two-party context drop. Create a link, receive an answer, then everything dissolves.",
+    "version": "1.0.0",
+    "url": "https://meld.mergeinc.workers.dev",
+    "transport": "stdio",
+    "command": "npx meld-mcp",
+    "tools": ["meld_create", "meld_resolve", "meld_read"],
+    "docs": "https://meld.mergeinc.workers.dev/llms.txt",
+}
+
+
+TRUST_HTML = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>meld — trust model</title><style>body{font-family:-apple-system,sans-serif;max-width:680px;margin:2rem auto;padding:0 1.5rem;line-height:1.6;color:#1a1a2e}h1{letter-spacing:-.02em}h2{margin-top:2rem;font-size:1.1rem}code{background:#f0ede2;padding:.15rem .4rem;border-radius:4px;font-size:.875rem}li{margin:.4rem 0}.refuse{background:#f0ede2;border-left:3px solid #2e4a7d;padding:1rem 1.25rem;margin:1.5rem 0}</style></head><body>
+<h1>meld — trust model</h1>
+<p>meld is a rendezvous, not a message system. Two parties, one link, one exchange, then everything dissolves. The trust model is built on capabilities, not identity:</p>
+<h2>What holds</h2>
+<ul>
+<li><strong>The link is the protocol.</strong> No accounts, no user database. Whoever holds the capabilities holds the access.</li>
+<li><strong>Owner token = revocable deed.</strong> The token that reads the result rotates on every read. The old token dies the moment you use the new one. Lost tokens cannot be recovered — by you or by us.</li>
+<li><strong>Optional end-to-end encryption.</strong> Check the E2E box and your context is encrypted in your browser (AES-256-GCM). The server stores ciphertext it cannot open. The key lives in the link fragment (<code>#k=</code>) and never reaches us. Losing that link loses the content — for everyone, including us.</li>
+<li><strong>Ephemeral by enforcement, not policy.</strong> Unresolved melds live at most 1 hour (7 days for Pro). After resolution, ~10 minutes. Then the row is deleted — by the access path itself, not by a promise.</li>
+<li><strong>Minimal residue.</strong> Emails are stored only as SHA-256 hashes. No content logs. Payment identity lives with Stripe, not in the meld system.</li>
+<li><strong>You choose per meld.</strong> Plaintext melds are readable by the server while they exist (max 1 hour). E2E melds never are. The checkbox is yours.</li>
+</ul>
+<h2>What we will never add</h2>
+<div class="refuse"><ul>
+<li>Accounts or login</li>
+<li>Content scanning or analysis</li>
+<li>Read receipts or presence indicators</li>
+<li>Long-term persistence of meld content</li>
+</ul></div>
+<h2>Honest limits</h2>
+<ul>
+<li>The server can read plaintext melds while they exist. If your context must not touch our server in readable form, use E2E mode.</li>
+<li>Rate-limit identity is IP-based. VPNs and shared NATs share quotas.</li>
+<li>Deletion is real but not instantly verifiable by you — the guarantee is structural (short TTL + automatic deletion), not auditable.</li>
+</ul>
+<p><a href="/trust.md">Markdown version</a> · <a href="/llms.txt">Agent docs</a></p>
+</body></html>"""
 
 # Workers ASGI entrypoint
 Default = asgi.entrypoint(app)
