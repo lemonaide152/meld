@@ -30,11 +30,17 @@ FREE_EXPIRY_HOURS = 1
 LEASE_DAYS = 35
 CODE_LEN = 12
 MAX_CONTEXT = 100_000
+# Pay-per-meld (spec v1.1 §Security): the ONLY price for the wall-hit path.
+# Amount is pinned server-side in cents; the client sends at most {meld_code}.
+# The webhook independently asserts amount_total == MELD_PRICE_CENTS before
+# unlocking (defense-in-depth: a signed event proves Stripe sent it, not that
+# the session was created at our price).
+MELD_PRICE_CENTS = 333  # $3.33 — operator decision 2026-09-22
 # R4: the only origins a checkout success/cancel may redirect to. Never
 # derived from the Host header (open-redirect-via-checkout).
 ALLOWED_HOSTS = {"meld.mergeinc.workers.dev", "meld.sh", "www.meld.sh"}
 # rate limits: (max, window_seconds)
-RL = {"create": (20, 60), "resolve": (10, 60), "view": (60, 60)}
+RL = {"create": (20, 60), "resolve": (10, 60), "view": (60, 60), "checkout": (5, 60)}
 
 # ── env bindings (set in wrangler.toml) ─────────────────────────────────
 def db(request):
@@ -107,7 +113,7 @@ async def _rate_limit(db_conn, kind: str, ip: str) -> bool:
     Atomic: the limit check happens inside a conditional UPSERT, so concurrent
     requests cannot read stale counts and burst past the cap (TOCTOU fix).
     The stale-window prune stays best-effort outside the atomic path."""
-    limit = {"create": 20, "resolve": 10, "view": 60}.get(kind, 60)
+    limit = {"create": 20, "resolve": 10, "view": 60, "checkout": 5}.get(kind, 60)
     key = _rl_key(kind, ip)
     bucket = _rl_bucket()
     # Atomic admit: increments only when the bucket is fresh or count < limit.
@@ -383,6 +389,45 @@ async def stripe_webhook(request: Request):
         return {"ok": True, "dedup": True}
     if etype == "checkout.session.completed":
         sess = event["data"]["object"]
+        # Pay-per-meld (spec v1.1 §Security req 5): assert the amount BEFORE
+        # any unlock. Signature verification proves Stripe sent this event; it
+        # does NOT prove the session was created at our price. A leaked or
+        # reused API key could mint a session at any amount — a signed
+        # webhook for it must never unlock.
+        amount = sess.get("amount_total")
+        meld_code = (sess.get("metadata") or {}).get("meld_id", "")
+        if meld_code:
+            if amount != MELD_PRICE_CENTS:
+                await conn.prepare(
+                    "INSERT INTO webhook_events (stripe_event_id, type, customer_id,"
+                    " subscription_id, received_at) VALUES (?, ?, ?, ?, ?)"
+                    " ON CONFLICT(stripe_event_id) DO NOTHING").bind(
+                    event_id, etype, sess.get("customer", ""),
+                    sess.get("subscription", ""), _now()).run()
+                await conn.prepare(
+                    "INSERT INTO ledger (at, event, customer_id, email_key, days)"
+                    " VALUES (?, 'payment.wrong_amount_rejected', ?, NULL, NULL)"
+                ).bind(_now(), sess.get("customer", "")).run()
+                return {"ok": True, "rejected": "wrong_amount"}
+            # Spec §Security req 3: idempotent on checkout.session.id.
+            inserted = await conn.prepare(
+                "INSERT INTO meld_payments (stripe_session_id, meld_code,"
+                " amount_cents, paid_at) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(stripe_session_id) DO NOTHING").bind(
+                sess.get("id", ""), meld_code, amount, _now()).run()
+            if _d1_changes(inserted) == 0:
+                # Redelivery under a NEW event id: the session was already
+                # processed. No-op — never re-unlock, never re-ledger.
+                return {"ok": True, "dedup": True}
+            # Spec §Security req 4: flip exactly one capability's paid flag.
+            await conn.prepare(
+                "UPDATE melds SET paid = 1 WHERE code = ?").bind(meld_code).run()
+            await conn.prepare(
+                "INSERT INTO ledger (at, event, customer_id, email_key, days)"
+                " VALUES (?, 'meld.unlock', ?, NULL, NULL)").bind(
+                _now(), sess.get("customer", "")).run()
+            return {"ok": True, "unlocked": meld_code}
+        # Legacy subscription path (no meld_id metadata): unchanged.
         email = (sess.get("customer_details") or {}).get("email", "")
         customer = sess.get("customer", "")
         subscription = sess.get("subscription", "")
@@ -485,11 +530,67 @@ async def create_checkout(request: Request):
     try:
         body = await request.json()
     except Exception:
-        body = {}
+        raise HTTPException(400, "Body must be JSON: {\"plan\": \"monthly\"|\"yearly\", \"email\": \"...\" (optional)}")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Body must be a JSON object")
+    ip = _client_ip(request)
+    conn = db(request)
+    if not await _rate_limit(conn, "checkout", ip):
+        raise HTTPException(429, "Too many requests", headers={"Retry-After": "60"})
+
+    # ── Pay-per-meld path (spec v1.1): body {meld_code} → one-time 333¢ ──
+    if "meld_code" in body:
+        meld_code = body.get("meld_code")
+        if not isinstance(meld_code, str) or not 4 <= len(meld_code) <= 32:
+            raise HTTPException(400, "meld_code must be the meld code to unlock")
+        row = await conn.prepare("SELECT code FROM melds WHERE code = ?").bind(meld_code).first()
+        if not row:
+            raise HTTPException(404, "Meld not found")
+        checkout_ref = secrets.token_hex(16)
+        await conn.prepare(
+            "INSERT INTO checkout_clicks (checkout_ref, plan, clicked_at)"
+            " VALUES (?, ?, ?)").bind(checkout_ref, "per_meld", _now()).run()
+        await _funnel(conn, "checkout_clicked")
+        base_url = "https://meld.mergeinc.workers.dev"
+        from urllib.parse import urlencode as _ue
+        params = {
+            "mode": "payment",  # one-time; client cannot change it
+            "success_url": base_url + "/pro?ref=" + checkout_ref,
+            "cancel_url": base_url + "/upgrade",
+            "client_reference_id": checkout_ref,
+            # Spec §Security req 5: amount pinned HERE, server-side. The
+            # client body can never set it.
+            "line_items[0][price_data][currency]": "usd",
+            "line_items[0][price_data][unit_amount]": str(MELD_PRICE_CENTS),
+            "line_items[0][price_data][product_data][name]": "meld — one context bridge",
+            "line_items[0][quantity]": "1",
+            # Spec §Security req 1: capability binding for the webhook.
+            "metadata[meld_id]": meld_code,
+            "metadata[checkout_ref]": checkout_ref,
+        }
+        resp_text = await _fetch(
+            "https://api.stripe.com/v1/checkout/sessions",
+            headers={
+                "Authorization": f"Bearer {STRIPE_KEY}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            method="POST",
+            body=_ue(params),
+        )
+        import json as _j
+        d = _j.loads(resp_text)
+        if d.get("error"):
+            raise HTTPException(500, d["error"].get("message", "Stripe error"))
+        return {"url": d["url"]}
+
+    # ── Legacy subscription path ({plan, email}) ─────────────────────────
     # R1: the client chooses at most a plan enum. Amount, currency and price
     # are pinned server-side (Price IDs live in wrangler.toml env) — the
-    # request body can never set them.
-    plan = body.get("plan", "monthly")
+    # request body can never set them. plan is REQUIRED: an empty body mints
+    # a live Stripe session for free, so {} must reject, not default.
+    if "plan" not in body:
+        raise HTTPException(400, "plan is required: 'monthly' or 'yearly' (or meld_code for pay-per-meld)")
+    plan = body.get("plan")
     if plan not in ("monthly", "yearly"):
         raise HTTPException(400, "plan must be 'monthly' or 'yearly'")
     email = body.get("email", "")
@@ -498,7 +599,6 @@ async def create_checkout(request: Request):
     price_id = cfg["monthly"] if plan == "monthly" else cfg["yearly"]
     if not price_id:
         raise HTTPException(500, "Price not configured")
-    conn = db(request)
     await _funnel(conn, "checkout_clicked")
 
     # R3: opaque per-checkout token, minted Worker-side, correlated to the

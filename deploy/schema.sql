@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS melds (
   context_a TEXT NOT NULL,
   context_b TEXT,
   resolved INTEGER NOT NULL DEFAULT 0,
+  paid INTEGER NOT NULL DEFAULT 0,
   resolved_at TEXT,
   owner_token TEXT NOT NULL,
   owner_email TEXT,
@@ -55,3 +56,14 @@ CREATE TABLE IF NOT EXISTS checkout_clicks (
   plan TEXT NOT NULL,
   clicked_at TEXT NOT NULL
 );
+
+-- Pay-per-meld (MELD-PPM-001): one row per paid checkout session.
+-- Idempotency on stripe_session_id (spec §Security req 3): a redelivered
+-- webhook re-INSERTs to changes==0 → dedup, never a double-unlock.
+CREATE TABLE IF NOT EXISTS meld_payments (
+  stripe_session_id TEXT PRIMARY KEY,
+  meld_code TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  paid_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_meld_payments_code ON meld_payments(meld_code);
