@@ -5,7 +5,9 @@ CREATE TABLE IF NOT EXISTS api_keys (
   melds_used INTEGER NOT NULL DEFAULT 0,
   melds_limit INTEGER NOT NULL DEFAULT 10000,
   created_at TEXT NOT NULL,
-  active INTEGER NOT NULL DEFAULT 1
+  active INTEGER NOT NULL DEFAULT 1,
+  mint_ip TEXT,
+  minted_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS meld_usage (
   key_hash TEXT NOT NULL,

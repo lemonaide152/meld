@@ -731,9 +731,9 @@ async def create_api_key(request: Request):
     key = "mk_" + secrets.token_hex(24)
     key_hash = hashlib.sha256(key.encode()).hexdigest()
     await conn.prepare(
-        "INSERT INTO api_keys (key_hash, label, tier, melds_used, melds_limit, created_at, active)"
-        " VALUES (?, ?, 'agent', 0, 10000, ?, 1)").bind(
-        key_hash, label[:100], _now()).run()
+        "INSERT INTO api_keys (key_hash, label, tier, melds_used, melds_limit, created_at, active, mint_ip, minted_at)"
+        " VALUES (?, ?, 'agent', 0, 10000, ?, 1, ?, ?)").bind(
+        key_hash, label[:100], _now(), ip, _now()).run()
     return {
         "key": key,
         "label": label[:100],
