@@ -186,13 +186,14 @@ async def main():
         ok("T4 bad sig → 400", e.status_code == 400, str(e.status_code))
     ok("T4 nothing written", d1d.paid_melds == set() and not any("INSERT INTO meld_payments" in st[1] for st in d1d.statements), "")
 
-    # T5: legacy event (no meld_id) still hits the subscription branch
+    # T5: legacy event (no meld_id) must be IGNORED post-supersedure
     d1e = FakeD1()
     legacy = make_event(2500, meld_id=None)
     legacy["data"]["object"]["customer_details"] = {"email": "sub@b.com"}
     legacy["data"]["object"]["subscription"] = "sub_legacy"
     r5 = await run_webhook(legacy, d1e)
-    ok("T5 legacy lease.grant path intact", any("lease.grant" in st[1] for st in d1e.statements), str(d1e.statements)[:200])
+    ok("T5 legacy no-meld_id ignored, nothing granted", r5.get("ignored") == "no_meld_id", str(r5))
+    ok("T5b no lease.grant / no pro lease written", not any("lease.grant" in st[1] for st in d1e.statements), str(d1e.statements)[:200])
 
     print(f"\nRESULTS: {passed}/{total} passed")
     sys.exit(0 if passed == total else 1)

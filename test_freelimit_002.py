@@ -31,7 +31,7 @@ for _name, _attr in [("spa_content", "_SPA_HTML"), ("app_content", "APP_HTML"),
 
 import worker  # noqa: E402  — the real product code
 
-SCHEMA = open(DEPLOY + "/schema.sql").read() + """
+SCHEMA = open(DEPLOY + "/schema.sql").read() + "\n" + open(DEPLOY + "/schema_api.sql").read() + """
 CREATE TABLE IF NOT EXISTS funnel_events (
   day TEXT NOT NULL, event TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (day, event));
@@ -202,19 +202,17 @@ def test_window_rolls():
     n = d1.q("SELECT n FROM free_counts WHERE ip=? AND window_key != '0'", ip)[0]["n"]
     ok("T3 new-window counter started at 1 (old window not counted)", n == 1, f"n={n}")
 
-# ── T4: pro lease bypasses the free wall ────────────────────────────────
-def test_pro_bypass():
-    print("T4 pro lease bypasses free-limit counter")
+# ── T4: NO lease bypass (no-pro directive) ───────────────────────────────
+def test_no_lease_bypass():
+    print("T4 no-pro: email confers no bypass — 4th create walled")
     d1 = fresh_db()
     ip = "10.1.0.4"
     email = "pro@example.com"
-    d1.q("INSERT INTO pros (email_key, customer_id, pro_until, since) VALUES (?,?,?,?)",
-         email_key(email), "cus_t", FUTURE, worker._now())
     results = [run(do_create(d1, ip, email=email)) for _ in range(5)]
-    ok("T4 five creates all admitted for pro", all(r[0] == "ok" for r in results),
-       str([r[:2] for r in results]))
-    rows = d1.q("SELECT n FROM free_counts WHERE ip = ?", ip)
-    ok("T4 free counter untouched for pro", not rows, f"rows={len(rows)}")
+    admitted = sum(1 for r in results if r[0] == "ok")
+    ok("T4 exactly FREE_LIMIT admits, then wall (no lease bypass)",
+       admitted == worker.FREE_LIMIT and results[worker.FREE_LIMIT][0] == "err",
+       str([(r[0], r[1] if r[0] == "err" else "") for r in results]))
 
 
 # ── T5: first wall hit records no offense, no ban ───────────────────────
@@ -378,9 +376,9 @@ def test_retry_after_wall():
        r4[0] == "err" and r4[1] == 429 and 1 <= ra <= 3600, f"r4={r4}")
 
 
-# ── T13: /v1/keys rate-limited + probe-403s feed the ladder (audit F2) ──
+# ── T13: /v1/keys rate-limited (no-pro: no probe-403s anymore) ───────────
 def test_keys_limiter():
-    print("T13 /v1/keys: 5/min limiter + lease-probe 403s hit the ladder")
+    print("T13 /v1/keys: 5/min limiter (no-pro: keys are free, no probe 403s)")
     d1 = fresh_db()
     ip = "10.1.0.13"
 
@@ -401,35 +399,30 @@ def test_keys_limiter():
             statuses.append(e.status_code if e else 200)
         except worker.HTTPException as e:
             statuses.append(e.status_code)
-    ok("T13.a probe burst throttled at 5/min (403s then 429)",
-       statuses.count(403) == 5 and 429 in statuses, str(statuses))
+    ok("T13.a first 5 mint keys (200), rest 429-limited",
+       statuses.count(200) == 5 and statuses.count(429) == 3, str(statuses))
     rej = run(worker._throttle_reject(d1, ip, "/v1/keys"))
     ok("T13.b probe-403s registered a throttle offense (banned)",
        rej is not None and rej.status_code == 429, f"rej={rej}")
 
 
-# ── T14: email-hash normalization — pro recognized regardless of case ──
-def test_email_hash_normalized():
-    print("T14 audit F3: pro lease honored for mixed-case email at create")
+# ── T14: email is inert (no-pro directive) — no lookup, no error ────────
+def test_email_inert():
+    print("T14 no-pro: mixed-case email accepted but ignored at create")
     d1 = fresh_db()
     ip = "10.1.0.14"
-    # webhook path keys the lease with _email_key (strip+lower)
     email = "Me@Corp.com"
-    d1.q("INSERT INTO pros (email_key, customer_id, pro_until, since) VALUES (?,?,?,?)",
-         email_key(email), "cus_f3", FUTURE, worker._now())
-    results = [run(do_create(d1, ip, email=email)) for _ in range(5)]
-    ok("T14 five creates admitted for mixed-case pro email",
+    results = [run(do_create(d1, ip, email=email)) for _ in range(3)]
+    ok("T14 three creates admitted with email set (no lease lookup)",
        all(r[0] == "ok" for r in results), str([r[:2] for r in results]))
-    ok("T14 free_counts untouched (no silent demotion)",
-       not d1.q("SELECT 1 FROM free_counts WHERE ip = ?", ip))
 
 
 for t in [test_count_created_accumulates, test_live_rows_still_blocked,
-          test_window_rolls, test_pro_bypass, test_first_hit_no_offense,
+          test_window_rolls, test_no_lease_bypass, test_first_hit_no_offense,
           test_second_hit_first_rung, test_ladder_walks, test_operator_permanent,
           test_webhook_exempt,
           test_nat_shared_ip, test_limiter_violation_registers, test_prune,
-          test_retry_after_wall, test_keys_limiter, test_email_hash_normalized]:
+          test_retry_after_wall, test_keys_limiter, test_email_inert]:
     t()
 
 print(f"\n{passed}/{total} passed")

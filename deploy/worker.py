@@ -4,7 +4,7 @@ Faithful port of the audited meld.py trust model:
 - capability model: code admits, PIN authenticates answerer, rotating token reads
 - per-IP sliding-window rate limits, body caps, string-validated contexts
 - zero-knowledge E2E: server stores ciphertext (meld1:…), key in #k= fragment
-- pro leases (35-day) + append-only ledger; emails hashed at rest
+- pay-per-meld ($3.33 one-time) + append-only ledger; no accounts, no emails at rest
 State lives in D1 (survives restarts — an upgrade over the RAM dict).
 """
 import hashlib
@@ -18,7 +18,6 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from workers import asgi
-from spa_content import _SPA_HTML
 from agents_content import AGENTS_HTML
 from app_content import APP_HTML
 from agents_content import AGENTS_HTML
@@ -27,7 +26,6 @@ app = FastAPI(title="meld", version="1.0.0", docs_url=None, redoc_url=None)
 
 FREE_LIMIT = 3
 FREE_EXPIRY_HOURS = 1
-LEASE_DAYS = 35
 CODE_LEN = 12
 MAX_CONTEXT = 100_000
 # Pay-per-meld (spec v1.1 §Security): the ONLY price for the wall-hit path.
@@ -84,10 +82,6 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "0.0.0.0"
 
 
-def _email_key(email: str) -> str:
-    return "sha256:" + hashlib.sha256(email.strip().lower().encode()).hexdigest()
-
-
 async def _fetch(url, headers=None, body=None, method="GET"):
     """Use JS fetch from Python Workers — build init via JSON.parse (avoids JsProxy)."""
     import json as _json
@@ -137,22 +131,12 @@ async def _rate_limit(db_conn, kind: str, ip: str) -> bool:
     return row["count"] <= limit and row["bucket"] == bucket
 
 
-async def _check_meld_limit(db_conn, ip: str, email: str | None = None) -> bool:
-    """Free users: FREE_LIMIT melds CREATED per hour (spec MELD-FREELIMIT-002:
+async def _check_meld_limit(db_conn, ip: str) -> bool:
+    """Free tier: FREE_LIMIT melds CREATED per window (spec MELD-FREELIMIT-002:
     count creations, never live rows — melds are deleted on resolve/sweep, so
-    a live-row COUNT is '3 concurrent', not '3 created/hour', and power users
-    never hit the paywall). Pro (valid lease): unlimited.
-    Lease lookup matches ONLY hashed email keys — never raw IPs — so a pro
-    lease can never be claimed by controlling your source IP."""
-    lease = None
-    if email and email.startswith("sha256:"):
-        lease = await db_conn.prepare(
-            "SELECT pro_until, email_key FROM pros WHERE email_key = ?").bind(email).first()
-        if lease and lease["pro_until"] <= _now():
-            await db_conn.prepare("DELETE FROM pros WHERE email_key = ?").bind(lease["email_key"]).run()
-            lease = None  # expired: fall through to free-limit count
-    if lease:
-        return True
+    a live-row COUNT is '3 concurrent', not '3 created/window', and the wall
+    never fires for light users). No lease bypass exists: beyond the free
+    tier, a meld costs $3.33 one-time (webhook-unlocked)."""
     window_key = str(int(time.time() // (FREE_EXPIRY_HOURS * 3600)))
     row = await db_conn.prepare(
         "INSERT INTO free_counts (ip, window_key, n) VALUES (?, ?, 1) "
@@ -332,9 +316,7 @@ async def create_meld(request: Request):
         await _throttle_prune(conn)
     except Exception:
         pass  # never block create on sweep failure
-    email_key = (_email_key(email)
-                 if isinstance(email, str) and 3 <= len(email) <= 254 and "@" in email else None)
-    if not await _check_meld_limit(conn, ip, email_key):
+    if not await _check_meld_limit(conn, ip):
         await _funnel(conn, "free_limit_hit")
         # MELD-FREELIMIT-002: wall hits feed the throttle ladder, one offense
         # per exhausted window (NAT guard: 2 hits in-window for rung 1).
@@ -344,7 +326,7 @@ async def create_meld(request: Request):
                 (int(time.time() // (FREE_EXPIRY_HOURS * 3600)) + 1)
                 * FREE_EXPIRY_HOURS * 3600, datetime.timezone.utc)
              - datetime.datetime.now(datetime.timezone.utc)).total_seconds())))
-        raise HTTPException(429, "Free limit reached (3/hour). Retry-After applies. Upgrade for unlimited: https://meld.mergeinc.workers.dev/upgrade",
+        raise HTTPException(429, "Free limit reached (3 per window). Retry-After applies. $3.33 per meld beyond the free tier: https://meld.mergeinc.workers.dev/upgrade.md",
                             headers={"Retry-After": retry_after})
 
     code = _code()
@@ -480,14 +462,9 @@ async def get_result(code: str, request: Request, token: str = ""):
 
 
 @app.get("/api/pro-status")
-async def pro_status(email: str = "", request: Request = None):
-    if not email:
-        return {"pro": False}
-    row = await db(request).prepare(
-        "SELECT pro_until FROM pros WHERE email_key = ?").bind(_email_key(email)).first()
-    if row and row["pro_until"] > _now():
-        return {"pro": True}
-    return {"pro": False}
+async def pro_status_gone():
+    """SUPERSeded by no-pro directive: kept only to return a hard 404."""
+    raise HTTPException(404, "Not found")
 
 
 @app.post("/api/stripe/webhook")
@@ -508,8 +485,8 @@ async def stripe_webhook(request: Request):
     etype = event.get("type", "")
     # W2: idempotency keyed on the Stripe event id. The pre-SELECT filters the
     # common redelivery; the conditional INSERT (changes==0) closes the
-    # concurrent-race window. A duplicate must never re-grant or extend a
-    # lease, so a lost race is treated as already-processed.
+    # concurrent-race window. A duplicate must never re-unlock, so a lost
+    # race is treated as already-processed.
     seen = await conn.prepare(
         "SELECT 1 FROM webhook_events WHERE stripe_event_id = ?").bind(event_id).first()
     if seen:
@@ -527,13 +504,12 @@ async def stripe_webhook(request: Request):
             if amount != MELD_PRICE_CENTS:
                 await conn.prepare(
                     "INSERT INTO webhook_events (stripe_event_id, type, customer_id,"
-                    " subscription_id, received_at) VALUES (?, ?, ?, ?, ?)"
+                    " received_at) VALUES (?, ?, ?, ?)"
                     " ON CONFLICT(stripe_event_id) DO NOTHING").bind(
-                    event_id, etype, sess.get("customer", ""),
-                    sess.get("subscription", ""), _now()).run()
+                    event_id, etype, sess.get("customer", ""), _now()).run()
                 await conn.prepare(
-                    "INSERT INTO ledger (at, event, customer_id, email_key, days)"
-                    " VALUES (?, 'payment.wrong_amount_rejected', ?, NULL, NULL)"
+                    "INSERT INTO ledger (at, event, customer_id)"
+                    " VALUES (?, 'payment.wrong_amount_rejected', ?)"
                 ).bind(_now(), sess.get("customer", "")).run()
                 return {"ok": True, "rejected": "wrong_amount"}
             # Spec §Security req 3: idempotent on checkout.session.id.
@@ -550,34 +526,24 @@ async def stripe_webhook(request: Request):
             await conn.prepare(
                 "UPDATE melds SET paid = 1 WHERE code = ?").bind(meld_code).run()
             await conn.prepare(
-                "INSERT INTO ledger (at, event, customer_id, email_key, days)"
-                " VALUES (?, 'meld.unlock', ?, NULL, NULL)").bind(
+                "INSERT INTO ledger (at, event, customer_id)"
+                " VALUES (?, 'meld.unlock', ?)").bind(
                 _now(), sess.get("customer", "")).run()
             return {"ok": True, "unlocked": meld_code}
-        # Legacy subscription path (no meld_id metadata): unchanged.
-        email = (sess.get("customer_details") or {}).get("email", "")
-        customer = sess.get("customer", "")
-        subscription = sess.get("subscription", "")
-        inserted = await conn.prepare(
+        # No-pro directive: sessions WITHOUT meld_id metadata grant NOTHING —
+        # record the event for idempotency + one ledger entry (log + no-op,
+        # spec supersedure item 2). A legacy/subscription webhook can never
+        # unlock anything again.
+        await conn.prepare(
             "INSERT INTO webhook_events (stripe_event_id, type, customer_id,"
-            " subscription_id, received_at) VALUES (?, ?, ?, ?, ?)"
+            " received_at) VALUES (?, ?, ?, ?)"
             " ON CONFLICT(stripe_event_id) DO NOTHING").bind(
-            event_id, etype, customer, subscription, _now()).run()
-        if _d1_changes(inserted) == 0:
-            return {"ok": True, "dedup": True}
-        if email:
-            key = _email_key(email)
-            until = (datetime.datetime.now(datetime.timezone.utc)
-                     + datetime.timedelta(days=LEASE_DAYS)).isoformat()
-            await conn.prepare(
-                "INSERT INTO pros (email_key, customer_id, pro_until, since)"
-                " VALUES (?, ?, ?, ?) ON CONFLICT(email_key) DO UPDATE SET"
-                " pro_until = ?, customer_id = ?").bind(
-                key, customer, until, _now(), until, customer).run()
-            await conn.prepare(
-                "INSERT INTO ledger (at, event, customer_id, email_key, days)"
-                " VALUES (?, 'lease.grant', ?, ?, ?)").bind(
-                _now(), customer, key, LEASE_DAYS).run()
+            event_id, etype, sess.get("customer", ""), _now()).run()
+        await conn.prepare(
+            "INSERT INTO ledger (at, event, customer_id)"
+            " VALUES (?, 'payment.no_meld_id_ignored', ?)"
+        ).bind(_now(), sess.get("customer", "")).run()
+        return {"ok": True, "ignored": "no_meld_id"}
     return {"ok": True}
 
 
@@ -605,8 +571,6 @@ def _get_stripe_cfg(request):
     return {
         "key": getattr(env, "STRIPE_SECRET_KEY", "") or "",
         "webhook_secret": getattr(env, "STRIPE_WEBHOOK_SECRET", "") or "",
-        "monthly": getattr(env, "STRIPE_PRICE_MONTHLY", "") or "",
-        "yearly": getattr(env, "STRIPE_PRICE_YEARLY", "") or "",
     }
 
 
@@ -643,7 +607,7 @@ async def create_checkout(request: Request):
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(400, "Body must be JSON: {\"plan\": \"monthly\"|\"yearly\", \"email\": \"...\" (optional)}")
+        raise HTTPException(400, "Body must be JSON: {\"meld_code\": \"<meld code to unlock>\"}")
     if not isinstance(body, dict):
         raise HTTPException(400, "Body must be a JSON object")
     ip = _client_ip(request)
@@ -651,100 +615,51 @@ async def create_checkout(request: Request):
     if not await _rate_limit(conn, "checkout", ip):
         raise HTTPException(429, "Too many requests", headers={"Retry-After": "60"})
 
-    # ── Pay-per-meld path (spec v1.1): body {meld_code} → one-time 333¢ ──
-    if "meld_code" in body:
-        meld_code = body.get("meld_code")
-        if not isinstance(meld_code, str) or not 4 <= len(meld_code) <= 32:
-            raise HTTPException(400, "meld_code must be the meld code to unlock")
-        row = await conn.prepare("SELECT code FROM melds WHERE code = ?").bind(meld_code).first()
-        if not row:
-            raise HTTPException(404, "Meld not found")
-        checkout_ref = secrets.token_hex(16)
-        await conn.prepare(
-            "INSERT INTO checkout_clicks (checkout_ref, plan, clicked_at, clicker_ip)"
-            " VALUES (?, ?, ?, ?)").bind(
-                checkout_ref, "per_meld", _now(), _client_ip(request)).run()
-        await _funnel(conn, "checkout_clicked")
-        base_url = "https://meld.mergeinc.workers.dev"
-        from urllib.parse import urlencode as _ue
-        params = {
-            "mode": "payment",  # one-time; client cannot change it
-            "success_url": base_url + "/pro?ref=" + checkout_ref,
-            "cancel_url": base_url + "/upgrade",
-            "client_reference_id": checkout_ref,
-            # Spec §Security req 5: amount pinned HERE, server-side. The
-            # client body can never set it.
-            "line_items[0][price_data][currency]": "usd",
-            "line_items[0][price_data][unit_amount]": str(MELD_PRICE_CENTS),
-            "line_items[0][price_data][product_data][name]": "meld — one context bridge",
-            # Managed Payments requires a product tax code on price_data;
-            # txcd_10501000 = SaaS, eligible for Managed Payments
-            # (txcd_10500000 was rejected as ineligible; without any
-            # tax code Stripe 500s session creation).
-            "line_items[0][price_data][product_data][tax_code]": "txcd_10501000",
-            "line_items[0][quantity]": "1",
-            # Spec §Security req 1: capability binding for the webhook.
-            "metadata[meld_id]": meld_code,
-            "metadata[checkout_ref]": checkout_ref,
-        }
-        resp_text = await _fetch(
-            "https://api.stripe.com/v1/checkout/sessions",
-            headers={
-                "Authorization": f"Bearer {STRIPE_KEY}",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            method="POST",
-            body=_ue(params),
-        )
-        import json as _j
-        d = _j.loads(resp_text)
-        if d.get("error"):
-            raise HTTPException(500, d["error"].get("message", "Stripe error"))
-        return {"url": d["url"]}
-
-    # ── Legacy subscription path ({plan, email}) ─────────────────────────
-    # R1: the client chooses at most a plan enum. Amount, currency and price
-    # are pinned server-side (Price IDs live in wrangler.toml env) — the
-    # request body can never set them. plan is REQUIRED: an empty body mints
-    # a live Stripe session for free, so {} must reject, not default.
-    if "plan" not in body:
-        raise HTTPException(400, "plan is required: 'monthly' or 'yearly' (or meld_code for pay-per-meld)")
-    plan = body.get("plan")
-    if plan not in ("monthly", "yearly"):
-        raise HTTPException(400, "plan must be 'monthly' or 'yearly'")
-    email = body.get("email", "")
-    if not isinstance(email, str) or not 3 <= len(email) <= 254 or "@" not in email:
-        email = None  # optional field; garbage in, ignored
-    price_id = cfg["monthly"] if plan == "monthly" else cfg["yearly"]
-    if not price_id:
-        raise HTTPException(500, "Price not configured")
-    await _funnel(conn, "checkout_clicked")
-
-    # R3: opaque per-checkout token, minted Worker-side, correlated to the
-    # funnel click so a completed session can be tied to its click row
-    # without persisting any user data.
+    # SUPERSEDED (pay-per-meld only, spec v1.1 supersedure): the legacy
+    # subscription path ({plan: monthly|yearly}) minted mode:subscription
+    # Stripe sessions. It is removed — there is no subscription product.
+    # Any body without meld_code (or with a plan key) is rejected here so
+    # no subscription session can ever be minted again.
+    if "meld_code" not in body:
+        if "plan" in body:
+            raise HTTPException(
+                400, "Subscriptions were removed. Pay-per-meld only: "
+                     "{\"meld_code\": \"<code>\"} → one-time $3.33.")
+        raise HTTPException(400, "Body must be JSON: {\"meld_code\": \"<meld code to unlock>\"}")
+    meld_code = body.get("meld_code")
+    if not isinstance(meld_code, str) or not 4 <= len(meld_code) <= 32:
+        raise HTTPException(400, "meld_code must be the meld code to unlock")
+    row = await conn.prepare("SELECT code FROM melds WHERE code = ?").bind(meld_code).first()
+    if not row:
+        raise HTTPException(404, "Meld not found")
     checkout_ref = secrets.token_hex(16)
     await conn.prepare(
         "INSERT INTO checkout_clicks (checkout_ref, plan, clicked_at, clicker_ip)"
         " VALUES (?, ?, ?, ?)").bind(
-            checkout_ref, plan, _now(), _client_ip(request)).run()
-
-    # R4: success/cancel origins are allow-listed constants. The Host header
-    # is attacker-controlled on Workers and must never build a redirect.
+            checkout_ref, "per_meld", _now(), _client_ip(request)).run()
+    await _funnel(conn, "checkout_clicked")
     base_url = "https://meld.mergeinc.workers.dev"
-
     from urllib.parse import urlencode as _ue
     params = {
-        "mode": "subscription",  # R2: pinned; client cannot change it
+        "mode": "payment",  # one-time; client cannot change it
         "success_url": base_url + "/pro?ref=" + checkout_ref,
         "cancel_url": base_url + "/upgrade",
         "client_reference_id": checkout_ref,
-        "line_items[0][price]": price_id,
+        # Spec §Security req 5: amount pinned HERE, server-side. The
+        # client body can never set it.
+        "line_items[0][price_data][currency]": "usd",
+        "line_items[0][price_data][unit_amount]": str(MELD_PRICE_CENTS),
+        "line_items[0][price_data][product_data][name]": "meld — one context bridge",
+        # Managed Payments requires a product tax code on price_data;
+        # txcd_10501000 = SaaS, eligible for Managed Payments
+        # (txcd_10500000 was rejected as ineligible; without any
+        # tax code Stripe 500s session creation).
+        "line_items[0][price_data][product_data][tax_code]": "txcd_10501000",
         "line_items[0][quantity]": "1",
+        # Spec §Security req 1: capability binding for the webhook.
+        "metadata[meld_id]": meld_code,
+        "metadata[checkout_ref]": checkout_ref,
     }
-    if email:
-        params["customer_email"] = email
-
     resp_text = await _fetch(
         "https://api.stripe.com/v1/checkout/sessions",
         headers={
@@ -758,17 +673,16 @@ async def create_checkout(request: Request):
     d = _j.loads(resp_text)
     if d.get("error"):
         raise HTTPException(500, d["error"].get("message", "Stripe error"))
-    # R5: return only what the browser needs to redirect.
     return {"url": d["url"]}
 
 
 @app.get("/pro")
 async def pro_page(request: Request):
-    """Success page after Stripe checkout."""
-    return HTMLResponse("""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>meld Pro</title>
+    """Paid-meld success page after Stripe Checkout (one-time, no account)."""
+    return HTMLResponse("""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>meld — paid</title>
 <style>body{background:#0a0a0f;color:#e4e4f0;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
 .box{text-align:center}.emoji{font-size:3rem;margin-bottom:.5rem}h1{font-size:1.5rem}p{color:#8888a0}a{color:#a78bfa}</style></head>
-<body><div class="box"><div class="emoji">🎉</div><h1>You're Pro</h1><p>Unlimited melds, 7-day expiry, priority cleanup.</p><p><a href="/">Create a meld</a></p></div></body></html>""")
+<body><div class="box"><div class="emoji">🎉</div><h1>Meld paid</h1><p>$3.33 received. Your meld is unlocked — nothing recurring.</p><p><a href="/">Create a meld</a></p></div></body></html>""")
 
 
 # ── Agent tier: API keys + /v1 endpoints ────────────────────────────────
@@ -802,27 +716,17 @@ async def _meter_meld(conn, key_hash: str, code: str):
 
 @app.post("/v1/keys")
 async def create_api_key(request: Request):
-    """Create an API key. Requires a valid Pro lease (payment gating)."""
+    """Create an agent API key. Free, rate-limited; no account or payment."""
     conn = db(request)
     ip = _client_ip(request)
-    # MELD-FREELIMIT-002 audit F2: this endpoint was unthrottled — an
-    # unlimited email-probe oracle for pro leases (and free key minting
-    # for anyone who knows a pro email). Same 5/min as checkout, and
-    # probe-403s feed the throttle ladder like any other wall hit.
+    # Throttled (5/min) like every wall-adjacent endpoint; abuse feeds the
+    # ladder like any other wall hit.
     if not await _rate_limit(conn, "keys", ip):
         raise HTTPException(429, "Too many requests", headers={"Retry-After": "60"})
     body = await request.json()
-    email = body.get("email", "")
     label = body.get("label", "default")
-    if not email or not isinstance(email, str):
-        raise HTTPException(400, "email required")
-
-    email_key = _email_key(email)
-    lease = await conn.prepare(
-        "SELECT pro_until FROM pros WHERE email_key = ?").bind(email_key).first()
-    if not lease or lease["pro_until"] <= _now():
-        await _register_wall_hit(conn, ip)  # lease probe = wall hit (ladder input)
-        raise HTTPException(403, "Active Pro subscription required. Upgrade at /upgrade")
+    if not isinstance(label, str):
+        raise HTTPException(400, "label must be a string")
 
     key = "mk_" + secrets.token_hex(24)
     key_hash = hashlib.sha256(key.encode()).hexdigest()
@@ -1066,8 +970,18 @@ async def agent_skills_index():
 
 
 @app.get("/api/health")
-async def health():
-    return {"ok": True, "service": "meld", "api": "/llms.txt"}
+async def health(request: Request):
+    # No-PII paid-meld aggregate for revenue monitoring (meldfin v2):
+    # counts only, no emails, no codes, no session ids.
+    conn = db(request)
+    try:
+        row = await conn.prepare(
+            "SELECT COUNT(*), COALESCE(SUM(amount_cents), 0)"
+            " FROM meld_payments").first()
+        paid = {"paid_melds": int(row[0]), "gross_cents": int(row[1])}
+    except Exception:
+        paid = {"paid_melds": None, "gross_cents": None}
+    return {"ok": True, "service": "meld", "api": "/llms.txt", **paid}
 
 
 @app.get("/{path:path}")
@@ -1112,7 +1026,7 @@ Flow
    Token rotates on every result read. Persist the new token immediately.
 
 Errors: 400 bad body, 403 bad pin, 404 missing, 409 different answer already stored, 410 expired, 429 rate limit.
-Free: 3 melds/hour. Pro: POST /v1/keys (requires subscription).
+Free: 3 melds per IP per window. Pay-per-meld: $3.33 one-time per meld beyond the free tier (POST /api/checkout {"meld_code": "<code>"}). Agent API keys: POST /v1/keys — free, 10,000 melds/key.
 
 Docs
 - Agent API: https://meld.mergeinc.workers.dev/agents.md
@@ -1190,7 +1104,7 @@ curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \
 | GET | /api/melds/{code} | none | Read context_a + status. Poll until resolved: true. |
 | POST | /api/melds/{code}/resolve | pin if set | Answer. Body: {context, pin?}. Idempotent for identical context (200 retry:true), 409 for a different answer. |
 | GET | /api/melds/{code}/result | X-Meld-Token header | Owner read. Token ROTATES every read — persist the new owner_token immediately. |
-| POST | /v1/keys | requires Pro lease | Create agent API key (mk_...). |
+| POST | /v1/keys | none | Create agent API key (mk_...), free, 5/min. |
 | GET | /api/health | none | Liveness probe. |
 
 ## Semantics
@@ -1199,7 +1113,7 @@ curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \
 - Idempotency: resolving twice with the IDENTICAL context returns 200 {retry: true}. A different answer returns 409 — do not retry with another answer; read /result instead if you hold the owner token.
 - E2E encryption (optional): encrypt client-side with AES-256-GCM before POST. Wire format: "meld1:" + base64(nonce || ciphertext). Key goes in the URL fragment #k= and never reaches the server.
 - Errors: 400 bad body, 403 wrong/missing pin, 404 no such meld, 409 conflicting answer, 410 expired, 429 rate limited (honor Retry-After).
-- Free tier: 3 creates/hour per IP. Programmatic volume: see /upgrade.md.
+- Free tier: 3 creates/window per IP. Beyond it: $3.33 one-time per meld (POST /api/checkout {"meld_code": "<code>"}).
 
 ## MCP
 
@@ -1216,8 +1130,8 @@ See the full trust model at /trust (human page). Summary for agents:
 - Owner token: capability to read the result. Rotates on every read; old token dies.
 - PIN (optional): second factor for the answering party.
 - E2E mode: server stores AES-256-GCM ciphertext only; key lives in the URL fragment, never sent to the server.
-- Retention: expired melds are deleted (lazy sweep on access + amortized sweep on create). Free tier max 1 hour; post-resolve ~10 minutes.
-- Emails: only stored as SHA-256 hashes. No logs of content.
+- Retention: expired melds are deleted (lazy sweep on access + amortized sweep on create). Max 1 hour unresolved; post-resolve ~10 minutes.
+- No emails stored. No accounts. Payment identity lives with Stripe only.
 - We cannot read E2E melds. We can read plaintext melds while they exist (your choice per meld).
 
 Commitments we will not add: accounts, content scanning, read receipts, long-term persistence.
@@ -1226,15 +1140,16 @@ Commitments we will not add: accounts, content scanning, read receipts, long-ter
 
 UPGRADE_MD = """# meld — pricing
 
-Free: 3 melds/hour per IP. 1-hour TTL. No account.
+Free: 3 melds per IP per window. 1-hour TTL. No account.
 
-Pro — $5/month (or $49/year):
-- Unlimited melds
-- 7-day TTL for unresolved melds
-- Agent API keys: POST /v1/keys -> mk_... key, 10,000 melds/key, 7-day TTL, usage metered at /v1/usage
+Pay-per-meld — $3.33 one-time per meld (no subscription, nothing recurring):
+- Unlocks one specific meld beyond the free tier
+- POST /api/checkout {"meld_code": "<code>"} in a browser (Stripe Checkout)
 
-Subscribe: open https://meld.mergeinc.workers.dev/upgrade in a browser
-(Stripe Checkout). After payment, POST /v1/keys with your email to mint keys.
+Agent API keys — POST /v1/keys -> mk_... key, 10,000 melds/key, 7-day TTL,
+usage metered at /v1/usage. Free, rate-limited (5/min), no account.
+
+There are no subscriptions. Every payment is one-time, per meld.
 
 Rate limits (all tiers): 20 creates/min, 10 resolves/min, 60 views/min per IP.
 """
@@ -1275,7 +1190,7 @@ TRUST_HTML = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>meld —
 <li><strong>The link is the protocol.</strong> No accounts, no user database. Whoever holds the capabilities holds the access.</li>
 <li><strong>Owner token = revocable deed.</strong> The token that reads the result rotates on every read. The old token dies the moment you use the new one. Lost tokens cannot be recovered — by you or by us.</li>
 <li><strong>Optional end-to-end encryption.</strong> Check the E2E box and your context is encrypted in your browser (AES-256-GCM). The server stores ciphertext it cannot open. The key lives in the link fragment (<code>#k=</code>) and never reaches us. Losing that link loses the content — for everyone, including us.</li>
-<li><strong>Ephemeral by enforcement, not policy.</strong> Unresolved melds live at most 1 hour (7 days for Pro). After resolution, ~10 minutes. Then the row is deleted — by the access path itself, not by a promise.</li>
+<li><strong>Ephemeral by enforcement, not policy.</strong> Unresolved melds live at most 1 hour. After resolution, ~10 minutes. Then the row is deleted — by the access path itself, not by a promise.</li>
 <li><strong>Minimal residue.</strong> Emails are stored only as SHA-256 hashes. No content logs. Payment identity lives with Stripe, not in the meld system.</li>
 <li><strong>You choose per meld.</strong> Plaintext melds are readable by the server while they exist (max 1 hour). E2E melds never are. The checkbox is yours.</li>
 </ul>

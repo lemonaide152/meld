@@ -44,12 +44,8 @@ CREATE TABLE IF NOT EXISTS ip_throttle (
   updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS pros (
-  email_key TEXT PRIMARY KEY,
-  customer_id TEXT,
-  pro_until TEXT NOT NULL,
-  since TEXT NOT NULL
-);
+-- No-pro directive (R2): the `pros` table is DROPPED — no reader remains.
+-- Migration: DROP TABLE IF EXISTS pros; (run against prod + test D1).
 
 CREATE TABLE IF NOT EXISTS ledger (
   at TEXT NOT NULL,
@@ -67,6 +63,8 @@ CREATE TABLE IF NOT EXISTS rate (
 CREATE INDEX IF NOT EXISTS idx_rate_bucket ON rate(bucket);
 
 -- W2 (MELD-PAY-002): webhook idempotency, keyed on the Stripe event id.
+-- No-pro (R5): subscription_id is no longer written (kept in schema so old
+-- rows still read back).
 CREATE TABLE IF NOT EXISTS webhook_events (
   stripe_event_id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
