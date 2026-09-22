@@ -149,7 +149,8 @@ def throttle_row(d1, ip):
 
 
 def email_key(email):
-    return "sha256:" + hashlib.sha256(email.encode()).hexdigest()
+    # match worker._email_key normalization (strip + lower) — audit F3
+    return "sha256:" + hashlib.sha256(email.strip().lower().encode()).hexdigest()
 
 
 FUTURE = (datetime.datetime.now(datetime.timezone.utc)
@@ -254,30 +255,47 @@ def test_second_hit_first_rung():
        f"headers={dict(rej.headers) if rej else None}")
 
 
-# ── T7: ladder walks 1m→10m→1h→24h→permanent, one rung per window ──────
+# ── T7: ladder walks 1m→10m→1h→24h, capped at rolling 24h (audit F1) ────
 def test_ladder_walks():
-    print("T7 ladder walk across windows")
+    print("T7 ladder walk across windows (no worker-issued permanence)")
     d1 = fresh_db()
     ip = "10.1.0.7"
     for _ in range(5):
         run(do_create(d1, ip))          # window 1: offense 1
     expected = [60, 600, 3600, 86400]
-    for w in range(2, 6):
+    for w in range(2, 9):
         # simulate the hourly window rolling over
-        d1.q("UPDATE ip_throttle SET hit_window='0', offense_window='0', banned_until=NULL WHERE ip=?", ip)
+        d1.q("UPDATE ip_throttle SET hit_window='0', offense_window='0' WHERE ip=?", ip)
         run(do_create(d1, ip))          # hit 1 in new window — no offense
         run(do_create(d1, ip))          # hit 2 — offense w
         row = throttle_row(d1, ip)
-        if w < 5:
+        if w <= 4:
             bu = datetime.datetime.fromisoformat(row["banned_until"])
             remain = (bu - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
-            ok(f"T7.{w} rung {w} ≈ {expected[w-1]}s",
-                abs(remain - expected[w - 1]) < 5, f"remaining={remain}")
-    row = throttle_row(d1, ip)
-    ok("T7.5 5th offense is permanent", row["permanent"] == 1 and row["offense_count"] == 5,
-       f"permanent={row['permanent']} count={row['offense_count']}")
+            ok(f"T7.{w} rung {w} ≈ {expected[w - 1]}s",
+               abs(remain - expected[w - 1]) < 5, f"remaining={remain}")
+    # audit F1: windows 5..8 — ladder is exhausted, IP rolls 24h bans,
+    # permanent NEVER set by the worker (legit NAT office must survive)
+    for w in range(5, 9):
+        ok(f"T7.{w} offense {w}: permanent stays 0 (worker-capped)",
+           throttle_row(d1, ip)["permanent"] == 0,
+           f"permanent={throttle_row(d1, ip)['permanent']}")
     rej = run(worker._throttle_reject(d1, ip, "/api/melds"))
-    ok("T7.6 permanent => 403", rej is not None and rej.status_code == 403, f"rej={rej}")
+    ok("T7.8 walk-to-cap => 429 with Retry-After (recoverable, not 403)",
+       rej is not None and rej.status_code == 429 and "Retry-After" in rej.headers,
+       f"rej={rej}")
+
+
+# ── T7b: operator-issued permanent bans still 403 (manual action only) ──
+def test_operator_permanent():
+    print("T7b operator-issued permanent ban still enforced")
+    d1 = fresh_db()
+    ip = "10.1.0.70"
+    d1.q("INSERT INTO ip_throttle (ip, offense_count, permanent, updated_at)"
+         " VALUES (?, 5, 1, ?)", ip, worker._now())
+    rej = run(worker._throttle_reject(d1, ip, "/api/melds"))
+    ok("T7b manual permanent => 403", rej is not None and rej.status_code == 403,
+       f"rej={rej}")
 
 
 # ── T8: webhook path exempt from throttle ───────────────────────────────
@@ -347,10 +365,71 @@ def test_prune():
        d1.q("SELECT n FROM free_counts WHERE ip='10.1.0.11'")[0]["n"] == 1)
 
 
+# ── T12: free-wall 429 carries Retry-After (melde2e finding) ────────────
+def test_retry_after_wall():
+    print("T12 wall 429 includes real Retry-After seconds")
+    d1 = fresh_db()
+    ip = "10.1.0.12"
+    for _ in range(3):
+        run(do_create(d1, ip))
+    r4 = run(do_create(d1, ip))
+    ra = int(r4[2].get("Retry-After", "0")) if r4[0] == "err" else 0
+    ok("T12 Retry-After is 1..3600 (time to next hour window)",
+       r4[0] == "err" and r4[1] == 429 and 1 <= ra <= 3600, f"r4={r4}")
+
+
+# ── T13: /v1/keys rate-limited + probe-403s feed the ladder (audit F2) ──
+def test_keys_limiter():
+    print("T13 /v1/keys: 5/min limiter + lease-probe 403s hit the ladder")
+    d1 = fresh_db()
+    ip = "10.1.0.13"
+
+    def probe():
+        req = FakeRequest(d1, {"email": "nobody@example.com"},
+                          {"x-forwarded-for": ip, "authorization": ""},
+                          path="/v1/keys")
+        try:
+            run(worker.create_api_key(req))
+            return None
+        except worker.HTTPException as e:
+            return e
+
+    statuses = []
+    for _ in range(8):
+        try:
+            e = probe()
+            statuses.append(e.status_code if e else 200)
+        except worker.HTTPException as e:
+            statuses.append(e.status_code)
+    ok("T13.a probe burst throttled at 5/min (403s then 429)",
+       statuses.count(403) == 5 and 429 in statuses, str(statuses))
+    rej = run(worker._throttle_reject(d1, ip, "/v1/keys"))
+    ok("T13.b probe-403s registered a throttle offense (banned)",
+       rej is not None and rej.status_code == 429, f"rej={rej}")
+
+
+# ── T14: email-hash normalization — pro recognized regardless of case ──
+def test_email_hash_normalized():
+    print("T14 audit F3: pro lease honored for mixed-case email at create")
+    d1 = fresh_db()
+    ip = "10.1.0.14"
+    # webhook path keys the lease with _email_key (strip+lower)
+    email = "Me@Corp.com"
+    d1.q("INSERT INTO pros (email_key, customer_id, pro_until, since) VALUES (?,?,?,?)",
+         email_key(email), "cus_f3", FUTURE, worker._now())
+    results = [run(do_create(d1, ip, email=email)) for _ in range(5)]
+    ok("T14 five creates admitted for mixed-case pro email",
+       all(r[0] == "ok" for r in results), str([r[:2] for r in results]))
+    ok("T14 free_counts untouched (no silent demotion)",
+       not d1.q("SELECT 1 FROM free_counts WHERE ip = ?", ip))
+
+
 for t in [test_count_created_accumulates, test_live_rows_still_blocked,
           test_window_rolls, test_pro_bypass, test_first_hit_no_offense,
-          test_second_hit_first_rung, test_ladder_walks, test_webhook_exempt,
-          test_nat_shared_ip, test_limiter_violation_registers, test_prune]:
+          test_second_hit_first_rung, test_ladder_walks, test_operator_permanent,
+          test_webhook_exempt,
+          test_nat_shared_ip, test_limiter_violation_registers, test_prune,
+          test_retry_after_wall, test_keys_limiter, test_email_hash_normalized]:
     t()
 
 print(f"\n{passed}/{total} passed")

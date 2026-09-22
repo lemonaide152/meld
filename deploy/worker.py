@@ -113,7 +113,7 @@ async def _rate_limit(db_conn, kind: str, ip: str) -> bool:
     Atomic: the limit check happens inside a conditional UPSERT, so concurrent
     requests cannot read stale counts and burst past the cap (TOCTOU fix).
     The stale-window prune stays best-effort outside the atomic path."""
-    limit = {"create": 20, "resolve": 10, "view": 60, "checkout": 5}.get(kind, 60)
+    limit = {"create": 20, "resolve": 10, "view": 60, "checkout": 5, "keys": 5}.get(kind, 60)
     key = _rl_key(kind, ip)
     bucket = _rl_bucket()
     # Atomic admit: increments only when the bucket is fresh or count < limit.
@@ -171,8 +171,15 @@ async def _check_meld_limit(db_conn, ip: str, email: str | None = None) -> bool:
 # (NAT guard: a shared-IP pool collecting 429s walks one rung per window, no
 # faster). permanent requires the 5th DISTINCT-window offense (meldmktg flag
 # honored: fast consecutive 429s never lock out a NAT pool).
-THROTTLE_LADDER = [60, 600, 3600, 86400]  # seconds; 5th offense => permanent
+# Audit F1 (meldsec): a legit 10-person NAT office shares 3 melds/hour and
+# collects 2+ wall hits EVERY window — a 5-window walk would permaban a
+# whole office in 5 hours. Cap: the in-worker ladder CANNOT reach permanent.
+# At offense 5+ the IP gets a rolling 24h ban (re-armed per window while the
+# abuse persists). Permanent stays an operator action (manual ip_throttle
+# UPDATE / CF WAF rule) or a future CF-level signal — never worker-automatic.
+THROTTLE_LADDER = [60, 600, 3600, 86400]  # seconds
 THROTTLE_WINDOW = FREE_EXPIRY_HOURS * 3600
+PERMANENT_CAP_SECONDS = 86400  # audit F1: worker max = 24h, never permanent
 
 
 async def _register_wall_hit(db_conn, ip: str) -> None:
@@ -182,7 +189,8 @@ async def _register_wall_hit(db_conn, ip: str) -> None:
       rejects happened in it (reset on window roll).
     - offense_window: hour-window in which the last offense was recorded.
     - offense_count: ladder position; a window with 2+ hits earns ONE offense.
-    - banned_until: rung duration for offense N (N<5); permanent=1 at N=5."""
+    - banned_until: rung duration for offense N; capped at 24h rolling for
+      N >= 5 (worker cannot issue permanent bans — audit F1)."""
     try:
         window_key = str(int(time.time() // THROTTLE_WINDOW))
         row = await db_conn.prepare(
@@ -197,14 +205,18 @@ async def _register_wall_hit(db_conn, ip: str) -> None:
         ).bind(ip, window_key, _now(), window_key, window_key, _now()).first()
         if not row or int(row["wall_hits"]) < 2:
             return  # first reject in this window: NAT-guard, no offense
-        if row["offense_window"] == window_key or int(row["offense_count"]) >= 5:
-            return  # this window already offended / already permanent
+        if row["offense_window"] == window_key:
+            return  # this window already offended
         offense = int(row["offense_count"]) + 1
-        if offense >= 5:
+        if offense >= len(THROTTLE_LADDER) + 1:
+            # Ladder exhausted (F1): rolling 24h ban, re-armed each offending
+            # window. permanent=0 — only an operator mints permanent bans.
+            until = (datetime.datetime.now(datetime.timezone.utc)
+                     + datetime.timedelta(seconds=PERMANENT_CAP_SECONDS)).isoformat()
             await db_conn.prepare(
-                "UPDATE ip_throttle SET offense_count = 5, permanent = 1,"
-                " offense_window = ?, updated_at = ? WHERE ip = ?"
-            ).bind(window_key, _now(), ip).run()
+                "UPDATE ip_throttle SET offense_count = ?, banned_until = ?,"
+                " permanent = 0, offense_window = ?, updated_at = ? WHERE ip = ?"
+            ).bind(offense, until, window_key, _now(), ip).run()
             return
         until = (datetime.datetime.now(datetime.timezone.utc)
                  + datetime.timedelta(seconds=THROTTLE_LADDER[offense - 1])).isoformat()
@@ -320,14 +332,20 @@ async def create_meld(request: Request):
         await _throttle_prune(conn)
     except Exception:
         pass  # never block create on sweep failure
-    email_key = ("sha256:" + hashlib.sha256(email.encode()).hexdigest()
+    email_key = (_email_key(email)
                  if isinstance(email, str) and 3 <= len(email) <= 254 and "@" in email else None)
     if not await _check_meld_limit(conn, ip, email_key):
         await _funnel(conn, "free_limit_hit")
         # MELD-FREELIMIT-002: wall hits feed the throttle ladder, one offense
         # per exhausted window (NAT guard: 2 hits in-window for rung 1).
         await _register_wall_hit(conn, ip)
-        raise HTTPException(429, "Free limit reached (3/hour). Retry-After applies. Upgrade for unlimited: https://meld.mergeinc.workers.dev/upgrade")
+        retry_after = str(max(1, int(
+            (datetime.datetime.fromtimestamp(
+                (int(time.time() // (FREE_EXPIRY_HOURS * 3600)) + 1)
+                * FREE_EXPIRY_HOURS * 3600, datetime.timezone.utc)
+             - datetime.datetime.now(datetime.timezone.utc)).total_seconds())))
+        raise HTTPException(429, "Free limit reached (3/hour). Retry-After applies. Upgrade for unlimited: https://meld.mergeinc.workers.dev/upgrade",
+                            headers={"Retry-After": retry_after})
 
     code = _code()
     token = _token()
@@ -798,6 +816,13 @@ async def _meter_meld(conn, key_hash: str, code: str):
 async def create_api_key(request: Request):
     """Create an API key. Requires a valid Pro lease (payment gating)."""
     conn = db(request)
+    ip = _client_ip(request)
+    # MELD-FREELIMIT-002 audit F2: this endpoint was unthrottled — an
+    # unlimited email-probe oracle for pro leases (and free key minting
+    # for anyone who knows a pro email). Same 5/min as checkout, and
+    # probe-403s feed the throttle ladder like any other wall hit.
+    if not await _rate_limit(conn, "keys", ip):
+        raise HTTPException(429, "Too many requests", headers={"Retry-After": "60"})
     body = await request.json()
     email = body.get("email", "")
     label = body.get("label", "default")
@@ -808,6 +833,7 @@ async def create_api_key(request: Request):
     lease = await conn.prepare(
         "SELECT pro_until FROM pros WHERE email_key = ?").bind(email_key).first()
     if not lease or lease["pro_until"] <= _now():
+        await _register_wall_hit(conn, ip)  # lease probe = wall hit (ladder input)
         raise HTTPException(403, "Active Pro subscription required. Upgrade at /upgrade")
 
     key = "mk_" + secrets.token_hex(24)
