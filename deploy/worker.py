@@ -661,8 +661,9 @@ async def create_checkout(request: Request):
             raise HTTPException(404, "Meld not found")
         checkout_ref = secrets.token_hex(16)
         await conn.prepare(
-            "INSERT INTO checkout_clicks (checkout_ref, plan, clicked_at)"
-            " VALUES (?, ?, ?)").bind(checkout_ref, "per_meld", _now()).run()
+            "INSERT INTO checkout_clicks (checkout_ref, plan, clicked_at, clicker_ip)"
+            " VALUES (?, ?, ?, ?)").bind(
+                checkout_ref, "per_meld", _now(), _client_ip(request)).run()
         await _funnel(conn, "checkout_clicked")
         base_url = "https://meld.mergeinc.workers.dev"
         from urllib.parse import urlencode as _ue
@@ -724,8 +725,9 @@ async def create_checkout(request: Request):
     # without persisting any user data.
     checkout_ref = secrets.token_hex(16)
     await conn.prepare(
-        "INSERT INTO checkout_clicks (checkout_ref, plan, clicked_at)"
-        " VALUES (?, ?, ?)").bind(checkout_ref, plan, _now()).run()
+        "INSERT INTO checkout_clicks (checkout_ref, plan, clicked_at, clicker_ip)"
+        " VALUES (?, ?, ?, ?)").bind(
+            checkout_ref, plan, _now(), _client_ip(request)).run()
 
     # R4: success/cancel origins are allow-listed constants. The Host header
     # is attacker-controlled on Workers and must never build a redirect.

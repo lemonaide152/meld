@@ -83,6 +83,12 @@ CREATE TABLE IF NOT EXISTS checkout_clicks (
   clicked_at TEXT NOT NULL
 );
 
+-- MELD-FUNNEL (meldmktg ask, meldsec-endorsed): per-click IP for
+-- click→session→grant attribution. Nullable — pre-migration rows keep
+-- NULL (no backfill possible; the data never existed). Recorded via
+-- _client_ip(): CF-Connecting-IP on Workers, XFF last-hop fallback.
+ALTER TABLE checkout_clicks ADD COLUMN clicker_ip TEXT;
+
 -- Pay-per-meld (MELD-PPM-001): one row per paid checkout session.
 -- Idempotency on stripe_session_id (spec §Security req 3): a redelivered
 -- webhook re-INSERTs to changes==0 → dedup, never a double-unlock.
