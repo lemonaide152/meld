@@ -127,6 +127,10 @@ async def _rate_limit(db_conn, kind: str, ip: str) -> bool:
         "RETURNING count, bucket"
     ).bind(key, bucket, bucket, limit, bucket, bucket, limit).first()
     if row is None:
+        # Window exhausted: record the reject on the throttle ladder. One
+        # ladder offense per hour-window regardless of how many per-minute
+        # rejects follow (NAT guard, spec MELD-FREELIMIT-002 §3).
+        await _register_wall_hit(db_conn, ip)
         return False  # conditional write matched nothing => window exhausted
     if row["bucket"] < bucket:
         await db_conn.prepare("DELETE FROM rate WHERE bucket < ?").bind(bucket - 2).run()
@@ -134,7 +138,10 @@ async def _rate_limit(db_conn, kind: str, ip: str) -> bool:
 
 
 async def _check_meld_limit(db_conn, ip: str, email: str | None = None) -> bool:
-    """Free users: FREE_LIMIT melds per hour. Pro (valid lease): unlimited.
+    """Free users: FREE_LIMIT melds CREATED per hour (spec MELD-FREELIMIT-002:
+    count creations, never live rows — melds are deleted on resolve/sweep, so
+    a live-row COUNT is '3 concurrent', not '3 created/hour', and power users
+    never hit the paywall). Pro (valid lease): unlimited.
     Lease lookup matches ONLY hashed email keys — never raw IPs — so a pro
     lease can never be claimed by controlling your source IP."""
     lease = None
@@ -144,11 +151,101 @@ async def _check_meld_limit(db_conn, ip: str, email: str | None = None) -> bool:
         if lease and lease["pro_until"] <= _now():
             await db_conn.prepare("DELETE FROM pros WHERE email_key = ?").bind(lease["email_key"]).run()
             lease = None  # expired: fall through to free-limit count
-    cutoff = (datetime.datetime.now(datetime.timezone.utc)
-              - datetime.timedelta(hours=FREE_EXPIRY_HOURS)).isoformat()
+    if lease:
+        return True
+    window_key = str(int(time.time() // (FREE_EXPIRY_HOURS * 3600)))
     row = await db_conn.prepare(
-        "SELECT COUNT(*) as c FROM melds WHERE creator_ip = ? AND created_at >= ?").bind(ip, cutoff).first()
-    return row["c"] < FREE_LIMIT
+        "INSERT INTO free_counts (ip, window_key, n) VALUES (?, ?, 1) "
+        "ON CONFLICT(ip) DO UPDATE SET "
+        "  n = CASE WHEN window_key < ? THEN 1 ELSE n + 1 END, "
+        "  window_key = ? "
+        "WHERE window_key < ? OR n < ? "
+        "RETURNING n, window_key"
+    ).bind(ip, window_key, window_key, window_key, window_key, FREE_LIMIT).first()
+    return row is not None and row["window_key"] == window_key and row["n"] <= FREE_LIMIT
+
+
+# ── MELD-FREELIMIT-002: escalating IP throttle (operator ladder) ────────
+# Ladder per operator ruling: 1m → 10m → 1h → 24h → permanent (403).
+# An "offense" = one wall-hit window with 2+ rejected creates, counted ONCE
+# (NAT guard: a shared-IP pool collecting 429s walks one rung per window, no
+# faster). permanent requires the 5th DISTINCT-window offense (meldmktg flag
+# honored: fast consecutive 429s never lock out a NAT pool).
+THROTTLE_LADDER = [60, 600, 3600, 86400]  # seconds; 5th offense => permanent
+THROTTLE_WINDOW = FREE_EXPIRY_HOURS * 3600
+
+
+async def _register_wall_hit(db_conn, ip: str) -> None:
+    """A limit 429 (free wall OR per-minute limiter) was just emitted.
+    Bookkeeping, atomic, best-effort — must never break the 429 in flight:
+    - hit_window / wall_hits: hour-window of the last wall hit + how many
+      rejects happened in it (reset on window roll).
+    - offense_window: hour-window in which the last offense was recorded.
+    - offense_count: ladder position; a window with 2+ hits earns ONE offense.
+    - banned_until: rung duration for offense N (N<5); permanent=1 at N=5."""
+    try:
+        window_key = str(int(time.time() // THROTTLE_WINDOW))
+        row = await db_conn.prepare(
+            "INSERT INTO ip_throttle (ip, offense_count, wall_hits, hit_window,"
+            " offense_window, banned_until, permanent, updated_at)"
+            " VALUES (?, 0, 1, ?, NULL, NULL, 0, ?)"
+            " ON CONFLICT(ip) DO UPDATE SET"
+            "  wall_hits = CASE WHEN hit_window < ? THEN 1 ELSE wall_hits + 1 END,"
+            "  hit_window = ?,"
+            "  updated_at = ?"
+            " RETURNING wall_hits, offense_count, offense_window"
+        ).bind(ip, window_key, _now(), window_key, window_key, _now()).first()
+        if not row or int(row["wall_hits"]) < 2:
+            return  # first reject in this window: NAT-guard, no offense
+        if row["offense_window"] == window_key or int(row["offense_count"]) >= 5:
+            return  # this window already offended / already permanent
+        offense = int(row["offense_count"]) + 1
+        if offense >= 5:
+            await db_conn.prepare(
+                "UPDATE ip_throttle SET offense_count = 5, permanent = 1,"
+                " offense_window = ?, updated_at = ? WHERE ip = ?"
+            ).bind(window_key, _now(), ip).run()
+            return
+        until = (datetime.datetime.now(datetime.timezone.utc)
+                 + datetime.timedelta(seconds=THROTTLE_LADDER[offense - 1])).isoformat()
+        await db_conn.prepare(
+            "UPDATE ip_throttle SET offense_count = ?, banned_until = ?,"
+            " offense_window = ?, updated_at = ? WHERE ip = ?"
+        ).bind(offense, until, window_key, _now(), ip).run()
+    except Exception:
+        pass
+
+
+async def _throttle_reject(db_conn, ip: str, path: str):
+    """Middleware gate. Returns an HTTPException to raise, or None to pass.
+    Webhook path is exempt (Stripe egress IPs vary)."""
+    if path.startswith("/api/stripe/webhook"):
+        return None
+    try:
+        row = await db_conn.prepare(
+            "SELECT banned_until, permanent FROM ip_throttle WHERE ip = ?").bind(ip).first()
+    except Exception:
+        return None
+    if not row:
+        return None
+    if row["permanent"]:
+        return HTTPException(403, "Access denied")
+    if row["banned_until"] and row["banned_until"] > _now():
+        delta = datetime.datetime.fromisoformat(row["banned_until"]) - datetime.datetime.now(datetime.timezone.utc)
+        return HTTPException(429, "Too many requests. Please slow down.",
+                             headers={"Retry-After": str(max(1, int(delta.total_seconds())))})
+    return None
+
+
+async def _throttle_prune(db_conn) -> None:
+    """Amortized on create traffic: non-permanent throttle rows and free-count
+    windows older than 7 days are dead weight — prune. Permanent rows persist
+    (bounded by real repeat offenders)."""
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(days=7)).isoformat()
+    await db_conn.prepare("DELETE FROM ip_throttle WHERE permanent = 0 AND updated_at < ?").bind(cutoff).run()
+    await db_conn.prepare("DELETE FROM free_counts WHERE window_key < ?").bind(
+        str(int(time.time() // THROTTLE_WINDOW) - int(7 * 86400 // THROTTLE_WINDOW))).run()
 
 
 # ── middleware: staging IP allowlist + security headers + JSON body cap ──
@@ -168,6 +265,13 @@ async def security(request: Request, call_next):
             presented = request.headers.get("x-meld-beta-key", "")
             if not presented or presented not in beta_keys:
                 return JSONResponse({"detail": "Not Found"}, status_code=404)
+    # MELD-FREELIMIT-002: escalating IP throttle gate (403 permanent /
+    # 429 banned with Retry-After). Webhook path exempt inside.
+    if request.url.path.startswith("/api") or request.url.path.startswith("/v1"):
+        rej = await _throttle_reject(db(request), _client_ip(request), request.url.path)
+        if rej is not None:
+            return JSONResponse({"detail": rej.detail}, status_code=rej.status_code,
+                                headers=dict(rej.headers or {}))
     resp = await call_next(request)
     # CORS: browser agents + remote MCP clients need to call the API directly
     if request.url.path.startswith("/api") or request.url.path.startswith("/v1"):
@@ -209,15 +313,20 @@ async def create_meld(request: Request):
         raise HTTPException(429, "Too many requests. Please slow down.",
                             headers={"Retry-After": "60"})
     email = body.get("email")
-    # Amortized sweeper: piggyback cleanup of expired melds on create traffic
+    # Amortized sweeper: piggyback cleanup of expired melds + throttle/counter
+    # prune on create traffic
     try:
         await conn.prepare("DELETE FROM melds WHERE expires_at <= ?").bind(_now()).run()
+        await _throttle_prune(conn)
     except Exception:
         pass  # never block create on sweep failure
     email_key = ("sha256:" + hashlib.sha256(email.encode()).hexdigest()
                  if isinstance(email, str) and 3 <= len(email) <= 254 and "@" in email else None)
     if not await _check_meld_limit(conn, ip, email_key):
         await _funnel(conn, "free_limit_hit")
+        # MELD-FREELIMIT-002: wall hits feed the throttle ladder, one offense
+        # per exhausted window (NAT guard: 2 hits in-window for rung 1).
+        await _register_wall_hit(conn, ip)
         raise HTTPException(429, "Free limit reached (3/hour). Retry-After applies. Upgrade for unlimited: https://meld.mergeinc.workers.dev/upgrade")
 
     code = _code()
@@ -563,6 +672,11 @@ async def create_checkout(request: Request):
             "line_items[0][price_data][currency]": "usd",
             "line_items[0][price_data][unit_amount]": str(MELD_PRICE_CENTS),
             "line_items[0][price_data][product_data][name]": "meld — one context bridge",
+            # Managed Payments requires a product tax code on price_data;
+            # txcd_10501000 = SaaS, eligible for Managed Payments
+            # (txcd_10500000 was rejected as ineligible; without any
+            # tax code Stripe 500s session creation).
+            "line_items[0][price_data][product_data][tax_code]": "txcd_10501000",
             "line_items[0][quantity]": "1",
             # Spec §Security req 1: capability binding for the webhook.
             "metadata[meld_id]": meld_code,

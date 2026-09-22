@@ -17,6 +17,32 @@ CREATE TABLE IF NOT EXISTS melds (
 );
 CREATE INDEX IF NOT EXISTS idx_melds_ip_created ON melds(creator_ip, created_at);
 CREATE INDEX IF NOT EXISTS idx_melds_expiry ON melds(expires_at);
+-- KPI: B→A conversion is measured by resolver_ip creating within 7d.
+-- Missing column broke live resolves (SQLITE no-such-column) until ALTERed.
+ALTER TABLE melds ADD COLUMN resolver_ip TEXT;
+
+-- MELD-FREELIMIT-002: per-IP created-this-window counter (count creations,
+-- not live meld rows — melds are deleted on resolve/sweep, so a live-row
+-- COUNT is "3 concurrent", never "3 created/hour", and the paywall never fires).
+CREATE TABLE IF NOT EXISTS free_counts (
+  ip TEXT PRIMARY KEY,
+  window_key TEXT NOT NULL,
+  n INTEGER NOT NULL DEFAULT 0
+);
+
+-- MELD-FREELIMIT-002: escalating IP throttle (operator ladder
+-- 1m → 10m → 1h → 24h → permanent). One offense per window with 2+ wall hits
+-- (NAT guard); hit_window = hour-window of the last wall hit.
+CREATE TABLE IF NOT EXISTS ip_throttle (
+  ip TEXT PRIMARY KEY,
+  offense_count INTEGER NOT NULL DEFAULT 0,
+  wall_hits INTEGER NOT NULL DEFAULT 0,
+  hit_window TEXT,
+  offense_window TEXT,
+  banned_until TEXT,
+  permanent INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS pros (
   email_key TEXT PRIMARY KEY,
