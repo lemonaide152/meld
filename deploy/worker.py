@@ -633,20 +633,6 @@ def _verify_stripe_sig(payload: bytes, sig_header: str, secret: str):
         return None
 
 
-async def _stripe_call(method: str, path: str, params: dict = None):
-    """Direct Stripe REST API call via JS fetch."""
-    from urllib.parse import urlencode
-    url = f"https://api.stripe.com/v1/{path}"
-    headers = {
-        "Authorization": f"Bearer {STRIPE_KEY}",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-    body = urlencode(params) if params else None
-    resp_text = await _fetch(url, headers=headers, body=body, method=method)
-    import json as _json
-    return _json.loads(resp_text)
-
-
 @app.post("/api/checkout")
 async def create_checkout(request: Request):
     """Create a Stripe Checkout Session. Returns {url} for redirect."""
