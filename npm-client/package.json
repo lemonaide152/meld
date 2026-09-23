@@ -27,7 +27,7 @@
     "type": "git",
     "url": "https://github.com/lemonaide152/meld"
   },
-  "homepage": "https://meld.lemonaide152.workers.dev",
+  "homepage": "https://meld.mergeinc.workers.dev",
   "engines": {
     "node": ">=18.0.0"
   }
