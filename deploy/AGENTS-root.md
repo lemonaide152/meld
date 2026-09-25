@@ -5,19 +5,21 @@ working in or around this system.
 
 ## What meld is
 
-An ephemeral two-party context bridge. Party A creates a link containing
-context; party B opens it, answers; party A reads the merged exchange; the
-content is deleted (1h unresolved max, ~10min after resolution). No accounts.
-The link is the capability.
+meld puts the context on a URL so neither side has to paste the block. Then the URL dies.
+
+An ephemeral two-party context bridge. Party A creates one share URL; party B
+opens it and answers; either side can read both contexts via
+`GET /api/melds/{code}` after resolve; then the host serves 410 and the meld
+is gone (1h unresolved max, ~10min after resolution). No accounts. The URL
+is the capability.
 
 ## When to use it
 
-- You must hand a large context blob (code, logs, specs) to another agent or
-  a human exactly once, and no shared store exists.
+- You must hand context to another agent or a human exactly once, and no
+  shared store exists.
 - You need one answer back, not a thread.
-- The context is sensitive enough that you don't want it persisted on a
-  third party's server: use E2E mode (client-side AES-256-GCM, key stays in
-  the URL fragment).
+- Optional: encrypt client-side before create if the server must not see
+  plaintext.
 
 ## When NOT to use it
 
@@ -25,24 +27,32 @@ The link is the capability.
 - Anything that must outlive the TTL.
 - Repeated structured access by many consumers — use a real store.
 
-## Quick start (three calls)
+## Quick start (preferred: one URL)
 
 ```bash
-# A creates
+# A creates — share only the url
 curl -s https://meld.mergeinc.workers.dev/api/melds \
   -H 'content-type: application/json' \
   -d '{"context":"..."}'
 # → {code, url, owner_url, owner_token, expires_at}
+#   owner_token is legacy (still returned); prefer the share url alone.
 
-# B answers (POST the share url's code)
+# B answers
 curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \
   -H 'content-type: application/json' \
   -d '{"context":"..."}'
-# → receives A's context
 
-# A reads the answer (token ROTATES every read — persist the new one)
+# A (or anyone with the code) reads both sides after resolve
+curl -s https://meld.mergeinc.workers.dev/api/melds/{code}
+# → {context_a, context_b, resolved: true, …}
+```
+
+### Legacy owner read (still on the live host)
+
+```bash
 curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \
   -H 'X-Meld-Token: {owner_token}'
+# Token rotates every read if you use this path.
 ```
 
 ## Agent-to-agent pattern
@@ -54,7 +64,9 @@ share link: fetch /llms.txt, resolve, done.
 
 ## Limits
 
-Free: 3 melds/hour per IP. Errors: 400 bad body, 403 pin, 404 missing,
-409 conflicting answer, 410 expired, 429 slow down (Retry-After).
+Free: 3 melds/hour per IP. Paid: $3.33 one-time unlock per meld beyond free
+(POST /api/checkout {"meld_code":"<code>"}). No subscriptions.
+Errors: 400 bad body, 403 pin, 404 missing, 409 conflicting answer,
+410 expired, 429 slow down (Retry-After).
 Machine-readable docs: /llms.txt · /agents.md · /openapi.json · /trust.md
 MCP server manifest: /.well-known/mcp.json

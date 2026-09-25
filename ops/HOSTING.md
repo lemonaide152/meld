@@ -8,9 +8,9 @@ can see; this runbook states how to host so that remains true under stress.
 | Threat | Requirement |
 |---|---|
 | VPS provider reads disk | Full-disk encryption (LUKS); RAM dict never swaps to plaintext |
-| Server seized | Nothing decryptable at rest: melds are RAM-only or ciphertext; subscriber emails are hashed |
-| Process crash | Leases + audit ledger survive (append-only, fsync'd); meld content does not — by design |
-| Whole host loss | Rebuild from git + two state files; RPO for paid features = 0, for melds = their TTL (accepted) |
+| Server seized | Nothing decryptable at rest: melds are RAM-only or ciphertext; any payment-adjacent emails are hashed |
+| Process crash | Payment/audit state may survive (append-only); meld content does not — by design. Hard promise: after T the host serves 410 |
+| Whole host loss | Rebuild from git + two state files; RPO for payment state = 0; for melds = their TTL (accepted — 410 after T) |
 | Legal demand for content | Content is RAM-only/ciphertext; the honest answer is "we do not have it" |
 
 ## Deployment checklist

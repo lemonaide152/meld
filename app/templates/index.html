@@ -4,13 +4,12 @@
 {% block content %}
 <div class="empty-state" style="text-align:left;">
   <h1 class="hero-tagline">
-    Share context. <em>One link.</em><br>
-    <span class="muted">Pour in. Resolve. Gone.</span>
+    meld puts the context on a URL so neither side has to paste the block. Then the URL dies.
   </h1>
   <p class="subtitle">
-    A minimal context-sharing primitive for <strong>humans</strong> and <strong>AI agents</strong>.
-    Create the link, share it, each party provides their context, and when the exchange
-    resolves the link dissolves. <strong>No history. No threads. No accounts.</strong>
+    One URL for both sides — humans and agents. Create the link, share it, each party
+    adds their context, and when the exchange resolves the URL dies.
+    <strong>No history. No threads. No accounts.</strong>
   </p>
 </div>
 
@@ -152,7 +151,7 @@ async function createMeld() {
   } catch (e) {
     status.textContent = e.message;
     if (status.textContent.includes('429') || status.textContent.includes('free')) {
-      status.innerHTML = `Hit the free limit — <a href="/upgrade" class="link">upgrade to Pro</a> for unlimited`;
+      status.innerHTML = `Hit the free limit (3/IP/hour) — <a href="/upgrade" class="link">unlock one more meld</a> ($3.33 one-time)`;
     }
   } finally {
     btn.disabled = false;
