@@ -994,62 +994,10 @@ async def root():
     return HTMLResponse(PAGE)
 
 
-AGENTS_ROOT_MD = '# AGENTS.md — working with meld\n\nThis file follows the AGENTS.md convention: instructions for AI agents\nworking in or around this system.\n\n## What meld is\n\nAn ephemeral two-party context bridge. Party A creates a link containing\ncontext; party B opens it, answers; party A reads the merged exchange; the\ncontent is deleted (1h unresolved max, ~10min after resolution). No accounts.\nThe link is the capability.\n\n## When to use it\n\n- You must hand a large context blob (code, logs, specs) to another agent or\n  a human exactly once, and no shared store exists.\n- You need one answer back, not a thread.\n- The context is sensitive enough that you don\'t want it persisted on a\n  third party\'s server: encrypt client-side before creating; the server\n  stores only what you POST.\n\n## When NOT to use it\n\n- Multi-turn conversations or anything needing history.\n- Anything that must outlive the TTL.\n- Repeated structured access by many consumers — use a real store.\n\n## Quick start (three calls)\n\n```bash\n# A creates\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"..."}\'\n# → {code, url, owner_url, owner_token, expires_at}\n\n# B answers (POST the share url\'s code)\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"..."}\'\n# → receives A\'s context\n\n# A reads the answer (token ROTATES every read — persist the new one)\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \\\n  -H \'X-Meld-Token: {owner_token}\'\n```\n\n## Agent-to-agent pattern\n\nIf you are agent A and your counterpart is agent B: send B the share link\nplus this URL (https://meld.mergeinc.workers.dev/llms.txt) so B can\nself-serve without human setup. If you are agent B and arrived here from a\nshare link: fetch /llms.txt, resolve, done.\n\n## Limits\n\nFree: 3 melds/hour per IP. Errors: 400 bad body, 403 pin, 404 missing,\n409 conflicting answer, 410 expired, 429 slow down (Retry-After).\nMachine-readable docs: /llms.txt · /agents.md · /openapi.json · /trust.md\nMCP server manifest: /.well-known/mcp.json\n'
+AGENTS_ROOT_MD = '# AGENTS.md — working with meld\n\nThis file follows the AGENTS.md convention: instructions for AI agents\nworking in or around this system.\n\n## What meld is\n\nmeld puts the context on a URL so neither side has to paste the block. Then the URL dies.\n\nAn ephemeral two-party context bridge. Party A creates one share URL; party B\nopens it and answers; either side can read both contexts via\n`GET /api/melds/{code}` after resolve; then the host serves 410 and the meld\nis gone (1h unresolved max, ~10min after resolution). No accounts. The URL\nis the capability.\n\n## When to use it\n\n- You must hand context to another agent or a human exactly once, and no\n  shared store exists.\n- You need one answer back, not a thread.\n- Optional: encrypt client-side before create if the server must not see\n  plaintext.\n\n## When NOT to use it\n\n- Multi-turn conversations or anything needing history.\n- Anything that must outlive the TTL.\n- Repeated structured access by many consumers — use a real store.\n\n## Quick start (preferred: one URL)\n\n```bash\n# A creates — share only the url\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"..."}\'\n# → {code, url, owner_url, owner_token, expires_at}\n#   owner_token is legacy (still returned); prefer the share url alone.\n\n# B answers\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"..."}\'\n\n# A (or anyone with the code) reads both sides after resolve\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n# → {context_a, context_b, resolved: true, …}\n```\n\n### Legacy owner read (still on the live host)\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \\\n  -H \'X-Meld-Token: {owner_token}\'\n# Token rotates every read if you use this path.\n```\n\n## Agent-to-agent pattern\n\nIf you are agent A and your counterpart is agent B: send B the share link\nplus this URL (https://meld.mergeinc.workers.dev/llms.txt) so B can\nself-serve without human setup. If you are agent B and arrived here from a\nshare link: fetch /llms.txt, resolve, done.\n\n## Limits\n\nFree: 3 melds/hour per IP. Paid: $3.33 one-time unlock per meld beyond free\n(POST /api/checkout {"meld_code":"<code>"}). No subscriptions.\nErrors: 400 bad body, 403 pin, 404 missing, 409 conflicting answer,\n410 expired, 429 slow down (Retry-After).\nMachine-readable docs: /llms.txt · /agents.md · /openapi.json · /trust.md\nMCP server manifest: /.well-known/mcp.json\n'
 
 
-LLMS_TXT = """# meld
-> One link. Party A pours context. Party B answers. The link dissolves. No accounts.
-
-Base URL: https://meld.mergeinc.workers.dev
-Auth: none on create/read/resolve. Owner token required only for GET /result.
-Content limit: context string, max 100000 chars.
-TTL: unresolved 1 hour; after resolve 10 minutes. Then 410 Gone.
-
-When to use
-- Hand a large context blob to another agent or a human without a shared store
-- Get a single answer back, then forget the payload
-- Optional client-side encryption: server treats context as opaque bytes and relays verbatim; the server cannot decrypt anything it stores as `meld1:` prefixed ciphertext.
-
-Do not use
-- Long-lived memory, chat history, or multi-turn threads
-- Anything that must survive past the TTL
-
-Quick start
-
-  curl -s https://meld.mergeinc.workers.dev/api/melds -H 'content-type: application/json' -d '{"context":"..."}'
-
-Flow
-1. POST /api/melds  {"context":"..."}  -> code, url, owner_token, expires_at
-2. GET  /api/melds/{code}              -> context_a
-3. POST /api/melds/{code}/resolve {"context":"..."}
-4. GET  /api/melds/{code}/result  header X-Meld-Token: <owner_token>
-   Token rotates on every result read. Persist the new token immediately.
-
-Errors: 400 bad body, 403 bad pin, 404 missing, 409 different answer already stored, 410 expired, 429 rate limit.
-Free: 3 melds per IP per window. Pay-per-meld: $3.33 one-time per meld beyond the free tier (POST /api/checkout {"meld_code": "<code>"}). Agent API keys: POST /v1/keys — free, 10,000 melds/key.
-
-Docs
-- Agent API: https://meld.mergeinc.workers.dev/agents.md
-- OpenAPI: https://meld.mergeinc.workers.dev/openapi.json
-- Trust model: https://meld.mergeinc.workers.dev/trust.md
-- Pricing: https://meld.mergeinc.workers.dev/upgrade.md
-- Recipes: https://meld.mergeinc.workers.dev/recipes.md
-- A2A Agent Card: https://meld.mergeinc.workers.dev/.well-known/agent.json
-- Skill install: https://meld.mergeinc.workers.dev/.well-known/agent-skills/index.json
-- MCP server card: https://meld.mergeinc.workers.dev/.well-known/mcp/server-card.json
-- MCP transport: stdio (meld-mcp.mjs, zero deps, Node 18+). Config in /agents.md.
-
-Agent-to-agent pattern
-- You (agent A) have a context blob too large for the message channel, and a
-  counterpart (agent B or human) who needs it exactly once.
-- Create: POST /api/melds {"context": "..."} -> share url + owner_token.
-- Send ONLY the share url to B through any channel you already share (chat,
-  task payload, email). B resolves; you read the answer with the owner token.
-- Nothing persists: after both sides read, the content is deleted. No shared
-  store, no account, no cleanup debt.
-- If the counterpart is another agent, send it the /llms.txt URL alongside the
-  share link so it can self-serve without human setup.
-"""
+LLMS_TXT = '# meld\n> meld puts the context on a URL so neither side has to paste the block. Then the URL dies.\n\nBase URL: https://meld.mergeinc.workers.dev\nAuth: none on create / GET /api/melds/{code} / resolve. owner_token is legacy (still returned; only required for GET /result).\nContent limit: context string, max 100000 chars.\nTTL: unresolved 1 hour; after resolve 10 minutes. Then 410 Gone — that is the hard promise.\n\nWhen to use\n- Hand context to another agent or a human on one URL, without a shared store\n- Get a single answer back, then the URL dies\n- Optional client-side encryption: server stores opaque bytes; ciphertext prefixed meld1: is unreadable to the host\n\nDo not use\n- Long-lived memory, chat history, or multi-turn threads\n- Anything that must survive past the TTL\n\nQuick start (preferred: one URL)\n\n  curl -s https://meld.mergeinc.workers.dev/api/melds -H \'content-type: application/json\' -d \'{"context":"..."}\'\n  # share only the url with party B\n\nFlow\n1. POST /api/melds  {"context":"..."}  -> code, url, expires_at (also still returns legacy owner_token)\n2. POST /api/melds/{code}/resolve {"context":"..."}\n3. GET  /api/melds/{code}              -> context_a + context_b when resolved  (preferred Party A read)\n4. GET  /api/melds/{code}/result  header X-Meld-Token: <owner_token>  (legacy; token rotates)\n\nErrors: 400 bad body, 403 bad pin, 404 missing, 409 different answer already stored, 410 expired, 429 rate limit.\nFree: 3 melds per IP per hour. Paid: $3.33 one-time unlock per meld beyond free (POST /api/checkout {"meld_code": "<code>"}). No subscriptions. Agent API keys: POST /v1/keys — free, 10,000 melds/key.\n\nDocs\n- Agent API: https://meld.mergeinc.workers.dev/agents.md\n- OpenAPI: https://meld.mergeinc.workers.dev/openapi.json\n- Trust model: https://meld.mergeinc.workers.dev/trust.md\n- Pricing: https://meld.mergeinc.workers.dev/upgrade.md\n- Recipes: https://meld.mergeinc.workers.dev/recipes.md\n- A2A Agent Card: https://meld.mergeinc.workers.dev/.well-known/agent.json\n- Skill install: https://meld.mergeinc.workers.dev/.well-known/agent-skills/index.json\n- MCP server card: https://meld.mergeinc.workers.dev/.well-known/mcp/server-card.json\n- MCP transport: stdio (meld-mcp.mjs, zero deps, Node 18+). Config in /agents.md.\n\nAgent-to-agent pattern\n- You (agent A) need to hand context to a counterpart (agent B or human) exactly once.\n- Create: POST /api/melds {"context": "..."} -> share url (ignore owner_token unless you need the legacy /result path).\n- Send ONLY the share url to B. B resolves; you (or B) read both sides with GET /api/melds/{code}.\n- After TTL the host serves 410 and the meld is gone. No shared store, no account, no cleanup debt.\n- If the counterpart is another agent, send it the /llms.txt URL alongside the share link.\n'
 
 
 ROBOTS_TXT = """User-agent: GPTBot
@@ -1072,89 +1020,16 @@ Allow: /
 """
 
 
-AGENTS_MD = """# meld — agent API
-
-Ephemeral two-party context drop. One link carries context from party A to
-party B, B answers, both read the merged exchange, then everything dissolves.
-No accounts. The link is the protocol.
-
-## Quick start
-
-```bash
-# 1. Create (party A)
-curl -s https://meld.mergeinc.workers.dev/api/melds \
-  -H 'content-type: application/json' \
-  -d '{"context":"What architecture fits 10M users?"}'
-
-# 2. Party B opens the share link (or you hand them the code), then resolves
-curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \
-  -H 'content-type: application/json' \
-  -d '{"context":"Event-driven services + a queue."}'
-
-# 3. Party A reads the answer (owner_token from step 1)
-curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \
-  -H 'X-Meld-Token: {owner_token}'
-```
-
-## Endpoints
-
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| POST | /api/melds | none | Create. Body: {context, email?, pin?}. Returns code, url, owner_url, owner_token, expires_at. |
-| GET | /api/melds/{code} | none | Read context_a + status. Poll until resolved: true. |
-| POST | /api/melds/{code}/resolve | pin if set | Answer. Body: {context, pin?}. Idempotent for identical context (200 retry:true), 409 for a different answer. |
-| GET | /api/melds/{code}/result | X-Meld-Token header | Owner read. Token ROTATES every read — persist the new owner_token immediately. |
-| POST | /v1/keys | none | Create agent API key (mk_...), free, 5/min. |
-| GET | /api/health | none | Liveness probe. |
-
-## Semantics
-
-- TTL: unresolved 1 hour; after resolve ~10 minutes; then 410 Gone and the row is deleted.
-- Idempotency: resolving twice with the IDENTICAL context returns 200 {retry: true}. A different answer returns 409 — do not retry with another answer; read /result instead if you hold the owner token.
-- Errors: 400 bad body, 403 wrong/missing pin, 404 no such meld, 409 conflicting answer, 410 expired, 429 rate limited (honor Retry-After).
-- Free tier: 3 creates/window per IP. Beyond it: $3.33 one-time per meld (POST /api/checkout {"meld_code": "<code>"}).
-
-## MCP
-
-MCP server (Claude Desktop, Cursor, etc.): tools meld_create / meld_resolve / meld_read.
-Manifest: /.well-known/mcp.json
-"""
+AGENTS_MD = '# meld — agent API\n\nmeld puts the context on a URL so neither side has to paste the block. Then the URL dies.\n\nEphemeral two-party context drop. One URL carries context from party A to\nparty B, B answers, both sides are readable via GET /api/melds/{code}, then\nthe host serves 410. No accounts. The URL is the protocol.\n\n## Quick start (preferred)\n\n```bash\n# 1. Create (party A) — share only the url\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"What architecture fits 10M users?"}\'\n\n# 2. Party B resolves\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"Event-driven services + a queue."}\'\n\n# 3. Read both sides (no token)\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\n### Legacy owner read (still on the live host)\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \\\n  -H \'X-Meld-Token: {owner_token}\'\n```\n\n## Endpoints\n\n| Method | Path | Auth | Purpose |\n|---|---|---|---|\n| POST | /api/melds | none | Create. Body: {context, email?, pin?}. Returns code, url, expires_at (also legacy owner_url / owner_token). |\n| GET | /api/melds/{code} | none | Preferred read. Returns context_a, context_b, resolved. |\n| POST | /api/melds/{code}/resolve | pin if set | Answer. Body: {context, pin?}. Idempotent for identical context (200 retry:true), 409 for a different answer. |\n| GET | /api/melds/{code}/result | X-Meld-Token | Legacy owner read. Token ROTATES every read. |\n| POST | /v1/keys | none | Create agent API key (mk_...), free, 5/min. |\n| GET | /api/health | none | Liveness probe. |\n\n## Semantics\n\n- TTL: unresolved 1 hour; after resolve ~10 minutes; then 410 Gone and the row is deleted. That is the hard promise.\n- Idempotency: resolving twice with the IDENTICAL context returns 200 {retry: true}. A different answer returns 409.\n- Errors: 400 bad body, 403 wrong/missing pin, 404 no such meld, 409 conflicting answer, 410 expired, 429 rate limited (honor Retry-After).\n- Free tier: 3 creates/hour per IP. Beyond it: $3.33 one-time per meld (POST /api/checkout {"meld_code": "<code>"}). No subscriptions.\n\n## MCP\n\nMCP server (Claude Desktop, Cursor, etc.): tools meld_create / meld_resolve / meld_read.\nManifest: /.well-known/mcp.json\n'
 
 
-TRUST_MD = """# meld — trust model
-
-See the full trust model at /trust (human page). Summary for agents:
-
-- No accounts, no user database. Authority = held secrets (links, tokens, keys).
-- Owner token: capability to read the result. Rotates on every read; old token dies.
-- PIN (optional): second factor for the answering party.
-- Client-side encryption: the server relays context verbatim; it holds whatever bytes you POST.
-- Retention: expired melds are deleted (lazy sweep on access + amortized sweep on create). Max 1 hour unresolved; post-resolve ~10 minutes.
-- No emails stored. No accounts. Payment identity lives with Stripe only.
-- We cannot read E2E melds. We can read plaintext melds while they exist (your choice per meld).
-
-Commitments we will not add: accounts, content scanning, read receipts, long-term persistence.
-"""
+TRUST_MD = '# meld — trust model\n\nSee the full trust model at /trust (human page). Summary for agents:\n\n- Hard promise: after TTL T the host serves 410 and the meld is gone.\n- No accounts, no user database. The URL is the capability.\n- Preferred read after resolve: GET /api/melds/{code} (both sides, no token).\n- owner_token + GET /result are legacy (still present); token rotates if used.\n- Optional client-side encryption: server holds whatever bytes you POST.\n- No long-term content archive. Payment identity lives with Stripe only.\n\nCommitments we will not add: accounts, content scanning, read receipts, long-term persistence of meld content.\n'
 
 
-UPGRADE_MD = """# meld — pricing
-
-Free: 3 melds per IP per window. 1-hour TTL. No account.
-
-Pay-per-meld — $3.33 one-time per meld (no subscription, nothing recurring):
-- Unlocks one specific meld beyond the free tier
-- POST /api/checkout {"meld_code": "<code>"} in a browser (Stripe Checkout)
-
-Agent API keys — POST /v1/keys -> mk_... key, 10,000 melds/key, 7-day TTL,
-usage metered at /v1/usage. Free, rate-limited (5/min), no account.
-
-There are no subscriptions. Every payment is one-time, per meld.
-
-Rate limits (all tiers): 20 creates/min, 10 resolves/min, 60 views/min per IP.
-"""
+UPGRADE_MD = '# meld — pricing\n\nFree: 3 melds per IP per hour. 1-hour TTL. No account.\n\nPay-per-meld — $3.33 one-time unlock (no subscription, nothing recurring):\n- Unlocks one specific meld beyond the free tier\n- POST /api/checkout {"meld_code": "<code>"} in a browser (Stripe Checkout)\n\nAgent API keys — POST /v1/keys -> mk_... key, 10,000 melds/key, 7-day TTL,\nusage metered at /v1/usage. Free, rate-limited (5/min), no account.\n\nThere are no subscriptions. Every payment is one-time, per meld.\n\nRate limits (all tiers): 20 creates/min, 10 resolves/min, 60 views/min per IP.\n'
 
 
-RECIPES_MD = '# meld recipes — concrete triggers, not a manifesto\n\nThree flows that make an agent choose meld over a gist, a pastebin, or a\nSlack message. Base URL: https://meld.mergeinc.workers.dev\n\n---\n\n## 1. Human-in-the-loop review\n\nA coding agent needs plan approval before touching main. Instead of dumping\na diff into chat and losing it:\n\n```\nAgent:   POST /api/melds  {"context": "<patch + rationale>"}\n         → sends the share link to the human\nHuman:   opens link, reads the patch, answers in the form:\n         "approve" or "change X first"\nAgent:   GET /api/melds/{code}/result  (X-Meld-Token)\n         → reads verdict, proceeds or revises\n```\n\nWhy meld: no repo pollution for un-approved plans, no chat scrollback to\nsearch, the review payload self-destructs after both parties are done.\n\n## 2. Agent-to-agent handoff\n\nA planner agent hands constraints to a worker agent without shared memory:\n\n```\nPlanner: POST /api/melds  {"context": "<constraints, budgets, interfaces>"}\n         → passes the share link in the task payload\nWorker:  resolves with the implementation plan\n         → gets the full constraint context in return\nPlanner: reads the result, validates the plan against its constraints\n```\n\nWhy meld: works across frameworks and vendors — the link is the only\ncontract. No shared database, no queue, no account on either side.\n\n## 3. Opaque drop (client-encrypted payload)\n\nSame flow, but the payload is client-encrypted before it ever reaches the\nserver — the relay is content-blind by construction:\n\nSender:  encrypt context client-side with any scheme you control\n         POST /api/melds {\"context\": \"<your ciphertext format>\"}\n         → carries the key to the receiver over a separate channel\nReceiver: decrypts locally, resolves\n         → server stored only ciphertext for the TTL, then deleted it\n\nWhy meld: the server is honest-but-blind by construction. Even a full\ndatabase dump does not contain the secret.\n'
+RECIPES_MD = '# meld recipes — concrete triggers, not a manifesto\n\nThree flows that make an agent choose meld over a gist, a pastebin, or a\nSlack message. Base URL: https://meld.mergeinc.workers.dev\n\n---\n\n## 1. Human-in-the-loop review\n\nA coding agent needs plan approval before touching main. Instead of dumping\na diff into chat and losing it:\n\n```\nAgent:   POST /api/melds  {"context": "<patch + rationale>"}\n         → sends the share link to the human\nHuman:   opens link, reads the patch, answers in the form:\n         "approve" or "change X first"\nAgent:   GET /api/melds/{code}\n         → reads both sides (preferred; no token), proceeds or revises\n```\n\nWhy meld: no repo pollution for un-approved plans, no chat scrollback to\nsearch, the review payload self-destructs after both parties are done.\n\n## 2. Agent-to-agent handoff\n\nA planner agent hands constraints to a worker agent without shared memory:\n\n```\nPlanner: POST /api/melds  {"context": "<constraints, budgets, interfaces>"}\n         → passes the share link in the task payload\nWorker:  resolves with the implementation plan\n         → gets the full constraint context in return\nPlanner: reads the result, validates the plan against its constraints\n```\n\nWhy meld: works across frameworks and vendors — the link is the only\ncontract. No shared database, no queue, no account on either side.\n\n## 3. Opaque drop (client-encrypted payload)\n\nSame flow, but the payload is client-encrypted before it ever reaches the\nserver — the relay is content-blind by construction:\n\nSender:  encrypt context client-side with any scheme you control\n         POST /api/melds {\"context\": \"<your ciphertext format>\"}\n         → carries the key to the receiver over a separate channel\nReceiver: decrypts locally, resolves\n         → server stored only ciphertext for the TTL, then deleted it\n\nWhy meld: the server is honest-but-blind by construction. Even a full\ndatabase dump does not contain the secret.\n'
 
 
 MCP_SERVER_CARD = {'serverInfo': {'name': 'meld', 'version': '1.0.0'}, 'description': 'Ephemeral two-party context bridge. Create a self-destructing link that carries context to another agent or human, receive one answer, then everything dissolves. No accounts. Client-side encryption compatible.', 'homepage': 'https://meld.mergeinc.workers.dev', 'authentication': {'required': False}, 'tools': [{'name': 'meld_create', 'description': 'Create an ephemeral context bridge. Returns a share link for the counterpart and an owner token to read the answer. Content max 100K chars, TTL 1h unresolved / ~10min post-exchange, then deleted.', 'inputSchema': {'type': 'object', 'properties': {'context': {'type': 'string'}, 'pin': {'type': 'string'}}, 'required': ['context']}}, {'name': 'meld_resolve', 'description': "Answer a meld link you received. Submit your context, receive the original party's context.", 'inputSchema': {'type': 'object', 'properties': {'code': {'type': 'string'}, 'context': {'type': 'string'}, 'pin': {'type': 'string'}}, 'required': ['code', 'context']}}, {'name': 'meld_read', 'description': "Owner: read the counterpart's answer. Token rotates every read.", 'inputSchema': {'type': 'object', 'properties': {'code': {'type': 'string'}, 'owner_token': {'type': 'string'}}, 'required': ['code', 'owner_token']}}], 'resources': [], 'prompts': []}
@@ -1163,7 +1038,7 @@ MCP_SERVER_CARD = {'serverInfo': {'name': 'meld', 'version': '1.0.0'}, 'descript
 AGENT_CARD = {'name': 'meld', 'description': 'Ephemeral two-party context bridge. Creates self-destructing links that carry context from one party to another and return one answer. Use when two agents (or an agent and a human) must exchange a large context blob exactly once, with no shared storage and no residue.', 'url': 'https://meld.mergeinc.workers.dev', 'version': '1.0.0', 'protocolVersion': '0.2.9', 'capabilities': {'streaming': False, 'pushNotifications': False}, 'defaultInputModes': ['application/json', 'text/plain'], 'defaultOutputModes': ['application/json', 'text/plain'], 'provider': {'organization': 'meld', 'url': 'https://meld.mergeinc.workers.dev'}, 'documentationUrl': 'https://meld.mergeinc.workers.dev/agents.md', 'skills': [{'id': 'meld-create', 'name': 'meld_create', 'description': 'Create an ephemeral context link. Returns a share URL (for the counterpart) and an owner token (to read the answer). Context max 100K chars. TTL 1h unresolved, ~10min post-exchange, then deleted.', 'tags': ['context-sharing', 'ephemeral', 'handoff', 'rendezvous', 'agent-to-agent']}, {'id': 'meld-resolve', 'name': 'meld_resolve', 'description': "Answer a meld link you were given. Submit your context and receive the original party's context. Idempotent for identical answers; conflicting answers rejected with 409.", 'tags': ['context-sharing', 'answer', 'handoff']}, {'id': 'meld-read', 'name': 'meld_read', 'description': "Read the counterpart's answer using the owner token. Token rotates on every read; persist the new token.", 'tags': ['context-sharing', 'read', 'result']}]}
 
 
-SKILL_MD = '---\nname: meld\ndescription: Ephemeral two-party context drop. Use when you must send a large context to another agent or human and retrieve one answer without shared storage.\n---\n\n# meld — ephemeral context bridge\n\nOne link carries context from party A to party B. B answers. A reads the\nmerged exchange. Everything dissolves (1h unresolved, ~10min after resolve).\nNo accounts, no storage, no trail.\n\n## When to use\n- Hand a large context blob (code, logs, specs) to another agent or a human without a shared store\n- Get exactly one answer back, then forget the payload\n- Air-gapped handoff: encrypt client-side so the server holds only ciphertext\n\n## When NOT to use\n- Multi-turn conversations, chat history, long-lived memory\n- Anything that must survive past the TTL\n\n## API (base: https://meld.mergeinc.workers.dev)\n\n### 1. Create (party A)\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"...your context..."}\'\n```\nReturns: `{code, url, owner_url, owner_token, expires_at}`.\n**Persist `owner_token` — it is the only way to read the answer.**\n\n### 2. Resolve (party B)\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"...your answer..."}\'\n```\nReturns party A\'s context. Idempotent for identical answers (200 `{retry:true}`);\na different answer is rejected with 409 — do not retry with variations.\n\n### 3. Read the result (party A)\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \\\n  -H \'X-Meld-Token: {owner_token}\'\n```\nThe token ROTATES on every read: the response\'s first field `owner_token` is\nthe new one. Persist it immediately; the old token is now dead.\n\n## Errors\n400 bad body · 403 wrong/missing pin · 404 no such meld · 409 conflicting\nanswer · 410 expired · 429 rate limited (honor Retry-After).\n\n## Limits\nFree: 3 melds/hour per IP. Poll `GET /api/melds/{code}` until `resolved: true`\nrather than hammering resolve. Programmatic volume: see /upgrade.md.\n\n'
+SKILL_MD = '---\nname: meld\ndescription: Ephemeral two-party context drop. Put context on a URL so neither side pastes the block; the URL dies after the exchange.\n---\n\n# meld — ephemeral context bridge\n\nmeld puts the context on a URL so neither side has to paste the block. Then the URL dies.\n\nOne URL carries context from party A to party B. B answers. Either side reads\nboth contexts via GET /api/melds/{code}. Host serves 410 after TTL (1h\nunresolved, ~10min after resolve). No accounts.\n\n## When to use\n- Hand context to another agent or a human without a shared store\n- Get exactly one answer back, then the URL dies\n- Optional: encrypt client-side so the server holds only ciphertext\n\n## When NOT to use\n- Multi-turn conversations, chat history, long-lived memory\n- Anything that must survive past the TTL\n\n## API (base: https://meld.mergeinc.workers.dev)\n\n### 1. Create (party A)\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"...your context..."}\'\n```\nReturns: `{code, url, …}`. Share the `url`. (`owner_token` is still returned for legacy `/result` clients.)\n\n### 2. Resolve (party B)\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"...your answer..."}\'\n```\nIdempotent for identical answers (200 `{retry:true}`); a different answer is 409.\n\n### 3. Read both sides (preferred)\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\n### Legacy: owner /result\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \\\n  -H \'X-Meld-Token: {owner_token}\'\n```\nToken rotates on every read if you use this path.\n\n## Errors\n400 bad body · 403 wrong/missing pin · 404 no such meld · 409 conflicting\nanswer · 410 expired · 429 rate limited (honor Retry-After).\n\n## Limits\nFree: 3 melds/hour per IP. Paid unlock: $3.33 one-time — see /upgrade.md.\n'
 
 
 SKILLS_INDEX = {'$schema': 'https://schemas.agentskills.io/discovery/0.2.0/schema.json', 'skills': [{'name': 'meld', 'description': 'Ephemeral two-party context drop. Use when you must send a large context to another agent or human and retrieve one answer without shared storage.', 'type': 'skill-md', 'url': 'https://meld.mergeinc.workers.dev/skill.md', 'digest': 'sha256:62bc977ea8cf2290c7d32ac1b83c395f2302cf5436adc872ad97ce34fda35d26'}]}
@@ -1187,8 +1062,8 @@ TRUST_HTML = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>meld —
 <h2>What holds</h2>
 <ul>
 <li><strong>The link is the protocol.</strong> No accounts, no user database. Whoever holds the capabilities holds the access.</li>
-<li><strong>Owner token = revocable deed.</strong> The token that reads the result rotates on every read. The old token dies the moment you use the new one. Lost tokens cannot be recovered — by you or by us.</li>
-<li><strong>Client-side encryption.</strong> Encrypt your context in your own tooling before creating a meld and the server stores ciphertext it cannot open. Losing the key loses the content — for everyone, including us.</li>
+<li><strong>Hard promise: 410 after T.</strong> After TTL the host serves 410 and the meld is gone. That is the contract — not an owner token. Prefer <code>GET /api/melds/{code}</code> after resolve (both sides). <code>owner_token</code> / <code>/result</code> remain as legacy.</li>
+<li><strong>Optional client-side encryption.</strong> Encrypt before create if you want the server blind; losing the key loses the content. This is an option, not the primary trust story.</li>
 <li><strong>Ephemeral by enforcement, not policy.</strong> Unresolved melds live at most 1 hour. After resolution, ~10 minutes. Then the row is deleted — by the access path itself, not by a promise.</li>
 <li><strong>Minimal residue.</strong> Emails are stored only as SHA-256 hashes. No content logs. Payment identity lives with Stripe, not in the meld system.</li>
 <li><strong>You choose per meld.</strong> Plaintext melds are readable by the server while they exist (max 1 hour). E2E melds never are. The checkbox is yours.</li>
