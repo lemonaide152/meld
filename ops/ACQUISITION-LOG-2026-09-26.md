@@ -308,3 +308,133 @@ Using the supplied account/database and Cloudflare API token, query completed su
 
 ### Directories
 - **Ready to submit** to awesome-remote-mcp-servers / remotemcplist / Glama connectors with URL `https://meld.mergeinc.workers.dev/mcp` (Open auth). Actual PRs/submits deferred to parent (this task: ship endpoint only).
+
+## Wave 6b — remote MCP directory listings (2026-09-26 ~16:xx PT)
+
+### Preflight
+- Checked open PRs before editing `punkpeye/awesome-remote-mcp-servers`, `jaw9c/awesome-remote-mcp-servers`, and `remotemcplist/servers`; no existing open PR mentioning meld was found.
+- Verified `POST https://meld.mergeinc.workers.dev/mcp` with MCP `initialize`: protocol `2025-03-26`, HTTP 200 JSON response. `tools/list` exposes `meld_create`, `meld_resolve`, and `meld_read`.
+
+### Submitted
+| Directory | Outcome | PR |
+|---|---|---|
+| `punkpeye/awesome-remote-mcp-servers` | Added Communication entry with open-auth marker and live Glama connector badge | https://github.com/punkpeye/awesome-remote-mcp-servers/pull/724 |
+| `jaw9c/awesome-remote-mcp-servers` | Added open-auth table entry | https://github.com/jaw9c/awesome-remote-mcp-servers/pull/921 |
+| `remotemcplist/servers` | Added `servers/meld-mcp.yaml`; local validator passes | https://github.com/remotemcplist/servers/pull/58 |
+
+All three PRs use `https://meld.mergeinc.workers.dev/mcp`, Streamable HTTP JSON response mode, stateless transport, and no endpoint authentication.
+
+### Glama
+- Existing Glama connector is live at https://glama.ai/mcp/connectors/io.github.lemonaide152/meld and its score badge resolves.
+- Skipped Glama UI editing: no browser/UI tool with an authenticated Glama session was available in this execution. Public connector metadata still shows the older root URL (`https://meld.mergeinc.workers.dev`) rather than the new `/mcp` path; no unauthenticated write path was used.
+
+### Constraints
+- No social posts, Show HN, fake meld traffic, or other unrelated submissions.
+
+## Wave 6 — ~16:01–16:10 PT (2026-09-26)
+
+### MeshKore
+- `GET https://api.meshkore.com/v1/agents/meld`: **live=1**, registered=1, endpoint `https://meld.mergeinc.workers.dev` (checked ~16:03 PT).
+- WS keepalive pid + 4-min heartbeat loop still running; latest heartbeat ok ~16:03 PT. No restart needed.
+
+### Agent-facing docs
+- `/llms.txt`, `/agents`, `/agents.md`, `/.well-known/ai-plugin.json`, `/.well-known/agent.json`, `/.well-known/agent-card.json`, `/sitemap.xml`, `/health` all **200**.
+- **`/mcp` NOW LIVE** (parent unblock, commit cd6fbce / deploy 0c6f3bf3): GET **405** Allow POST/OPTIONS/DELETE (not SPA). OPTIONS 204. `initialize` + `tools/list` → `meld_create` / `meld_resolve` / `meld_read`. Auth open. Transport streamable-http.
+
+### Remote MCP listings (unblocked this wave)
+| Channel | Action | Outcome |
+|---|---|---|
+| jaw9c/awesome-remote-mcp-servers | PR | **OPEN** https://github.com/jaw9c/awesome-remote-mcp-servers/pull/920 |
+| remotemcplist/servers | YAML PR `servers/meld-mcp.yaml` | **OPEN** https://github.com/remotemcplist/servers/pull/57 (validated) |
+| punkpeye/awesome-remote-mcp-servers | Prepared; **not opened** | Requires Glama **connector** badge; `https://glama.ai/mcp/connectors/.../meld` is **404**. Chrome profile `isAuthenticated=false` on connectors — needs Glama OAuth for connector listing (stdio server listing already LIVE). Starred repo. |
+| Glama connectors | Attempted Add Server | Auth wall (not signed in). Note: connectors may be separate from existing https://glama.ai/mcp/servers/lemonaide152/meld |
+| www.remote-mcp.com | Probed | No unauth `/submit` (404); skip |
+
+### Other discovery submissions (HTTP / browser, no social)
+| Channel | Outcome |
+|---|---|
+| MadeWithStack `POST /api/v1/submit` | **Accepted** slug `meld`, status pending / UNDER_EDITORIAL_REVIEW. Status: `https://www.madewithstack.com/api/v1/products/meld?email=dbcooper%40users.noreply.github.com` |
+| agents.net `POST /api/agents/submit` | **Accepted** submissionId **529** (24–48h review) |
+| AgentLoka `POST /v1/agents/register` | **Registered** name=`meld` (Tier 1). Creds: `ops/agentloka-meld-credentials.json` (gitignored) |
+| agent-tools.cloud `POST /api/v1/a2a/submit` | **Listed** https://agent-tools.cloud/a2a/agents/meld |
+| agent-tools.cloud `POST /api/v1/mcp/submit` | **Listed** https://agent-tools.cloud/mcp/servers/meld (health degraded noted by ATC) |
+| agent-tools.cloud x402 `POST /api/v1/submit` | **Rejected** (correct — no x402) |
+| mcp.directory | Headless submit → **409** already submitted, still pending review (`POST /api/submit-server`) |
+| TensorBlock #2732 | OPEN, 0 review/issue comments — **no nudge** |
+| mcp.so #4425 | Could not re-locate GitHub PR URL under lemonaide152; left untouched |
+| aiagenttools `/tool-meld` | Still **404** |
+| AgentMRR product | Still public **404** (SPA); no usable JSON status |
+| Fushu.dev | Still **500** — not retried |
+| PulseMCP submit | reCAPTCHA wall — skipped after one clear block |
+| Official MCP Registry | Still needs GitHub OIDC (not this wave) |
+
+### Fake traffic
+None. No Show HN. No social posts as the user. No invented legitimate users.
+
+### D1 snapshot (after Wave 6)
+- Live `melds` rows: **6**; resolved: **0**
+- Funnel 2026-09-26: `created=13`, `free_limit_hit=4`
+- Classification:
+  - `3bpmg2j533at` — **operator CacheFly** (IP `204.93.227.15` AS30081 CacheFly / DEFT.COM, created 2026-09-26 15:34:45 PDT, preview `tell me your context on cars`) — NOT external
+  - `d2it56eot8zk`, `ni0o1ah7esqd` — operator empty probes (IP `104.30.180.115`)
+  - `93h9govipt22`, `owe2sk52i3nw` — builder `api:11b6ebec…`
+  - `cpaqxw4s6dwu` — builder seed `api:956fde15…`
+- Prior smoke rows (`mg1fa9q0d703`, `iqau1n399f2r`) expired off the live table.
+- **Legitimate external user: NO**
+
+### Next highest-leverage agent channel (no user ask)
+1. **Glama connector listing** for `https://meld.mergeinc.workers.dev/mcp` (unblocks punkpeye/awesome-remote-mcp-servers CI badge) — needs Glama session; stdio server already live.
+2. Watch jaw9c #920 + remotemcplist #57 merge; ATC A2A/MCP pages may drive agent creates.
+3. Optional: Official MCP Registry `server.json` remotes streamable-http (GitHub OIDC) once publisher login available.
+4. Keep MeshKore WS supervised; D1 watch for non-CacheFly / non-`api:*` / non-box-IP creates with real context.
+
+Logged at 2026-09-26 16:08 PT.
+
+### Wave 6b reconciliation (2026-09-26 16:09 PT)
+- Confirmed parent Wave 6 PRs remain OPEN and mergeable: jaw9c `#920` (https://github.com/jaw9c/awesome-remote-mcp-servers/pull/920) and remotemcplist `#57` (https://github.com/remotemcplist/servers/pull/57).
+- Unique additional submission from this execution: punkpeye `#724` (https://github.com/punkpeye/awesome-remote-mcp-servers/pull/724), OPEN and mergeable, with the live Glama connector badge.
+- Duplicate extras opened after the stale preflight: jaw9c `#921` (https://github.com/jaw9c/awesome-remote-mcp-servers/pull/921) and remotemcplist `#58` (https://github.com/remotemcplist/servers/pull/58); both remain OPEN and mergeable. No further directory changes made.
+
+## Wave 7 — Glama connector registration (2026-09-26 ~16:09–16:15 PT)
+
+### Goal
+Register remote MCP URL as Glama connector so punkpeye/awesome-remote-mcp-servers CI badge resolves.
+
+### Findings
+- Stdio server already LIVE: https://glama.ai/mcp/servers/lemonaide152/meld
+- Connector listing already existed (Official Registry sync): https://glama.ai/mcp/connectors/io.github.lemonaide152/meld
+- Was **Unhealthy**: Official Registry remotes URL is `https://meld.mergeinc.workers.dev` (no `/mcp`). Glama health checks sync that technical URL and POSTed root → 405 `Method Not Allowed`.
+- Preferred public path `/mcp` already worked (initialize + tools/list).
+- Box Chrome session restored (Glama `_glama` + GitHub cookies); Admin UI usable without re-OAuth.
+
+### Actions
+1. **Claimed** connector via GitHub identity (`Claim with GitHub` as @lemonaide152) → **Ownership verified**.
+2. Admin → Listing: set Streamable HTTP URL to `https://meld.mergeinc.workers.dev/mcp`, enabled **Use Glama listing details as the source of truth**, Save → Changes saved.
+3. Health still failed until root accepted MCP (registry technical URL override).
+4. **Deployed** Worker alias: `POST /` → same streamable-http handler as `/mcp` (GET `/` still SPA). Version `e1a0d2d0-38ed-46b7-a8ad-7012b419ac63`.
+5. Admin → Test profile → Test Connection → **success / Healthy** (~17:13 PT listing clock). Tools indexed: `meld_create`, `meld_resolve`, `meld_read`.
+6. Badge LIVE: `https://glama.ai/mcp/connectors/io.github.lemonaide152/meld/badges/score.svg`
+7. punkpeye PR already open with correct badge + endpoint: https://github.com/punkpeye/awesome-remote-mcp-servers/pull/724 — CI `check-submission` **pass** (no new PR needed).
+
+### Badge markdown (for README / remote lists)
+```markdown
+[![meld MCP connector – tool definition quality and endpoint health on Glama](https://glama.ai/mcp/connectors/io.github.lemonaide152/meld/badges/score.svg)](https://glama.ai/mcp/connectors/io.github.lemonaide152/meld)
+```
+
+### Outcomes
+| Item | Result |
+|---|---|
+| Glama connector | LIVE Healthy — https://glama.ai/mcp/connectors/io.github.lemonaide152/meld |
+| Ownership | Verified (GitHub @lemonaide152) |
+| Auth badge | None (open) |
+| Score badge | Resolves SVG 200 |
+| punkpeye/awesome-remote-mcp-servers | PR #724 open; CI pass |
+| Official Registry remotes URL | Still root (no `/mcp`); root now MCP-capable. Optional follow-up: republish registry with `/mcp`. |
+
+### Fake traffic / social
+None. No Show HN. No user asks.
+
+### Follow-ups (non-blocking)
+- Official MCP Registry `remotes[0].url` → `https://meld.mergeinc.workers.dev/mcp` (GitHub OIDC publisher).
+- Serve `/.well-known/glama.json` claim file if HTTP challenge ever needed again (GitHub claim already done).
+- Glama Admin still shows an attention triangle (likely publisher/support-contact incomplete) — cosmetic.

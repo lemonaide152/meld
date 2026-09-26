@@ -332,7 +332,7 @@ async def security(request: Request, call_next):
     # CORS: API + discovery + remote MCP (/mcp streamable-http)
     path = request.url.path
     if (path.startswith("/api") or path.startswith("/v1")
-            or path in ("/health", "/llms.txt", "/skill.md", "/agents.md", "/openapi.json", "/mcp")
+            or path in ("/", "/health", "/llms.txt", "/skill.md", "/agents.md", "/openapi.json", "/mcp")
             or path.startswith("/.well-known/")):
         resp.headers["Access-Control-Allow-Origin"] = "*"
         resp.headers["Access-Control-Allow-Headers"] = (
@@ -372,6 +372,7 @@ async def cors_preflight_rest(rest: str):
 @app.options("/openapi.json")
 @app.options("/skill.md")
 @app.options("/mcp")
+@app.options("/")
 async def cors_preflight_fixed():
     return Response(status_code=204, headers=_CORS_PREFLIGHT_HEADERS)
 
@@ -1389,6 +1390,13 @@ async def mcp_post(request: Request):
             "error": {"code": -32603, "message": "No response"}}
 
     return JSONResponse(body, headers={**cors, "Content-Type": "application/json"})
+
+
+@app.post("/")
+async def mcp_post_root(request: Request):
+    """Alias for Official MCP Registry remotes URL (root) used by Glama health checks.
+    Preferred public path remains /mcp; GET / still serves the human SPA."""
+    return await mcp_post(request)
 
 
 @app.get("/mcp")
