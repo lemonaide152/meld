@@ -134,3 +134,52 @@ None. No Show HN. No email/Slack/tweets/DMs as the user.
 - GitHub OIDC for Official MCP Registry / Glama / Smithery
 - Show HN permission (still forbidden)
 - Optional: real inbox for directory forms that email (mcpservers.org)
+
+## Wave 3 — ~14:50–16:00 PT (2026-09-26)
+
+### Channels attempted + outcomes
+
+| Channel | Action | Outcome |
+|---|---|---|
+| mcpservers.org `/submit` | Playwright inspect + free form | Form reachable, **no captcha/SSO**. Required fields include contact **email**. No public inbox for lemonaide152/meld → **stopped** (did not invent email). ServerFn POST without browser session → 403. |
+| MeshKore agent `meld` | Diagnose `live=0`; pubkey bind; WS keepalive | Root cause: directory `live=1` only while `wss://api.meshkore.com/v1/agents/ws` is held (HTTP heartbeat alone insufficient). Bound Ed25519 pubkey (`verified=true`). Added `ops/meshkore-ws-keepalive.py`; process running on box → **API `live=1`**. Heartbeat loop every 5m (no crontab binary; bash loop). Residual: live drops if box WS process dies; Workers cannot hold sockets. |
+| mcp.so #4425 | Status | Still open, 0 comments. No bump (same-day, body complete). |
+| TensorBlock PR #2732 | Status | Still open/mergeable, 0 comments. No bump. |
+| aiagenttools `/tool-meld` | Recheck | Still **404** (pending review). |
+| AgentMRR product | Recheck | Public URL still **404**. |
+| mcp.directory | Recheck | Still pending (prior 409); search HTML no meld hit. |
+| **mcpub.dev** | Unauth `tools/call submit` | **Registered** — `https://meld.mergeinc.workers.dev` live in archive/search. |
+| punkpeye/awesome-mcp-servers | PR | **Opened** https://github.com/punkpeye/awesome-mcp-servers/pull/15198 (Communication; agent `🤖🤖🤖` title). |
+
+### Code + deploy
+- Fixed OPTIONS CORS: `JSONResponse({}, 204)` crashed CF python workers (**1101**). Now empty-body `Response(204)` on `/health`, `/.well-known/*`, `/api/*`, `/v1/*`, `/llms.txt`, etc.
+- Health JSON enriched: `agent_id`, `upstream_ready`.
+- Agent card skills gained `examples` (MeshKore §27 / card_match friendly).
+- Deployed Worker version `2a016a53-ff82-45ca-afd5-7c541bbfb90f` (~15:55 PT). Verified OPTIONS `/health` → 204 + ACAO `*`.
+
+### MeshKore ops
+- `ops/meshkore-ws-keepalive.py` + updated `ops/MESHKORE.md`
+- Identity key private: `ops/meshkore-meld-identity.json` (gitignored)
+- Box processes: WS keepalive + 5-min heartbeat loop
+
+### D1 snapshot (after Wave 3)
+- Live `melds` rows: **7**; resolved among them: **0**
+- Funnel 2026-09-26 unchanged: `created=12`, `free_limit_hit=4`
+- Classification unchanged: empty probes (pre-harden) + smoke (“status check only”) + builder `api:*` seeds only
+- **Legitimate external user: NO**
+- Redacted evidence: all non-`api:*` creators are IP `104.30.180.115` (operator) with empty or “status check only — discard” context; remaining rows are `api:11b6ebec…` / `api:956fde15…` builder seeds.
+
+### Fake traffic
+None. No Show HN. No email/Slack/tweets/DMs as the user.
+
+### Recommended Wave 4 (solo-capable; still no user-ask)
+1. Keep MeshKore WS keepalive supervised (restart if box reboots); confirm Oracle `operational` after their probe lag.
+2. Monitor punkpeye #15198, TensorBlock #2732, mcp.so #4425, mcp.directory, aiagenttools `/tool-meld`.
+3. Try Fushu.dev again if 500 clears; scan for one more quality unauth directory (avoid spam farms).
+4. Optional: awesome-remote-mcp-servers entry (hosted URL angle) if punkpeye wants local-only distinction.
+5. D1 watch for non-smoke / non-`api:*` creates with real context.
+6. Still deferred (user-gated, do not ask): social drafts, Official MCP Registry OIDC, Glama/Smithery OAuth, mcpservers.org contact email, Show HN.
+
+### Blockers needing the user (only if truly blocking solo)
+- Contact email for mcpservers.org free form (and similar inbox-gated directories)
+- Social / OIDC / Show HN still user-gated — **not** required to continue solo Wave 4 monitoring + more unauth channels

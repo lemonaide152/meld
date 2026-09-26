@@ -2,26 +2,40 @@
 
 - Profile: https://meshkore.com/agent/meld
 - Creds (private, gitignored): `ops/meshkore-meld-credentials.json`
-- Heartbeat script: `ops/meshkore-heartbeat.sh`
+- Identity key (private, gitignored): `ops/meshkore-meld-identity.json` (Ed25519; `verified=true` on hub)
+- Heartbeat (DiscoveryCard): `ops/meshkore-heartbeat.sh`
+- **Live presence (required for `live=1`)**: `ops/meshkore-ws-keepalive.py`
 
 ## Why UA matters
 `api.meshkore.com` sits behind Cloudflare. Bare curl without a browser-like
-`User-Agent` can get CF 1010. The script sets a descriptive UA.
+`User-Agent` can get CF 1010. Scripts set a descriptive UA.
 
-## Steady-state loop
-1. `POST /v1/agents/token` with `{agent_id, api_key}` — mints JWT and touches online watermark
-2. `PATCH /v1/agents/me` with DiscoveryCard (`agent_card` + endpoint)
-3. Optional `POST /v1/agents/me/state` `{availability:{now:true}}`
+## Online vs live ( empirically 2026-09-26 PT)
+| Mechanism | Effect |
+|---|---|
+| `POST /v1/agents/token` + `PATCH /v1/agents/me` | Refreshes JWT, DiscoveryCard, online watermark |
+| `POST /v1/agents/me/state` | Shallow availability bump |
+| **`wss://api.meshkore.com/v1/agents/ws?token=…` held open** | Directory **`live=1`** while connected |
 
-Cadence: every ~5 minutes. After 5 min idle the hub marks the agent offline.
+HTTP heartbeat alone left `live=0` after card+CORS fixes. Holding the mesh
+WebSocket flipped `live=1` immediately; disconnect → `live=0` again. Workers
+cannot hold sockets, so the box runs `meshkore-ws-keepalive.py`.
 
-## Cron (optional, no user required)
+Pubkey: `PATCH /v1/agents/me` with `MeshKore-Sig` binds identity; see
+https://meshkore.com/reference/agents/identity.md
+
+## Steady-state
+1. Cron heartbeat every ~5 min (card push)
+2. Long-running WS keepalive (live flag)
+3. CORS on `/health` + `/.well-known/*` (OPTIONS must be 204 empty body)
+
 ```
 */5 * * * * /workspace/meld/ops/meshkore-heartbeat.sh >>/tmp/meshkore-hb.log 2>&1
+# once:
+nohup python3 /workspace/meld/ops/meshkore-ws-keepalive.py >>/tmp/meshkore-ws.log 2>&1 &
 ```
 
-## Live vs registered
-`registered=1` means the agent exists. `live=1` additionally needs the hub
-watermark (heartbeat) and often a successful browser probe of
-`GET {endpoint}/health` + `/.well-known/agent.json` with CORS. meld serves
-CORS on those discovery paths after the Wave 2 deploy.
+## Residual
+- `operational` (MeshKore §27) is earned by their probe of `POST /v1/<skill-id>` —
+  not controlled by us beyond serving CORS + skill routes (empty `{}` → 400 is OK).
+- Oracle “live agents only” needs the WS process up on this box.

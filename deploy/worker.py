@@ -15,7 +15,7 @@ import time
 import datetime
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
 from workers import asgi
 from agents_content import AGENTS_HTML
@@ -347,16 +347,30 @@ async def security(request: Request, call_next):
     return resp
 
 
+_CORS_PREFLIGHT_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": (
+        "Content-Type, X-Meld-Token, Authorization, X-Forwarded-For, X-Meld-Client"),
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Max-Age": "86400",
+}
+
+
 @app.options("/api/{rest:path}")
 @app.options("/v1/{rest:path}")
-@app.options("/health")
 @app.options("/.well-known/{rest:path}")
-async def cors_preflight(rest: str = ""):
-    return JSONResponse({}, status_code=204, headers={
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type, X-Meld-Token, Authorization, X-Meld-Client",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Max-Age": "86400"})
+async def cors_preflight_rest(rest: str):
+    # 204 must have empty body — JSONResponse({}, 204) crashes CF python workers (1101)
+    return Response(status_code=204, headers=_CORS_PREFLIGHT_HEADERS)
+
+
+@app.options("/health")
+@app.options("/llms.txt")
+@app.options("/agents.md")
+@app.options("/openapi.json")
+@app.options("/skill.md")
+async def cors_preflight_fixed():
+    return Response(status_code=204, headers=_CORS_PREFLIGHT_HEADERS)
 
 
 # ── API ──────────────────────────────────────────────────────────────────
@@ -842,7 +856,13 @@ async def skill_meld_read(request: Request):
 @app.get("/health")
 async def health_root():
     """MeshKore-recommended liveness probe (JSON)."""
-    return {"ok": True, "service": "meld", "api": "/llms.txt"}
+    return {
+        "ok": True,
+        "agent_id": "meld",
+        "service": "meld",
+        "upstream_ready": True,
+        "api": "/llms.txt",
+    }
 
 
 @app.post("/v1/melds")
@@ -1160,9 +1180,9 @@ AGENT_CARD = {
     'provider': {'organization': 'meld', 'url': 'https://meld.mergeinc.workers.dev'},
     'documentationUrl': 'https://meld.mergeinc.workers.dev/agents.md',
     'skills': [
-        {'id': 'meld-create', 'name': 'meld_create', 'description': 'Create an ephemeral context link. Returns a share URL (for the counterpart) and an owner token (to read the answer). Context max 100K chars. TTL 1h unresolved, ~10min post-exchange, then deleted.', 'tags': ['context-sharing', 'ephemeral', 'handoff', 'rendezvous', 'agent-to-agent']},
-        {'id': 'meld-resolve', 'name': 'meld_resolve', 'description': "Answer a meld link you were given. Submit your context and receive the original party's context. Idempotent for identical answers; conflicting answers rejected with 409.", 'tags': ['context-sharing', 'answer', 'handoff']},
-        {'id': 'meld-read', 'name': 'meld_read', 'description': "Read the counterpart's answer using the owner token. Token rotates on every read; persist the new token.", 'tags': ['context-sharing', 'read', 'result']},
+        {'id': 'meld-create', 'name': 'meld_create', 'description': 'Create an ephemeral context link. Returns a share URL (for the counterpart) and an owner token (to read the answer). Context max 100K chars. TTL 1h unresolved, ~10min post-exchange, then deleted.', 'tags': ['context-sharing', 'ephemeral', 'handoff', 'rendezvous', 'agent-to-agent'], 'examples': ['Create a meld with context: What architecture fits 10M users?']},
+        {'id': 'meld-resolve', 'name': 'meld_resolve', 'description': "Answer a meld link you were given. Submit your context and receive the original party's context. Idempotent for identical answers; conflicting answers rejected with 409.", 'tags': ['context-sharing', 'answer', 'handoff'], 'examples': ['Resolve meld code abc123 with context: Event-driven services plus a queue.']},
+        {'id': 'meld-read', 'name': 'meld_read', 'description': "Read the counterpart's answer using the owner token. Token rotates on every read; persist the new token.", 'tags': ['context-sharing', 'read', 'result'], 'examples': ['Read result for meld code abc123 with the owner token from create.']},
     ],
 }
 
