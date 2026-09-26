@@ -8,3 +8,8 @@ meld.db
 e2e/
 .env
 .DS_Store
+deploy/.venv*/
+deploy/python_modules/
+deploy/node_modules/
+deploy/.wrangler/
+node_modules/
