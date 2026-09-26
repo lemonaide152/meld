@@ -7,5 +7,5 @@
     "meld-mcp": "./meld-mcp.mjs"
   },
   "main": "meld-mcp.mjs",
-  "license": "UNLICENSED"
+  "license": "MIT"
 }
