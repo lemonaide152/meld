@@ -104,9 +104,11 @@ ok("3rd meld allowed", m3.get("code") is not None, str(m3))
 m4 = api("POST", "/api/melds", {"context": "4th — should be blocked"}, headers={"X-Forwarded-For": _ip(40)})
 ok("Rate limit 429 on 4th", m4.get("error") == 429, str(m4))
 
-# 15  Empty context
+# 15  Empty / whitespace-only context rejected
 m5 = api("POST", "/api/melds", {"context": ""}, headers={"X-Forwarded-For": _ip(11)})
-ok("Empty context allowed", m5.get("code") is not None, str(m5))
+ok("Empty context rejected", m5.get("error") == 400, str(m5))
+m5w = api("POST", "/api/melds", {"context": "   \n\t  "}, headers={"X-Forwarded-For": _ip(11)})
+ok("Whitespace-only context rejected", m5w.get("error") == 400, str(m5w))
 
 # 16  Large context (within limit)
 big = "x" * 50_000

@@ -380,6 +380,19 @@ async def _parse_json(request: Request, call_next):
 # ── API: create meld ───────────────────────────────────────────────────
 
 @app.post("/api/melds")
+
+MAX_CONTEXT = 100_000
+
+def _require_context(context) -> str:
+    """Reject missing/non-string/empty/whitespace-only context (stops probe pollution)."""
+    if not isinstance(context, str):
+        raise HTTPException(400, "Context must be a string")
+    if not context.strip():
+        raise HTTPException(400, "Context must be non-empty")
+    if len(context) > MAX_CONTEXT:
+        raise HTTPException(400, "Context too large (100K max)")
+    return context
+
 def create_meld(request: Request):
     body = request.state.json
     ip = _client_ip(request)
@@ -388,11 +401,7 @@ def create_meld(request: Request):
     if not allowed:
         raise HTTPException(429, reason, headers={"Retry-After": "60"})
 
-    context = body.get("context", "")
-    if not isinstance(context, str):
-        raise HTTPException(400, "Context must be a string")
-    if len(context) > 100_000:
-        raise HTTPException(400, "Context too large (100K max)")
+    context = _require_context(body.get("context", ""))
     # DoS hardening: per-field caps — reject, don't silently truncate
     if "pin" in body and body["pin"] is not None:
         if not isinstance(body["pin"], str) or len(body["pin"]) > 128:
@@ -481,11 +490,7 @@ def resolve_meld(code: str, request: Request):
             raise HTTPException(404, "Meld not found")
         if _expired(m):
             raise HTTPException(410, "This meld has expired")
-        context = body.get("context", "")
-        if not isinstance(context, str):
-            raise HTTPException(400, "Context must be a string")
-        if len(context) > 100_000:
-            raise HTTPException(400, "Context too large (100K max)")
+        context = _require_context(body.get("context", ""))
 
         # T6 evidence shape-validated before any state checks (fail fast)
         pk = body.get("responder_pubkey")

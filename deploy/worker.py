@@ -45,6 +45,16 @@ def db(request):
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
+def _require_context(context) -> str:
+    """Reject missing/non-string/empty/whitespace-only context (stops probe pollution)."""
+    if not isinstance(context, str):
+        raise HTTPException(400, "Context must be a string")
+    if not context.strip():
+        raise HTTPException(400, "Context must be non-empty")
+    if len(context) > MAX_CONTEXT:
+        raise HTTPException(400, "Context too large (100K max)")
+    return context
+
 def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
@@ -319,10 +329,14 @@ async def security(request: Request, call_next):
             return JSONResponse({"detail": rej.detail}, status_code=rej.status_code,
                                 headers=dict(rej.headers or {}))
     resp = await call_next(request)
-    # CORS: browser agents + remote MCP clients need to call the API directly
-    if request.url.path.startswith("/api") or request.url.path.startswith("/v1"):
+    # CORS: API + discovery surfaces (MeshKore/browser probes need /health + agent card)
+    path = request.url.path
+    if (path.startswith("/api") or path.startswith("/v1")
+            or path in ("/health", "/llms.txt", "/skill.md", "/agents.md", "/openapi.json")
+            or path.startswith("/.well-known/")):
         resp.headers["Access-Control-Allow-Origin"] = "*"
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Meld-Token, Authorization, X-Forwarded-For, X-Meld-Client"
+        resp.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, X-Meld-Token, Authorization, X-Forwarded-For, X-Meld-Client")
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
@@ -335,6 +349,8 @@ async def security(request: Request, call_next):
 
 @app.options("/api/{rest:path}")
 @app.options("/v1/{rest:path}")
+@app.options("/health")
+@app.options("/.well-known/{rest:path}")
 async def cors_preflight(rest: str = ""):
     return JSONResponse({}, status_code=204, headers={
         "Access-Control-Allow-Origin": "*",
@@ -349,11 +365,7 @@ async def create_meld(request: Request):
     conn = db(request)
     ip = _client_ip(request)
     body = await request.json()
-    context = body.get("context", "")
-    if not isinstance(context, str):
-        raise HTTPException(400, "Context must be a string")
-    if len(context) > MAX_CONTEXT:
-        raise HTTPException(400, "Context too large (100K max)")
+    context = _require_context(body.get("context", ""))
 
     if not await _rate_limit(conn, "create", ip):
         raise HTTPException(429, "Too many requests. Please slow down.",
@@ -450,11 +462,7 @@ async def resolve_meld(code: str, request: Request):
         raise HTTPException(429, "Too many requests. Please slow down.",
                             headers={"Retry-After": "60"})
     body = await request.json()
-    context = body.get("context", "")
-    if not isinstance(context, str):
-        raise HTTPException(400, "Context must be a string")
-    if len(context) > MAX_CONTEXT:
-        raise HTTPException(400, "Context too large (100K max)")
+    context = _require_context(body.get("context", ""))
 
     row = await conn.prepare(
         "SELECT * FROM melds WHERE code = ?").bind(code).first()
@@ -848,11 +856,7 @@ async def v1_create_meld(request: Request):
         raise HTTPException(429, "Meld limit reached for this API key")
 
     body = await request.json()
-    context = body.get("context", "")
-    if not isinstance(context, str):
-        raise HTTPException(400, "Context must be a string")
-    if len(context) > MAX_CONTEXT:
-        raise HTTPException(400, "Context too large (100K max)")
+    context = _require_context(body.get("context", ""))
 
     code = _code()
     token = _token()
@@ -888,11 +892,7 @@ async def v1_resolve_meld(code: str, request: Request):
         raise HTTPException(401, "Invalid or missing API key")
 
     body = await request.json()
-    context = body.get("context", "")
-    if not isinstance(context, str):
-        raise HTTPException(400, "Context must be a string")
-    if len(context) > MAX_CONTEXT:
-        raise HTTPException(400, "Context too large (100K max)")
+    context = _require_context(body.get("context", ""))
 
     row = await conn.prepare(
         "SELECT * FROM melds WHERE code = ?").bind(code).first()
