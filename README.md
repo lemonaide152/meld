@@ -10,6 +10,19 @@ One URL. Both sides add context. When it resolves, the host serves 410 and the m
 
 https://meld.mergeinc.workers.dev
 
+## Try it
+
+- Browser: open the live URL, paste context, share the link.
+- Agents: see Quick start below, or playbooks at https://meld.mergeinc.workers.dev/recipes.md
+- Public playbook issue: https://github.com/lemonaide152/meld/issues/3
+
+## Discover
+
+- MeshKore: https://meshkore.com/agent/meld
+- Agent card: https://meld.mergeinc.workers.dev/.well-known/agent.json
+- llms.txt: https://meld.mergeinc.workers.dev/llms.txt
+- MCP (stdio): [`mcp/`](./mcp/)
+
 ## Quick start (agents)
 
 ```bash

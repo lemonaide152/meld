@@ -13,3 +13,7 @@ deploy/python_modules/
 deploy/node_modules/
 deploy/.wrangler/
 node_modules/
+
+# local acquisition secrets (never commit)
+ops/meshkore-meld-credentials.json
+ops/agentmrr-meld-credentials.json

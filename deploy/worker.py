@@ -804,6 +804,39 @@ async def create_api_key(request: Request):
     }
 
 
+# MeshKore / A2A skill aliases — POST /v1/<skill.id> per agent card
+@app.post("/v1/meld-create")
+async def skill_meld_create(request: Request):
+    """A2A skill: same as POST /api/melds (IP quota / human free)."""
+    return await create_meld(request)
+
+
+@app.post("/v1/meld-resolve")
+async def skill_meld_resolve(request: Request):
+    """A2A skill: body must include code + context (+ optional pin)."""
+    body = await request.json()
+    code = body.get("code")
+    if not isinstance(code, str) or not code:
+        raise HTTPException(400, "code required")
+    return await resolve_meld(code, request)
+
+
+@app.post("/v1/meld-read")
+async def skill_meld_read(request: Request):
+    """A2A skill: read both sides via GET /api/melds/{code} (preferred Party A path)."""
+    body = await request.json()
+    code = body.get("code")
+    if not isinstance(code, str) or not code:
+        raise HTTPException(400, "code required")
+    return await get_meld(code, request)
+
+
+@app.get("/health")
+async def health_root():
+    """MeshKore-recommended liveness probe (JSON)."""
+    return {"ok": True, "service": "meld", "api": "/llms.txt"}
+
+
 @app.post("/v1/melds")
 async def v1_create_meld(request: Request):
     """Agent API: create a meld with Bearer auth."""
@@ -1045,6 +1078,16 @@ async def health(request: Request):
     return {"ok": True, "service": "meld", "api": "/llms.txt", **paid}
 
 
+@app.get("/sitemap.xml", response_class=PlainTextResponse)
+async def sitemap_xml():
+    return PlainTextResponse(SITEMAP_XML, media_type="application/xml")
+
+
+@app.get("/.well-known/ai-plugin.json")
+async def ai_plugin_json():
+    return JSONResponse(AI_PLUGIN)
+
+
 @app.get("/{path:path}")
 async def serve_page(path: str):
     return HTMLResponse(PAGE)
@@ -1078,6 +1121,7 @@ Allow: /
 
 # Machine-readable docs for agents
 # See: /llms.txt /agents.md /openapi.json /trust.md
+Sitemap: https://meld.mergeinc.workers.dev/sitemap.xml
 """
 
 
@@ -1096,7 +1140,31 @@ RECIPES_MD = '# meld recipes — concrete triggers, not a manifesto\n\nFour play
 MCP_SERVER_CARD = {'serverInfo': {'name': 'meld', 'version': '1.0.0'}, 'description': 'Ephemeral two-party context bridge. Create a self-destructing link that carries context to another agent or human, receive one answer, then everything dissolves. No accounts. Client-side encryption compatible.', 'homepage': 'https://meld.mergeinc.workers.dev', 'authentication': {'required': False}, 'tools': [{'name': 'meld_create', 'description': 'Create an ephemeral context bridge. Returns a share link for the counterpart and an owner token to read the answer. Content max 100K chars, TTL 1h unresolved / ~10min post-exchange, then deleted.', 'inputSchema': {'type': 'object', 'properties': {'context': {'type': 'string'}, 'pin': {'type': 'string'}}, 'required': ['context']}}, {'name': 'meld_resolve', 'description': "Answer a meld link you received. Submit your context, receive the original party's context.", 'inputSchema': {'type': 'object', 'properties': {'code': {'type': 'string'}, 'context': {'type': 'string'}, 'pin': {'type': 'string'}}, 'required': ['code', 'context']}}, {'name': 'meld_read', 'description': "Owner: read the counterpart's answer. Token rotates every read.", 'inputSchema': {'type': 'object', 'properties': {'code': {'type': 'string'}, 'owner_token': {'type': 'string'}}, 'required': ['code', 'owner_token']}}], 'resources': [], 'prompts': []}
 
 
-AGENT_CARD = {'name': 'meld', 'description': 'Ephemeral two-party context bridge. Creates self-destructing links that carry context from one party to another and return one answer. Use when two agents (or an agent and a human) must exchange a large context blob exactly once, with no shared storage and no residue.', 'url': 'https://meld.mergeinc.workers.dev', 'version': '1.0.0', 'protocolVersion': '0.2.9', 'capabilities': {'streaming': False, 'pushNotifications': False}, 'defaultInputModes': ['application/json', 'text/plain'], 'defaultOutputModes': ['application/json', 'text/plain'], 'provider': {'organization': 'meld', 'url': 'https://meld.mergeinc.workers.dev'}, 'documentationUrl': 'https://meld.mergeinc.workers.dev/agents.md', 'skills': [{'id': 'meld-create', 'name': 'meld_create', 'description': 'Create an ephemeral context link. Returns a share URL (for the counterpart) and an owner token (to read the answer). Context max 100K chars. TTL 1h unresolved, ~10min post-exchange, then deleted.', 'tags': ['context-sharing', 'ephemeral', 'handoff', 'rendezvous', 'agent-to-agent']}, {'id': 'meld-resolve', 'name': 'meld_resolve', 'description': "Answer a meld link you were given. Submit your context and receive the original party's context. Idempotent for identical answers; conflicting answers rejected with 409.", 'tags': ['context-sharing', 'answer', 'handoff']}, {'id': 'meld-read', 'name': 'meld_read', 'description': "Read the counterpart's answer using the owner token. Token rotates on every read; persist the new token.", 'tags': ['context-sharing', 'read', 'result']}]}
+AGENT_CARD = {
+    'name': 'meld',
+    'description': 'Ephemeral two-party context bridge. Creates self-destructing links that carry context from one party to another and return one answer. Use when two agents (or an agent and a human) must exchange a large context blob exactly once, with no shared storage and no residue.',
+    'url': 'https://meld.mergeinc.workers.dev',
+    'version': '1.0.0',
+    'protocolVersion': '0.2.9',
+    'protocols': ['http', 'a2a', 'mcp'],
+    'pricing': {'unit': 'request', 'amount': 0, 'currency': 'free', 'note': 'Humans free in browser; agents key-or-quota (3/IP/hour then POST /v1/keys)'},
+    'availability': {'now': True, 'window_hours': 168, 'sla': 'best-effort'},
+    'contact': {
+        'http': 'https://meld.mergeinc.workers.dev/api/melds',
+        'a2a': 'https://meld.mergeinc.workers.dev/.well-known/agent.json',
+        'docs': 'https://meld.mergeinc.workers.dev/llms.txt',
+    },
+    'capabilities': {'streaming': False, 'pushNotifications': False},
+    'defaultInputModes': ['application/json', 'text/plain'],
+    'defaultOutputModes': ['application/json', 'text/plain'],
+    'provider': {'organization': 'meld', 'url': 'https://meld.mergeinc.workers.dev'},
+    'documentationUrl': 'https://meld.mergeinc.workers.dev/agents.md',
+    'skills': [
+        {'id': 'meld-create', 'name': 'meld_create', 'description': 'Create an ephemeral context link. Returns a share URL (for the counterpart) and an owner token (to read the answer). Context max 100K chars. TTL 1h unresolved, ~10min post-exchange, then deleted.', 'tags': ['context-sharing', 'ephemeral', 'handoff', 'rendezvous', 'agent-to-agent']},
+        {'id': 'meld-resolve', 'name': 'meld_resolve', 'description': "Answer a meld link you were given. Submit your context and receive the original party's context. Idempotent for identical answers; conflicting answers rejected with 409.", 'tags': ['context-sharing', 'answer', 'handoff']},
+        {'id': 'meld-read', 'name': 'meld_read', 'description': "Read the counterpart's answer using the owner token. Token rotates on every read; persist the new token.", 'tags': ['context-sharing', 'read', 'result']},
+    ],
+}
 
 
 SKILL_MD = '---\nname: meld\ndescription: Ephemeral two-party context drop. Put context on a URL so neither side pastes the block; the URL dies after the exchange. Humans free in browser; agents use key or quota.\n---\n\n# meld — ephemeral context bridge\n\nmeld puts the context on a URL so neither side has to paste the block. Then the URL dies.\n\nOne URL carries context from party A to party B. B answers. Either side reads\nboth contexts via GET /api/melds/{code}. Host serves 410 after TTL (1h\nunresolved, ~10min after resolve). No accounts.\n\n## When to use\n- Hand context to another agent or a human without a shared store\n- Get exactly one answer back, then the URL dies\n- Optional: encrypt client-side so the server holds only ciphertext\n- FDE institutional-knowledge gather; provider-switch dump/request; TTL continuation via next-meld URL\n\n## When NOT to use\n- Multi-turn conversations, chat history, long-lived memory\n- Anything that must survive past the TTL (unless you chain — see recipes)\n\n## Pricing\n- Humans: free in the browser (`X-Meld-Client: human` or browser UA)\n- Agents: 3 creates/hour/IP on `/api/melds`, or `POST /v1/keys` for quota; payment protocols coming\n- Header on create: `X-Meld-Pricing: humans-free; agents-key-or-quota`\n- Optional agent unlock: $3.33 one-time via `POST /api/checkout {"meld_code":"<code>"}`\n\n## API (base: https://meld.mergeinc.workers.dev)\n\n### 1. Create (party A)\n```bash\n# human / browser path (free)\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' \\\n  -H \'X-Meld-Client: human\' \\\n  -d \'{"context":"...your context..."}\'\n\n# agent path (IP quota)\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' \\\n  -H \'X-Meld-Client: agent\' \\\n  -d \'{"context":"...your context..."}\'\n```\nReturns: `{code, url, …}`. Share the `url`. (`owner_token` is still returned for legacy `/result` clients.)\n\n### 2. Resolve (party B)\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"...your answer..."}\'\n```\nIdempotent for identical answers (200 `{retry:true}`); a different answer is 409.\n\n### 3. Read both sides (preferred)\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\n### Legacy: owner /result\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \\\n  -H \'X-Meld-Token: {owner_token}\'\n```\nToken rotates on every read if you use this path.\n\n## Errors\n400 bad body · 403 wrong/missing pin · 404 no such meld · 409 conflicting\nanswer · 410 expired · 429 rate limited (honor Retry-After).\n\n## Limits\nHumans free (browser). Agents: 3/hour/IP or API key — see /upgrade.md and /recipes.md.\n'
@@ -1114,6 +1182,44 @@ MCP_MANIFEST = {
     "command": "npx meld-mcp",
     "tools": ["meld_create", "meld_resolve", "meld_read"],
     "docs": "https://meld.mergeinc.workers.dev/llms.txt",
+}
+
+
+
+SITEMAP_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://meld.mergeinc.workers.dev/</loc></url>
+  <url><loc>https://meld.mergeinc.workers.dev/llms.txt</loc></url>
+  <url><loc>https://meld.mergeinc.workers.dev/agents.md</loc></url>
+  <url><loc>https://meld.mergeinc.workers.dev/openapi.json</loc></url>
+  <url><loc>https://meld.mergeinc.workers.dev/trust.md</loc></url>
+  <url><loc>https://meld.mergeinc.workers.dev/upgrade.md</loc></url>
+  <url><loc>https://meld.mergeinc.workers.dev/recipes.md</loc></url>
+  <url><loc>https://meld.mergeinc.workers.dev/skill.md</loc></url>
+  <url><loc>https://meld.mergeinc.workers.dev/.well-known/agent.json</loc></url>
+  <url><loc>https://meld.mergeinc.workers.dev/.well-known/mcp/server-card.json</loc></url>
+  <url><loc>https://meld.mergeinc.workers.dev/.well-known/mcp.json</loc></url>
+  <url><loc>https://meld.mergeinc.workers.dev/.well-known/agent-skills/index.json</loc></url>
+  <url><loc>https://meld.mergeinc.workers.dev/.well-known/ai-plugin.json</loc></url>
+</urlset>
+"""
+
+
+AI_PLUGIN = {
+    "schema_version": "v1",
+    "name_for_human": "meld",
+    "name_for_model": "meld",
+    "description_for_human": "Ephemeral context URL — puts the context on a URL so neither side has to paste the block. Then the URL dies.",
+    "description_for_model": "Create a self-destructing two-party context bridge. POST /api/melds with {context} to get a share URL; counterpart POST /api/melds/{code}/resolve; either side GET /api/melds/{code} after resolve. Humans free in browser (X-Meld-Client: human). Agents: 3/IP/hour then POST /v1/keys. TTL 1h unresolved / ~10min after resolve then 410.",
+    "auth": {"type": "none"},
+    "api": {
+        "type": "openapi",
+        "url": "https://meld.mergeinc.workers.dev/openapi.json",
+        "is_user_authenticated": False,
+    },
+    "logo_url": "https://meld.mergeinc.workers.dev/",
+    "contact_email": "support@meld.mergeinc.workers.dev",
+    "legal_info_url": "https://meld.mergeinc.workers.dev/trust.md",
 }
 
 
