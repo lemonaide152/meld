@@ -17,3 +17,4 @@ node_modules/
 # local acquisition secrets (never commit)
 ops/meshkore-meld-credentials.json
 ops/agentmrr-meld-credentials.json
+ops/meshkore-meld-identity.json
