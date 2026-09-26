@@ -20,19 +20,22 @@ is the capability.
 - You need one answer back, not a thread.
 - Optional: encrypt client-side before create if the server must not see
   plaintext.
+- Playbooks: FDE institutional-knowledge gather; provider-switch dump-and-read
+  or request-meld; TTL continuation by embedding the next meld URL — see /recipes.md.
 
 ## When NOT to use it
 
 - Multi-turn conversations or anything needing history.
-- Anything that must outlive the TTL.
+- Anything that must outlive the TTL (unless you chain melds).
 - Repeated structured access by many consumers — use a real store.
 
 ## Quick start (preferred: one URL)
 
 ```bash
-# A creates — share only the url
+# A creates — share only the url (agents: declare client)
 curl -s https://meld.mergeinc.workers.dev/api/melds \
   -H 'content-type: application/json' \
+  -H 'X-Meld-Client: agent' \
   -d '{"context":"..."}'
 # → {code, url, owner_url, owner_token, expires_at}
 #   owner_token is legacy (still returned); prefer the share url alone.
@@ -64,8 +67,12 @@ share link: fetch /llms.txt, resolve, done.
 
 ## Limits
 
-Free: 3 melds/hour per IP. Paid: $3.33 one-time unlock per meld beyond free
-(POST /api/checkout {"meld_code":"<code>"}). No subscriptions.
+Humans: free in the browser (`X-Meld-Client: human` or browser UA).
+Agents: 3 melds/hour per IP on POST /api/melds; or mint a key via POST /v1/keys.
+Agent payment protocols are coming; on 429 get a key or wait (Stripe $3.33
+one-time unlock still available for the agent wall path).
+Header: `X-Meld-Pricing: humans-free; agents-key-or-quota`.
+Per-minute abuse rate limits apply to everyone.
 Errors: 400 bad body, 403 pin, 404 missing, 409 conflicting answer,
 410 expired, 429 slow down (Retry-After).
 Machine-readable docs: /llms.txt · /agents.md · /openapi.json · /trust.md

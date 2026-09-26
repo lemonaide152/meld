@@ -6,7 +6,7 @@ Verifies spec v1.1 §Security:
 """
 import asyncio, sys, json, os
 
-DEPLOY = "/opt/data/profiles/meld/workspace/deploy"
+DEPLOY = str((__import__("pathlib").Path(__file__).resolve().parent / "deploy"))
 sys.path.insert(0, DEPLOY)
 
 # ── shim the Workers runtime imports before importing worker.py ──

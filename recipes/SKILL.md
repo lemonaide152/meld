@@ -1,33 +1,49 @@
 ---
 name: meld
-description: Ephemeral two-party context drop. Use when you must send a large context to another agent or human and retrieve one answer without shared storage.
+description: Ephemeral two-party context drop. Put context on a URL so neither side pastes the block; the URL dies after the exchange. Humans free in browser; agents use key or quota.
 ---
 
 # meld — ephemeral context bridge
 
-One link carries context from party A to party B. B answers. A reads the
-merged exchange. Everything dissolves (1h unresolved, ~10min after resolve).
-No accounts, no storage, no trail.
+meld puts the context on a URL so neither side has to paste the block. Then the URL dies.
+
+One URL carries context from party A to party B. B answers. Either side reads
+both contexts via GET /api/melds/{code}. Host serves 410 after TTL (1h
+unresolved, ~10min after resolve). No accounts.
 
 ## When to use
-- Hand a large context blob (code, logs, specs) to another agent or a human without a shared store
-- Get exactly one answer back, then forget the payload
-- Air-gapped handoff: use E2E mode so the server holds only ciphertext
+- Hand context to another agent or a human without a shared store
+- Get exactly one answer back, then the URL dies
+- Optional: encrypt client-side so the server holds only ciphertext
+- FDE institutional-knowledge gather; provider-switch dump/request; TTL continuation via next-meld URL
 
 ## When NOT to use
 - Multi-turn conversations, chat history, long-lived memory
-- Anything that must survive past the TTL
+- Anything that must survive past the TTL (unless you chain — see recipes)
+
+## Pricing
+- Humans: free in the browser (`X-Meld-Client: human` or browser UA)
+- Agents: 3 creates/hour/IP on `/api/melds`, or `POST /v1/keys` for quota; payment protocols coming
+- Header on create: `X-Meld-Pricing: humans-free; agents-key-or-quota`
+- Optional agent unlock: $3.33 one-time via `POST /api/checkout {"meld_code":"<code>"}`
 
 ## API (base: https://meld.mergeinc.workers.dev)
 
 ### 1. Create (party A)
 ```bash
+# human / browser path (free)
 curl -s https://meld.mergeinc.workers.dev/api/melds \
   -H 'content-type: application/json' \
+  -H 'X-Meld-Client: human' \
+  -d '{"context":"...your context..."}'
+
+# agent path (IP quota)
+curl -s https://meld.mergeinc.workers.dev/api/melds \
+  -H 'content-type: application/json' \
+  -H 'X-Meld-Client: agent' \
   -d '{"context":"...your context..."}'
 ```
-Returns: `{code, url, owner_url, owner_token, expires_at}`.
-**Persist `owner_token` — it is the only way to read the answer.**
+Returns: `{code, url, …}`. Share the `url`. (`owner_token` is still returned for legacy `/result` clients.)
 
 ### 2. Resolve (party B)
 ```bash
@@ -35,26 +51,23 @@ curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \
   -H 'content-type: application/json' \
   -d '{"context":"...your answer..."}'
 ```
-Returns party A's context. Idempotent for identical answers (200 `{retry:true}`);
-a different answer is rejected with 409 — do not retry with variations.
+Idempotent for identical answers (200 `{retry:true}`); a different answer is 409.
 
-### 3. Read the result (party A)
+### 3. Read both sides (preferred)
+```bash
+curl -s https://meld.mergeinc.workers.dev/api/melds/{code}
+```
+
+### Legacy: owner /result
 ```bash
 curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \
   -H 'X-Meld-Token: {owner_token}'
 ```
-The token ROTATES on every read: the response's first field `owner_token` is
-the new one. Persist it immediately; the old token is now dead.
+Token rotates on every read if you use this path.
 
 ## Errors
 400 bad body · 403 wrong/missing pin · 404 no such meld · 409 conflicting
 answer · 410 expired · 429 rate limited (honor Retry-After).
 
 ## Limits
-Free: 3 melds/hour per IP. Poll `GET /api/melds/{code}` until `resolved: true`
-rather than hammering resolve. Programmatic volume: see /upgrade.md.
-
-## E2E mode (optional)
-Encrypt client-side with AES-256-GCM before POST. Wire format:
-`meld1:` + base64(nonce ‖ ciphertext). Put the hex key in the share URL
-fragment `#k=<64 hex>`. The server never sees plaintext or the key.
+Humans free (browser). Agents: 3/hour/IP or API key — see /upgrade.md and /recipes.md.

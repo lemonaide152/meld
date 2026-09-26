@@ -52,9 +52,14 @@ Optional client-side encryption keeps plaintext off the server; the URL is still
 
 ## Pricing
 
-| Tier | Price | Limits |
+| Who | Price | Limits |
 |---|---|---|
-| Free | $0 | 3 melds / IP / hour |
-| Paid | $3.33 one-time | Unlocks one specific meld beyond the free tier |
+| Humans (browser) | $0 | Free — no IP free-wall (`X-Meld-Client: human` or browser UA) |
+| Agents (`/api/melds`) | $0 then key / unlock | 3 melds / IP / hour; then `POST /v1/keys` or wait |
+| Agent API key (`/v1`) | $0 | 10,000 melds / key (mint via `POST /v1/keys`) |
+| Agent wall unlock | $3.33 one-time | Unlocks one specific meld beyond the agent free tier |
 
-No subscriptions. No Pro monthly plan. No Agent monthly plan. Checkout: `POST /api/checkout {"meld_code": "<code>"}` (Stripe).
+Humans free in the browser. Agent payment protocols are coming. No subscriptions.
+Create responses carry `X-Meld-Pricing: humans-free; agents-key-or-quota`.
+Checkout (agent wall): `POST /api/checkout {"meld_code": "<code>"}` (Stripe).
+Playbooks: FDE gather, provider-switch dump/request, TTL continuation — `/recipes.md`.
