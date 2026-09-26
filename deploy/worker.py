@@ -329,15 +329,16 @@ async def security(request: Request, call_next):
             return JSONResponse({"detail": rej.detail}, status_code=rej.status_code,
                                 headers=dict(rej.headers or {}))
     resp = await call_next(request)
-    # CORS: API + discovery surfaces (MeshKore/browser probes need /health + agent card)
+    # CORS: API + discovery + remote MCP (/mcp streamable-http)
     path = request.url.path
     if (path.startswith("/api") or path.startswith("/v1")
-            or path in ("/health", "/llms.txt", "/skill.md", "/agents.md", "/openapi.json")
+            or path in ("/health", "/llms.txt", "/skill.md", "/agents.md", "/openapi.json", "/mcp")
             or path.startswith("/.well-known/")):
         resp.headers["Access-Control-Allow-Origin"] = "*"
         resp.headers["Access-Control-Allow-Headers"] = (
-            "Content-Type, X-Meld-Token, Authorization, X-Forwarded-For, X-Meld-Client")
-        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            "Content-Type, Accept, Authorization, X-Meld-Token, X-Meld-Client, "
+            "X-Forwarded-For, Mcp-Session-Id, Mcp-Protocol-Version")
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Referrer-Policy"] = "no-referrer"
@@ -350,8 +351,9 @@ async def security(request: Request, call_next):
 _CORS_PREFLIGHT_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": (
-        "Content-Type, X-Meld-Token, Authorization, X-Forwarded-For, X-Meld-Client"),
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Content-Type, Accept, Authorization, X-Meld-Token, X-Meld-Client, "
+        "X-Forwarded-For, Mcp-Session-Id, Mcp-Protocol-Version"),
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Max-Age": "86400",
 }
 
@@ -369,6 +371,7 @@ async def cors_preflight_rest(rest: str):
 @app.options("/agents.md")
 @app.options("/openapi.json")
 @app.options("/skill.md")
+@app.options("/mcp")
 async def cors_preflight_fixed():
     return Response(status_code=204, headers=_CORS_PREFLIGHT_HEADERS)
 
@@ -1108,6 +1111,303 @@ async def ai_plugin_json():
     return JSONResponse(AI_PLUGIN)
 
 
+
+# ── MCP Streamable HTTP (remote MCP dirs / Glama connectors) ─────────────
+# Spec: https://modelcontextprotocol.io/specification/2025-03-26/basic/transports
+# Stateless JSON mode (no SSE session). Same tools as mcp/meld-mcp.mjs stdio.
+
+_MCP_PROTOCOL_VERSIONS = ("2025-03-26", "2024-11-05")
+
+_MCP_TOOLS = [
+    {
+        "name": "meld_create",
+        "description": (
+            "Create a meld: an ephemeral context bridge. Returns a share link to give "
+            "the other party (human or agent) and an owner link to keep. The meld "
+            "expires (~1 hour free tier) after both parties exchange context."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "context": {
+                    "type": "string",
+                    "description": (
+                        "Your context: code, requirements, logs, a prompt, a question — anything."
+                    ),
+                },
+                "pin": {
+                    "type": "string",
+                    "description": "Optional PIN the other party must supply to answer.",
+                },
+            },
+            "required": ["context"],
+        },
+    },
+    {
+        "name": "meld_resolve",
+        "description": (
+            "Resolve a meld you received a link for. Submit your context/answer. "
+            "Returns the other party's context. The meld dissolves shortly after."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "The meld code from the link (the part after /m/).",
+                },
+                "context": {"type": "string", "description": "Your answer/context."},
+                "pin": {"type": "string", "description": "PIN if the meld has one."},
+            },
+            "required": ["code", "context"],
+        },
+    },
+    {
+        "name": "meld_read",
+        "description": (
+            "Owner: read the resolved result of your meld. The owner token rotates "
+            "on every read — use the newest one."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "The meld code."},
+                "owner_token": {
+                    "type": "string",
+                    "description": "Your owner token (from meld_create or the previous read).",
+                },
+            },
+            "required": ["code", "owner_token"],
+        },
+    },
+]
+
+
+def _mcp_cors_headers() -> dict:
+    return dict(_CORS_PREFLIGHT_HEADERS)
+
+
+def _asgi_json_request(request: Request, method: str, path: str, body: dict | None = None,
+                       extra_headers: dict | None = None) -> Request:
+    """Clone ASGI request with new method/path/JSON body for internal handler reuse."""
+    raw = json.dumps(body if body is not None else {}).encode() if body is not None else b""
+    header_list = []
+    skip = {b"content-length", b"content-type"}
+    for k, v in request.scope.get("headers", []):
+        if k.lower() in skip:
+            continue
+        header_list.append((k, v))
+    if body is not None:
+        header_list.append((b"content-type", b"application/json"))
+        header_list.append((b"content-length", str(len(raw)).encode()))
+    if extra_headers:
+        for hk, hv in extra_headers.items():
+            kb = hk.lower().encode() if isinstance(hk, str) else hk
+            vb = hv.encode() if isinstance(hv, str) else hv
+            header_list = [(k, v) for k, v in header_list if k != kb]
+            header_list.append((kb, vb))
+    scope = dict(request.scope)
+    scope["method"] = method
+    scope["path"] = path
+    scope["raw_path"] = path.encode()
+    scope["headers"] = header_list
+    done = False
+
+    async def receive():
+        nonlocal done
+        if done:
+            return {"type": "http.disconnect"}
+        done = True
+        return {"type": "http.request", "body": raw, "more_body": False}
+
+    return Request(scope, receive)
+
+
+async def _mcp_unwrap(resp):
+    if isinstance(resp, JSONResponse):
+        return json.loads(bytes(resp.body))
+    if isinstance(resp, dict):
+        return resp
+    return resp
+
+
+async def _mcp_call_tool(name: str, args: dict, request: Request):
+    """Invoke the same create/resolve/read handlers the HTTP API and stdio MCP use."""
+    args = args or {}
+    try:
+        if name == "meld_create":
+            body = {"context": args.get("context", "")}
+            if args.get("pin"):
+                body["pin"] = args["pin"]
+            req = _asgi_json_request(
+                request, "POST", "/api/melds", body,
+                extra_headers={"X-Meld-Client": "agent"})
+            data = await _mcp_unwrap(await create_meld(req))
+            return {
+                "code": data.get("code"),
+                "share_link": data.get("url"),
+                "owner_link": data.get("owner_url"),
+                "owner_token": data.get("owner_token"),
+                "note": (
+                    "Send the share link to the other party. "
+                    "Keep the owner link to read their answer."
+                ),
+            }
+        if name == "meld_resolve":
+            code = args.get("code", "")
+            body = {"context": args.get("context", "")}
+            if args.get("pin"):
+                body["pin"] = args["pin"]
+            req = _asgi_json_request(
+                request, "POST", f"/api/melds/{code}/resolve", body)
+            data = await _mcp_unwrap(await resolve_meld(code, req))
+            return {
+                "resolved": True,
+                "their_context": data.get("context_a"),
+                "your_context": data.get("context_b"),
+            }
+        if name == "meld_read":
+            code = args.get("code", "")
+            token = args.get("owner_token", "")
+            req = _asgi_json_request(
+                request, "GET", f"/api/melds/{code}/result", None,
+                extra_headers={"X-Meld-Token": token})
+            data = await _mcp_unwrap(await get_result(code, req))
+            return {
+                "resolved": True,
+                "their_context": data.get("context_b"),
+                "your_context": data.get("context_a"),
+                "new_owner_token": data.get("owner_token"),
+                "note": "Use new_owner_token for any future read — the old token is now invalid.",
+            }
+        raise ValueError(f"Unknown tool: {name}")
+    except HTTPException as e:
+        detail = e.detail if isinstance(e.detail, str) else str(e.detail)
+        raise RuntimeError(detail) from e
+
+
+async def _mcp_handle_message(msg: dict, request: Request):
+    """Handle one JSON-RPC message; return a response dict or None for notifications."""
+    if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
+        return {"jsonrpc": "2.0", "id": None,
+                "error": {"code": -32600, "message": "Invalid Request"}}
+    mid = msg.get("id")
+    method = msg.get("method")
+    params = msg.get("params") or {}
+    if method is None:
+        return None
+    if method == "initialize":
+        client_v = (params.get("protocolVersion") if isinstance(params, dict) else None) or ""
+        version = client_v if client_v in _MCP_PROTOCOL_VERSIONS else _MCP_PROTOCOL_VERSIONS[0]
+        return {
+            "jsonrpc": "2.0",
+            "id": mid,
+            "result": {
+                "protocolVersion": version,
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": "meld", "version": "1.0.0"},
+                "instructions": (
+                    "meld: ephemeral two-party context bridge. Use meld_create to mint a "
+                    "share URL, meld_resolve to answer, meld_read (legacy owner token) or "
+                    "GET /api/melds/{code} after resolve. Humans free in browser; agents "
+                    "use key/quota. Base: https://meld.mergeinc.workers.dev"
+                ),
+            },
+        }
+    if method in ("notifications/initialized", "notifications/cancelled"):
+        return None
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": mid, "result": {}}
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": mid, "result": {"tools": _MCP_TOOLS}}
+    if method == "tools/call":
+        name = params.get("name") if isinstance(params, dict) else None
+        arguments = (params.get("arguments") if isinstance(params, dict) else None) or {}
+        try:
+            result = await _mcp_call_tool(name, arguments, request)
+            return {
+                "jsonrpc": "2.0",
+                "id": mid,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
+                },
+            }
+        except Exception as e:
+            return {
+                "jsonrpc": "2.0",
+                "id": mid,
+                "result": {
+                    "content": [{"type": "text", "text": f"Error: {e}"}],
+                    "isError": True,
+                },
+            }
+    if mid is not None:
+        return {"jsonrpc": "2.0", "id": mid,
+                "error": {"code": -32601, "message": f"Method not found: {method}"}}
+    return None
+
+
+@app.post("/mcp")
+async def mcp_post(request: Request):
+    """Streamable HTTP MCP endpoint — JSON response mode (no SSE required)."""
+    cors = _mcp_cors_headers()
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None,
+             "error": {"code": -32700, "message": "Parse error"}},
+            status_code=400, headers=cors)
+
+    messages = payload if isinstance(payload, list) else [payload]
+    if not messages:
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None,
+             "error": {"code": -32600, "message": "Invalid Request"}},
+            status_code=400, headers=cors)
+
+    has_request = any(
+        isinstance(m, dict) and m.get("method") and "id" in m for m in messages)
+    responses = []
+    for m in messages:
+        if not isinstance(m, dict):
+            responses.append({"jsonrpc": "2.0", "id": None,
+                              "error": {"code": -32600, "message": "Invalid Request"}})
+            continue
+        r = await _mcp_handle_message(m, request)
+        if r is not None:
+            responses.append(r)
+
+    if not has_request:
+        return Response(status_code=202, headers=cors)
+
+    if isinstance(payload, list):
+        body = responses
+    else:
+        body = responses[0] if responses else {
+            "jsonrpc": "2.0", "id": payload.get("id") if isinstance(payload, dict) else None,
+            "error": {"code": -32603, "message": "No response"}}
+
+    return JSONResponse(body, headers={**cors, "Content-Type": "application/json"})
+
+
+@app.get("/mcp")
+async def mcp_get():
+    """Stateless server: no standalone SSE stream (JSON mode only)."""
+    return Response(
+        status_code=405,
+        headers={**_mcp_cors_headers(), "Allow": "POST, OPTIONS, DELETE"})
+
+
+@app.delete("/mcp")
+async def mcp_delete():
+    """No session state to tear down."""
+    return Response(
+        status_code=405,
+        headers={**_mcp_cors_headers(), "Allow": "POST, OPTIONS"})
+
+
+
 @app.get("/{path:path}")
 async def serve_page(path: str):
     return HTMLResponse(PAGE)
@@ -1118,10 +1418,10 @@ async def root():
     return HTMLResponse(PAGE)
 
 
-AGENTS_ROOT_MD = '# AGENTS.md — working with meld\n\nThis file follows the AGENTS.md convention: instructions for AI agents\nworking in or around this system.\n\n## What meld is\n\nmeld puts the context on a URL so neither side has to paste the block. Then the URL dies.\n\nAn ephemeral two-party context bridge. Party A creates one share URL; party B\nopens it and answers; either side can read both contexts via\n`GET /api/melds/{code}` after resolve; then the host serves 410 and the meld\nis gone (1h unresolved max, ~10min after resolution). No accounts. The URL\nis the capability.\n\n## When to use it\n\n- You must hand context to another agent or a human exactly once, and no\n  shared store exists.\n- You need one answer back, not a thread.\n- Optional: encrypt client-side before create if the server must not see\n  plaintext.\n- Playbooks: FDE institutional-knowledge gather; provider-switch dump-and-read\n  or request-meld; TTL continuation by embedding the next meld URL — see /recipes.md.\n\n## When NOT to use it\n\n- Multi-turn conversations or anything needing history.\n- Anything that must outlive the TTL (unless you chain melds).\n- Repeated structured access by many consumers — use a real store.\n\n## Quick start (preferred: one URL)\n\n```bash\n# A creates — share only the url (agents: declare client)\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' \\\n  -H \'X-Meld-Client: agent\' \\\n  -d \'{"context":"..."}\'\n# → {code, url, owner_url, owner_token, expires_at}\n#   owner_token is legacy (still returned); prefer the share url alone.\n\n# B answers\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"..."}\'\n\n# A (or anyone with the code) reads both sides after resolve\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n# → {context_a, context_b, resolved: true, …}\n```\n\n### Legacy owner read (still on the live host)\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \\\n  -H \'X-Meld-Token: {owner_token}\'\n# Token rotates every read if you use this path.\n```\n\n## Agent-to-agent pattern\n\nIf you are agent A and your counterpart is agent B: send B the share link\nplus this URL (https://meld.mergeinc.workers.dev/llms.txt) so B can\nself-serve without human setup. If you are agent B and arrived here from a\nshare link: fetch /llms.txt, resolve, done.\n\n## Limits\n\nHumans: free in the browser (`X-Meld-Client: human` or browser UA).\nAgents: 3 melds/hour per IP on POST /api/melds; or mint a key via POST /v1/keys.\nAgent payment protocols are coming; on 429 get a key or wait (Stripe $3.33\none-time unlock still available for the agent wall path).\nHeader: `X-Meld-Pricing: humans-free; agents-key-or-quota`.\nPer-minute abuse rate limits apply to everyone.\nErrors: 400 bad body, 403 pin, 404 missing, 409 conflicting answer,\n410 expired, 429 slow down (Retry-After).\nMachine-readable docs: /llms.txt · /agents.md · /openapi.json · /trust.md\nMCP server manifest: /.well-known/mcp.json\n'
+AGENTS_ROOT_MD = '# AGENTS.md — working with meld\n\nThis file follows the AGENTS.md convention: instructions for AI agents\nworking in or around this system.\n\n## What meld is\n\nmeld puts the context on a URL so neither side has to paste the block. Then the URL dies.\n\nAn ephemeral two-party context bridge. Party A creates one share URL; party B\nopens it and answers; either side can read both contexts via\n`GET /api/melds/{code}` after resolve; then the host serves 410 and the meld\nis gone (1h unresolved max, ~10min after resolution). No accounts. The URL\nis the capability.\n\n## When to use it\n\n- You must hand context to another agent or a human exactly once, and no\n  shared store exists.\n- You need one answer back, not a thread.\n- Optional: encrypt client-side before create if the server must not see\n  plaintext.\n- Playbooks: FDE institutional-knowledge gather; provider-switch dump-and-read\n  or request-meld; TTL continuation by embedding the next meld URL — see /recipes.md.\n\n## When NOT to use it\n\n- Multi-turn conversations or anything needing history.\n- Anything that must outlive the TTL (unless you chain melds).\n- Repeated structured access by many consumers — use a real store.\n\n## Quick start (preferred: one URL)\n\n```bash\n# A creates — share only the url (agents: declare client)\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' \\\n  -H \'X-Meld-Client: agent\' \\\n  -d \'{"context":"..."}\'\n# → {code, url, owner_url, owner_token, expires_at}\n#   owner_token is legacy (still returned); prefer the share url alone.\n\n# B answers\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"..."}\'\n\n# A (or anyone with the code) reads both sides after resolve\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n# → {context_a, context_b, resolved: true, …}\n```\n\n### Legacy owner read (still on the live host)\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \\\n  -H \'X-Meld-Token: {owner_token}\'\n# Token rotates every read if you use this path.\n```\n\n## Agent-to-agent pattern\n\nIf you are agent A and your counterpart is agent B: send B the share link\nplus this URL (https://meld.mergeinc.workers.dev/llms.txt) so B can\nself-serve without human setup. If you are agent B and arrived here from a\nshare link: fetch /llms.txt, resolve, done.\n\n## Limits\n\nHumans: free in the browser (`X-Meld-Client: human` or browser UA).\nAgents: 3 melds/hour per IP on POST /api/melds; or mint a key via POST /v1/keys.\nAgent payment protocols are coming; on 429 get a key or wait (Stripe $3.33\none-time unlock still available for the agent wall path).\nHeader: `X-Meld-Pricing: humans-free; agents-key-or-quota`.\nPer-minute abuse rate limits apply to everyone.\nErrors: 400 bad body, 403 pin, 404 missing, 409 conflicting answer,\n410 expired, 429 slow down (Retry-After).\nMachine-readable docs: /llms.txt · /agents.md · /openapi.json · /trust.md\nMCP remote (streamable-http): https://meld.mergeinc.workers.dev/mcp\nMCP server manifest: /.well-known/mcp.json\n'
 
 
-LLMS_TXT = '# meld\n> meld puts the context on a URL so neither side has to paste the block. Then the URL dies.\n\nBase URL: https://meld.mergeinc.workers.dev\nAuth: none on create / GET /api/melds/{code} / resolve. owner_token is legacy (still returned; only required for GET /result).\nContent limit: context string, max 100000 chars.\nTTL: unresolved 1 hour; after resolve 10 minutes. Then 410 Gone — that is the hard promise.\n\nWhen to use\n- Hand context to another agent or a human on one URL, without a shared store\n- Get a single answer back, then the URL dies\n- Optional client-side encryption: server stores opaque bytes; ciphertext prefixed meld1: is unreadable to the host\n- Playbooks: FDE gather, provider-switch dump/request, TTL continuation — see /recipes.md\n\nDo not use\n- Long-lived memory, chat history, or multi-turn threads\n- Anything that must survive past the TTL (unless you chain melds)\n\nQuick start (preferred: one URL)\n\n  # agents: declare client (curl UA is treated as agent by default)\n  curl -s https://meld.mergeinc.workers.dev/api/melds \\\n    -H \'content-type: application/json\' \\\n    -H \'X-Meld-Client: agent\' \\\n    -d \'{"context":"..."}\'\n  # share only the url with party B\n  # browser / human path: X-Meld-Client: human (or browser UA) — free, no IP free-wall\n\nFlow\n1. POST /api/melds  {"context":"..."}  -> code, url, expires_at (also still returns legacy owner_token)\n2. POST /api/melds/{code}/resolve {"context":"..."}\n3. GET  /api/melds/{code}              -> context_a + context_b when resolved  (preferred Party A read)\n4. GET  /api/melds/{code}/result  header X-Meld-Token: <owner_token>  (legacy; token rotates)\n\nErrors: 400 bad body, 403 bad pin, 404 missing, 409 different answer already stored, 410 expired, 429 rate limit.\nPricing: humans free in the browser (X-Meld-Client: human or browser UA). Agents on POST /api/melds: 3 melds/IP/hour, then POST /v1/keys or wait (Stripe $3.33 one-time unlock still available). Header: X-Meld-Pricing: humans-free; agents-key-or-quota. Agent payment protocols are coming. No subscriptions. Agent API keys: POST /v1/keys — free, 10,000 melds/key. Per-minute abuse rate limits apply to everyone.\n\nDocs\n- Agent API: https://meld.mergeinc.workers.dev/agents.md\n- OpenAPI: https://meld.mergeinc.workers.dev/openapi.json\n- Trust model: https://meld.mergeinc.workers.dev/trust.md\n- Pricing: https://meld.mergeinc.workers.dev/upgrade.md\n- Recipes: https://meld.mergeinc.workers.dev/recipes.md\n- A2A Agent Card: https://meld.mergeinc.workers.dev/.well-known/agent.json\n- Skill install: https://meld.mergeinc.workers.dev/.well-known/agent-skills/index.json\n- MCP server card: https://meld.mergeinc.workers.dev/.well-known/mcp/server-card.json\n- MCP transport: stdio (meld-mcp.mjs, zero deps, Node 18+). Config in /agents.md.\n\nAgent-to-agent pattern\n- You (agent A) need to hand context to a counterpart (agent B or human) exactly once.\n- Create: POST /api/melds {"context": "..."} with X-Meld-Client: agent -> share url (ignore owner_token unless you need the legacy /result path).\n- Send ONLY the share url to B. B resolves; you (or B) read both sides with GET /api/melds/{code}.\n- After TTL the host serves 410 and the meld is gone. No shared store, no account, no cleanup debt.\n- If the counterpart is another agent, send it the /llms.txt URL alongside the share link.\n'
+LLMS_TXT = '# meld\n> meld puts the context on a URL so neither side has to paste the block. Then the URL dies.\n\nBase URL: https://meld.mergeinc.workers.dev\nAuth: none on create / GET /api/melds/{code} / resolve. owner_token is legacy (still returned; only required for GET /result).\nContent limit: context string, max 100000 chars.\nTTL: unresolved 1 hour; after resolve 10 minutes. Then 410 Gone — that is the hard promise.\n\nWhen to use\n- Hand context to another agent or a human on one URL, without a shared store\n- Get a single answer back, then the URL dies\n- Optional client-side encryption: server stores opaque bytes; ciphertext prefixed meld1: is unreadable to the host\n- Playbooks: FDE gather, provider-switch dump/request, TTL continuation — see /recipes.md\n\nDo not use\n- Long-lived memory, chat history, or multi-turn threads\n- Anything that must survive past the TTL (unless you chain melds)\n\nQuick start (preferred: one URL)\n\n  # agents: declare client (curl UA is treated as agent by default)\n  curl -s https://meld.mergeinc.workers.dev/api/melds \\\n    -H \'content-type: application/json\' \\\n    -H \'X-Meld-Client: agent\' \\\n    -d \'{"context":"..."}\'\n  # share only the url with party B\n  # browser / human path: X-Meld-Client: human (or browser UA) — free, no IP free-wall\n\nFlow\n1. POST /api/melds  {"context":"..."}  -> code, url, expires_at (also still returns legacy owner_token)\n2. POST /api/melds/{code}/resolve {"context":"..."}\n3. GET  /api/melds/{code}              -> context_a + context_b when resolved  (preferred Party A read)\n4. GET  /api/melds/{code}/result  header X-Meld-Token: <owner_token>  (legacy; token rotates)\n\nErrors: 400 bad body, 403 bad pin, 404 missing, 409 different answer already stored, 410 expired, 429 rate limit.\nPricing: humans free in the browser (X-Meld-Client: human or browser UA). Agents on POST /api/melds: 3 melds/IP/hour, then POST /v1/keys or wait (Stripe $3.33 one-time unlock still available). Header: X-Meld-Pricing: humans-free; agents-key-or-quota. Agent payment protocols are coming. No subscriptions. Agent API keys: POST /v1/keys — free, 10,000 melds/key. Per-minute abuse rate limits apply to everyone.\n\nDocs\n- Agent API: https://meld.mergeinc.workers.dev/agents.md\n- OpenAPI: https://meld.mergeinc.workers.dev/openapi.json\n- Trust model: https://meld.mergeinc.workers.dev/trust.md\n- Pricing: https://meld.mergeinc.workers.dev/upgrade.md\n- Recipes: https://meld.mergeinc.workers.dev/recipes.md\n- A2A Agent Card: https://meld.mergeinc.workers.dev/.well-known/agent.json\n- Skill install: https://meld.mergeinc.workers.dev/.well-known/agent-skills/index.json\n- MCP server card: https://meld.mergeinc.workers.dev/.well-known/mcp/server-card.json\n- MCP remote (streamable-http): https://meld.mergeinc.workers.dev/mcp\n- MCP stdio: meld-mcp.mjs (zero deps, Node 18+). Config in /agents.md.\n\nAgent-to-agent pattern\n- You (agent A) need to hand context to a counterpart (agent B or human) exactly once.\n- Create: POST /api/melds {"context": "..."} with X-Meld-Client: agent -> share url (ignore owner_token unless you need the legacy /result path).\n- Send ONLY the share url to B. B resolves; you (or B) read both sides with GET /api/melds/{code}.\n- After TTL the host serves 410 and the meld is gone. No shared store, no account, no cleanup debt.\n- If the counterpart is another agent, send it the /llms.txt URL alongside the share link.\n'
 
 
 ROBOTS_TXT = """User-agent: GPTBot
@@ -1145,7 +1445,7 @@ Sitemap: https://meld.mergeinc.workers.dev/sitemap.xml
 """
 
 
-AGENTS_MD = '# meld — agent API\n\nmeld puts the context on a URL so neither side has to paste the block. Then the URL dies.\n\nEphemeral two-party context drop. One URL carries context from party A to\nparty B, B answers, both sides are readable via GET /api/melds/{code}, then\nthe host serves 410. No accounts. The URL is the protocol.\n\n## Quick start (preferred)\n\n```bash\n# 1. Create (party A) — agents declare client\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' \\\n  -H \'X-Meld-Client: agent\' \\\n  -d \'{"context":"What architecture fits 10M users?"}\'\n\n# 2. Party B resolves\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"Event-driven services + a queue."}\'\n\n# 3. Read both sides (no token)\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\n### Legacy owner read (still on the live host)\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \\\n  -H \'X-Meld-Token: {owner_token}\'\n```\n\n## Endpoints\n\n| Method | Path | Auth | Purpose |\n|---|---|---|---|\n| POST | /api/melds | none | Create. Body: {context, email?, pin?}. Returns code, url, expires_at (also legacy owner_url / owner_token). Header X-Meld-Client: human|agent. |\n| GET | /api/melds/{code} | none | Preferred read. Returns context_a, context_b, resolved. |\n| POST | /api/melds/{code}/resolve | pin if set | Answer. Body: {context, pin?}. Idempotent for identical context (200 retry:true), 409 for a different answer. |\n| GET | /api/melds/{code}/result | X-Meld-Token | Legacy owner read. Token ROTATES every read. |\n| POST | /v1/keys | none | Create agent API key (mk_...), free, 5/min. |\n| GET | /api/health | none | Liveness probe. |\n\n## Semantics\n\n- TTL: unresolved 1 hour; after resolve ~10 minutes; then 410 Gone and the row is deleted. That is the hard promise.\n- Idempotency: resolving twice with the IDENTICAL context returns 200 {retry: true}. A different answer returns 409.\n- Errors: 400 bad body, 403 wrong/missing pin, 404 no such meld, 409 conflicting answer, 410 expired, 429 rate limited (honor Retry-After).\n- Pricing: humans free in the browser (X-Meld-Client: human or browser UA). Agents: 3 creates/hour per IP on POST /api/melds; or POST /v1/keys. Agent payment protocols are coming; on 429 get a key or wait (Stripe $3.33 one-time unlock still available). Header: X-Meld-Pricing: humans-free; agents-key-or-quota. No subscriptions. Per-minute abuse rate limits apply to everyone.\n\n## MCP\n\nMCP server (Claude Desktop, Cursor, etc.): tools meld_create / meld_resolve / meld_read.\nManifest: /.well-known/mcp.json\n'
+AGENTS_MD = '# meld — agent API\n\nmeld puts the context on a URL so neither side has to paste the block. Then the URL dies.\n\nEphemeral two-party context drop. One URL carries context from party A to\nparty B, B answers, both sides are readable via GET /api/melds/{code}, then\nthe host serves 410. No accounts. The URL is the protocol.\n\n## Quick start (preferred)\n\n```bash\n# 1. Create (party A) — agents declare client\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' \\\n  -H \'X-Meld-Client: agent\' \\\n  -d \'{"context":"What architecture fits 10M users?"}\'\n\n# 2. Party B resolves\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"Event-driven services + a queue."}\'\n\n# 3. Read both sides (no token)\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\n### Legacy owner read (still on the live host)\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \\\n  -H \'X-Meld-Token: {owner_token}\'\n```\n\n## Endpoints\n\n| Method | Path | Auth | Purpose |\n|---|---|---|---|\n| POST | /api/melds | none | Create. Body: {context, email?, pin?}. Returns code, url, expires_at (also legacy owner_url / owner_token). Header X-Meld-Client: human|agent. |\n| GET | /api/melds/{code} | none | Preferred read. Returns context_a, context_b, resolved. |\n| POST | /api/melds/{code}/resolve | pin if set | Answer. Body: {context, pin?}. Idempotent for identical context (200 retry:true), 409 for a different answer. |\n| GET | /api/melds/{code}/result | X-Meld-Token | Legacy owner read. Token ROTATES every read. |\n| POST | /v1/keys | none | Create agent API key (mk_...), free, 5/min. |\n| GET | /api/health | none | Liveness probe. |\n\n## Semantics\n\n- TTL: unresolved 1 hour; after resolve ~10 minutes; then 410 Gone and the row is deleted. That is the hard promise.\n- Idempotency: resolving twice with the IDENTICAL context returns 200 {retry: true}. A different answer returns 409.\n- Errors: 400 bad body, 403 wrong/missing pin, 404 no such meld, 409 conflicting answer, 410 expired, 429 rate limited (honor Retry-After).\n- Pricing: humans free in the browser (X-Meld-Client: human or browser UA). Agents: 3 creates/hour per IP on POST /api/melds; or POST /v1/keys. Agent payment protocols are coming; on 429 get a key or wait (Stripe $3.33 one-time unlock still available). Header: X-Meld-Pricing: humans-free; agents-key-or-quota. No subscriptions. Per-minute abuse rate limits apply to everyone.\n\n## MCP\n\nRemote (streamable-http): https://meld.mergeinc.workers.dev/mcp\nTools: meld_create / meld_resolve / meld_read.\nStdio: `npx meld-mcp` (or node mcp/meld-mcp.mjs).\nManifest: /.well-known/mcp.json · server card: /.well-known/mcp/server-card.json\n'
 
 
 TRUST_MD = '# meld — trust model\n\nSee the full trust model at /trust (human page). Summary for agents:\n\n- Hard promise: after TTL T the host serves 410 and the meld is gone.\n- No accounts, no user database. The URL is the capability.\n- Preferred read after resolve: GET /api/melds/{code} (both sides, no token).\n- owner_token + GET /result are legacy (still present); token rotates if used.\n- Optional client-side encryption: server holds whatever bytes you POST.\n- No long-term content archive. Payment identity lives with Stripe only.\n\nCommitments we will not add: accounts, content scanning, read receipts, long-term persistence of meld content.\n'
@@ -1157,7 +1457,63 @@ UPGRADE_MD = '# meld — pricing\n\nHumans: free in the browser (`X-Meld-Client:
 RECIPES_MD = '# meld recipes — concrete triggers, not a manifesto\n\nFour playbooks that make an agent choose meld over a gist, a pastebin, or a\nSlack message. Base URL: https://meld.mergeinc.workers.dev\n\nPricing: humans free in the browser. Agents: 3 free creates/hour per IP, or\n`POST /v1/keys` for quota. Response header `X-Meld-Pricing: humans-free; agents-key-or-quota`.\n\n---\n\n## 1. FDE institutional-knowledge gather\n\nA forward-deployed engineer (or coding agent) needs the team\'s unspoken context\nbefore changing a production path — runbooks, tribal gotchas, who owns the pager.\n\n```\nAgent:   POST /api/melds  {"context": "<question + repo paths + what you already know>"}\n         -H \'X-Meld-Client: agent\'\n         → share url with the human / oncall\nHuman:   opens link in browser (free), pastes institutional knowledge, resolves\nAgent:   GET /api/melds/{code}\n         → reads both sides, proceeds with the change\n```\n\nWhy meld: one URL collects the answer; TTL burns the dump; no wiki edit, no\nSlack archaeology, no permanent paste of secrets-adjacent notes.\n\n---\n\n## 2. Provider-switch dump-and-read\n\nYou are leaving provider A. Dump the working thread / system prompt / tool\nstate into a meld, then open it from provider B and continue.\n\n```\nAgent A: POST /api/melds  {"context": "<full dump: goals, constraints, files, next step>"}\n         → keep the url\nAgent B: GET /api/melds/{code}   (before resolve, context_a is readable)\n         → ingest the dump, then resolve with "{ack + first action}"\nAgent A or B: GET /api/melds/{code} after resolve for the sealed exchange\n```\n\nWhy meld: the URL is the only contract across vendors. No shared memory, no\naccount on either side. Prefer `X-Meld-Client: agent` or an API key on /v1.\n\n---\n\n## 3. Provider-switch request-meld\n\nSame switch, but the *new* provider asks the *old* one for context — the\nrequest travels as a meld, the dump comes back as the resolve.\n\n```\nAgent B (new): POST /api/melds  {"context": "<what I need from the prior session>"}\n               → sends share url to Agent A (old)\nAgent A:       opens/resolves with the dump\nAgent B:       GET /api/melds/{code}  → continues with context_b\n```\n\nWhy meld: pull-based handoff. The new side controls the question; the old\nside answers once; then 410.\n\n---\n\n## 4. TTL continuation (embed the next meld URL)\n\nA long task will outlive one TTL. Before expiry, create the *next* meld and\nembed its URL in the resolve (or in context_a) so the counterpart continues\non a fresh link.\n\n```\nAgent:   POST /api/melds  {"context": "<part 1 + note: continue at NEXT_URL when this dissolves>"}\n         → share url_1\nLater:   POST /api/melds  {"context": "<part 2 / rolled-forward state>"}  → url_2\n         resolve url_1 with {"context": "continued at https://…/m/{code2}"}\nCounterpart: follows the embedded next-meld URL, no shared store required\n```\n\nWhy meld: chains survive the hard 410 promise without accounts or history.\nEach hop still dies on schedule.\n\n---\n\n## Classifier quick ref\n\n| Client | How | Free IP wall on POST /api/melds |\n|---|---|---|\n| Human browser | `X-Meld-Client: human` or browser UA | skipped |\n| Agent / curl | `X-Meld-Client: agent` or non-browser UA | 3/hour, then key or $3.33 unlock |\n| API key | `POST /v1/melds` + Bearer mk_… | key quota (not IP free wall) |\n\nPer-minute abuse limits apply to everyone.\n'
 
 
-MCP_SERVER_CARD = {'serverInfo': {'name': 'meld', 'version': '1.0.0'}, 'description': 'Ephemeral two-party context bridge. Create a self-destructing link that carries context to another agent or human, receive one answer, then everything dissolves. No accounts. Client-side encryption compatible.', 'homepage': 'https://meld.mergeinc.workers.dev', 'authentication': {'required': False}, 'tools': [{'name': 'meld_create', 'description': 'Create an ephemeral context bridge. Returns a share link for the counterpart and an owner token to read the answer. Content max 100K chars, TTL 1h unresolved / ~10min post-exchange, then deleted.', 'inputSchema': {'type': 'object', 'properties': {'context': {'type': 'string'}, 'pin': {'type': 'string'}}, 'required': ['context']}}, {'name': 'meld_resolve', 'description': "Answer a meld link you received. Submit your context, receive the original party's context.", 'inputSchema': {'type': 'object', 'properties': {'code': {'type': 'string'}, 'context': {'type': 'string'}, 'pin': {'type': 'string'}}, 'required': ['code', 'context']}}, {'name': 'meld_read', 'description': "Owner: read the counterpart's answer. Token rotates every read.", 'inputSchema': {'type': 'object', 'properties': {'code': {'type': 'string'}, 'owner_token': {'type': 'string'}}, 'required': ['code', 'owner_token']}}], 'resources': [], 'prompts': []}
+MCP_SERVER_CARD = {
+    'serverInfo': {'name': 'meld', 'version': '1.0.0'},
+    'description': (
+        'Ephemeral two-party context bridge. Create a self-destructing link that '
+        'carries context to another agent or human, receive one answer, then '
+        'everything dissolves. No accounts. Client-side encryption compatible.'
+    ),
+    'homepage': 'https://meld.mergeinc.workers.dev',
+    'url': 'https://meld.mergeinc.workers.dev/mcp',
+    'transport': 'streamable-http',
+    'authentication': {'required': False},
+    'tools': [
+        {
+            'name': 'meld_create',
+            'description': (
+                'Create an ephemeral context bridge. Returns a share link for the '
+                'counterpart and an owner token to read the answer. Content max 100K '
+                'chars, TTL 1h unresolved / ~10min post-exchange, then deleted.'
+            ),
+            'inputSchema': {
+                'type': 'object',
+                'properties': {'context': {'type': 'string'}, 'pin': {'type': 'string'}},
+                'required': ['context'],
+            },
+        },
+        {
+            'name': 'meld_resolve',
+            'description': (
+                "Answer a meld link you received. Submit your context, receive the "
+                "original party's context."
+            ),
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'code': {'type': 'string'},
+                    'context': {'type': 'string'},
+                    'pin': {'type': 'string'},
+                },
+                'required': ['code', 'context'],
+            },
+        },
+        {
+            'name': 'meld_read',
+            'description': "Owner: read the counterpart's answer. Token rotates every read.",
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'code': {'type': 'string'},
+                    'owner_token': {'type': 'string'},
+                },
+                'required': ['code', 'owner_token'],
+            },
+        },
+    ],
+    'resources': [],
+    'prompts': [],
+}
 
 
 AGENT_CARD = {
@@ -1197,8 +1553,10 @@ MCP_MANIFEST = {
     "name": "meld",
     "description": "Ephemeral two-party context drop. Create a link, receive an answer, then everything dissolves.",
     "version": "1.0.0",
-    "url": "https://meld.mergeinc.workers.dev",
-    "transport": "stdio",
+    "url": "https://meld.mergeinc.workers.dev/mcp",
+    "homepage": "https://meld.mergeinc.workers.dev",
+    "transport": "streamable-http",
+    "transports": ["streamable-http", "stdio"],
     "command": "npx meld-mcp",
     "tools": ["meld_create", "meld_resolve", "meld_read"],
     "docs": "https://meld.mergeinc.workers.dev/llms.txt",

@@ -183,3 +183,128 @@ None. No Show HN. No email/Slack/tweets/DMs as the user.
 ### Blockers needing the user (only if truly blocking solo)
 - Contact email for mcpservers.org free form (and similar inbox-gated directories)
 - Social / OIDC / Show HN still user-gated — **not** required to continue solo Wave 4 monitoring + more unauth channels
+## Wave 4 — ~14:58–15:05 PT (2026-09-26)
+
+### Priority detour — Glama for punkpeye #15198
+GitHub Actions bot required Glama listing + score badge before merge.
+
+| Step | Outcome |
+|---|---|
+| (1) Dockerfile for MCP introspection | **Done** (already on `main` via https://github.com/lemonaide152/meld/pull/6 — `371ea8a`). Root `Dockerfile` + `mcp/Dockerfile` run `node meld-mcp.mjs`. Local verify: `initialize` + `tools/list` → `meld_create` / `meld_resolve` / `meld_read`. `glama.json` maintainers=`lemonaide152` already present. |
+| (2) Submit https://glama.ai/mcp/servers | **Blocked — user must sign in.** Clicking Add Server opens Sign Up modal (Google / **GitHub** / Discord / email + captcha). No unauth submit API. Chrome profiles have no Glama auth cookies (analytics only). |
+| (2b) https://glama.ai/mcp/connectors | Same auth wall. Also: hosted worker is HTTP API + stdio MCP today — **not** streamable-http `/mcp`, so connector health would fail until a remote MCP transport is added. |
+| (3) Update PR README badge | **Deferred** — no Glama path until listing exists. Expected path `lemonaide152/meld`. |
+| (4) Reply on PR | **Posted** https://github.com/punkpeye/awesome-mcp-servers/pull/15198#issuecomment-5850268973 |
+
+**Glama URL:** none yet (404 on `/mcp/servers/lemonaide152/meld`). **PR status:** still OPEN; bot check unanswered until OAuth submit + badge.
+
+### MeshKore
+- WS keepalive pid + 5-min heartbeat loop: **alive**
+- API `GET /v1/agents/meld` → **`live=1`**, endpoint `https://meld.mergeinc.workers.dev`
+- HTML profile may still show offline (SSR lag); API is source of truth
+
+### Channel monitor (no bumps)
+| Channel | Status |
+|---|---|
+| punkpeye #15198 | OPEN — Glama-check comment; our reply posted; badge pending OAuth |
+| TensorBlock #2732 | OPEN, unmerged, 0 review comments |
+| mcp.so #4425 | OPEN, 0 comments |
+| mcp.directory | Still pending prior 409 submit |
+| aiagenttools `/tool-meld` | Still **404** |
+| AgentMRR product | Still public **404** |
+| mcpub.dev | Still registered (Wave 3) |
+| Fushu.dev | Still **500** — **not retried** (per rule) |
+
+### Other Wave 4 directory work
+**Paused** per parent Glama detour. Did **not** open awesome-remote-mcp-servers / remotemcplist PRs this wave.
+
+### Fake traffic
+None. No Show HN. No email/Slack/tweets/DMs as the user. No invented emails.
+
+### D1 snapshot (after Wave 4)
+- Live `melds` rows: **7**; resolved among them: **0**
+- Funnel 2026-09-26: `created=12`, `free_limit_hit=4` (unchanged)
+- Classification unchanged:
+  - `d2it56eot8zk`, `ni0o1ah7esqd` — operator empty probes (IP `104.30.180.115`, pre-harden residue)
+  - `mg1fa9q0d703`, `iqau1n399f2r` — smoke (“status check only — discard”)
+  - `93h9govipt22`, `owe2sk52i3nw` — builder `api:11b6ebec…`
+  - `cpaqxw4s6dwu` — builder seed `api:956fde15…`
+- **Legitimate external user: NO**
+
+### Recommended Wave 5 (ranked; solo where possible)
+1. **User GitHub OAuth on Glama** — Add Server for `https://github.com/lemonaide152/meld` (unblocks punkpeye badge + merge). Then agent updates #15198 README badge + re-checks score.
+2. Optional high-leverage: add **streamable-http** `/mcp` on the Worker (empty `Response` 204 for OPTIONS — never `JSONResponse` 204) → Glama connectors path without Docker build.
+3. Resume paused lists: `jaw9c/awesome-remote-mcp-servers` and/or `punkpeye/awesome-remote-mcp-servers` PR; `remotemcplist/servers` YAML PR.
+4. Monitor TensorBlock #2732, mcp.so #4425, mcp.directory, aiagenttools; Fushu only if not 500.
+5. Keep MeshKore WS supervised; D1 watch for non-smoke / non-`api:*` / non-operator-IP creates with real context.
+6. Still user-gated (do not ask): social drafts, Official MCP Registry OIDC, Show HN, mcpservers.org contact email.
+
+### Blockers needing the user (Glama only is blocking #15198 merge)
+- **Glama Sign Up / GitHub OAuth** to submit lemonaide152/meld (Add Server). After that, agent can finish badge + PR update solo.
+
+## Wave 5 started — 15:08 PT
+- Glama OAuth done by user; Add Server in progress; badge pending listing URL.
+
+## Wave 5 continuation — 15:16 PT (2026-09-26)
+
+### Directory / discovery sweep (non-social only)
+- **awesome-remote-mcp-servers** (`punkpeye` and `jaw9c`): checked open-PR search and cloned/read contribution requirements; no existing open meld PR found. **No submission made** because meld currently exposes stdio MCP only; `GET https://meld.mergeinc.workers.dev/mcp` returns the SPA HTML rather than a streamable MCP transport. Do not list a non-working remote MCP endpoint.
+- **remotemcplist/servers**: checked open-PR search and YAML contribution format; no existing open meld PR found. **No submission made** for the same transport reason.
+- **TensorBlock #2732**: still OPEN on the public PR page; no review activity requiring a nudge, so left untouched (no spam).
+- **mcp.so #4425 / mcp.directory / aiagenttools**: status sweep only. mcp.directory home is live but no public review status; aiagenttools `/tool-meld` remains HTTP 404; no actionable nudge sent.
+- **Fushu.dev** remains HTTP 500; not retried. No social channels and no Glama action in this continuation.
+
+### D1 user check (read-only)
+Using the supplied account/database and Cloudflare API token, query completed successfully.
+- Live `melds`: **7**; resolved: **0**
+- Funnel for 2026-09-26: `created=12`, `free_limit_hit=4`
+- Live rows: nonempty **5**, empty **2**; smoke/discard **2**; builder `api:*` creator IPs **3**; operator IP rows **4**; no new rows since the previous snapshot.
+- **Legitimate external user: NO.** No row met the non-smoke, non-discard, non-builder, non-operator criteria.
+
+### MeshKore
+- `GET https://api.meshkore.com/v1/agents/meld`: HTTP 200, `registered=1`, **`live=1`**, endpoint `https://meld.mergeinc.workers.dev` (checked ~15:14 PT).
+- WS keepalive and 5-minute heartbeat loop are running; latest heartbeat log success ~15:11 PT. No restart needed.
+
+### Repo note
+- LICENSE (MIT) fix pushed to `main` as **f287197**; noted for Glama follow-up by parent. No Glama action taken here.
+
+## MCP approval next steps (noted 2026-09-26 16:22 PT)
+- Glama LIVE: https://glama.ai/mcp/servers/lemonaide152/meld (rated A)
+- Badge added to punkpeye #15198
+- Still open: TensorBlock #2732, mcp.so #4425, mcp.directory pending
+- Optional: Worker streamable-http /mcp for connectors/remote dirs
+- Check Glama Admin warning if present
+
+## MCP approval next steps (noted 2026-09-26 ~15:21 PT)
+- Glama LIVE: https://glama.ai/mcp/servers/lemonaide152/meld (rated A); LICENSE f287197
+- Badge pushed to punkpeye #15198 (ea5333e); comment posted
+- Still open: TensorBlock #2732, mcp.so #4425, mcp.directory pending
+- Optional: Worker streamable-http /mcp for connectors/remote dirs
+- Check Glama Admin warning if present; do not resubmit Glama unless rejected again
+
+## Glama release verified (2026-09-26 ~15:33 PT)
+- 0.1.0 Latest published 2026-09-26 16:31 PT; build email was lag
+- Discovery ~67% (calculating); Admin release warning cleared
+
+## Wave — streamable-http /mcp (2026-09-26 ~16:05 PT)
+
+### Shipped
+- Transport: **Streamable HTTP** (JSON response mode, stateless; GET `/mcp` → 405 no SSE)
+- Live URL: `https://meld.mergeinc.workers.dev/mcp`
+- Tools: `meld_create` / `meld_resolve` / `meld_read` (same handlers as `/api` + stdio MCP)
+- OPTIONS `/mcp` → empty-body `Response(204)` (not JSONResponse)
+- Discovery updated: `/.well-known/mcp.json`, server-card, `/llms.txt`, `/agents.md`, `mcp/README.md`, root README
+- Also merged wave2/wave3 to main (empty-context reject + OPTIONS CORS fix already live)
+
+### Deploy
+- Worker version `0c6f3bf3-830d-4e94-b718-523006b48003` (~16:05 PT)
+
+### Smoke (no junk rows)
+- `initialize` → protocolVersion `2025-03-26`
+- `notifications/initialized` → 202
+- `tools/list` → three tools
+- `tools/call meld_create` with empty context → `isError` "Context must be non-empty" (no D1 write)
+- GET `/mcp` → 405 (not SPA HTML); POST `/mcp` → JSON-RPC (not SPA)
+
+### Directories
+- **Ready to submit** to awesome-remote-mcp-servers / remotemcplist / Glama connectors with URL `https://meld.mergeinc.workers.dev/mcp` (Open auth). Actual PRs/submits deferred to parent (this task: ship endpoint only).

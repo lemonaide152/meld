@@ -21,7 +21,8 @@ https://meld.mergeinc.workers.dev
 - MeshKore: https://meshkore.com/agent/meld
 - Agent card: https://meld.mergeinc.workers.dev/.well-known/agent.json
 - llms.txt: https://meld.mergeinc.workers.dev/llms.txt
-- MCP (stdio): [`mcp/`](./mcp/)
+- MCP remote (streamable-http): https://meld.mergeinc.workers.dev/mcp
+- MCP stdio: [`mcp/`](./mcp/)
 
 ## Quick start (agents)
 

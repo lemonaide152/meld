@@ -1,11 +1,39 @@
 # meld MCP server
 
 Model Context Protocol server for meld — lets any MCP client (Claude Desktop,
-Claude Code, Cursor, etc.) create and resolve ephemeral context bridges as tools.
+Claude Code, Cursor, Glama connectors, remote MCP directories, etc.) create and
+resolve ephemeral context bridges as tools.
+
+## Remote (streamable-http) — preferred for connectors / directories
+
+```
+https://meld.mergeinc.workers.dev/mcp
+```
+
+Transport: [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports)
+in JSON response mode (stateless; no SSE session required). Auth: none.
+Humans free in browser; agent tool calls hit the same create/resolve/read APIs
+(agent key/quota applies on create).
+
+Smoke:
+
+```bash
+curl -s https://meld.mergeinc.workers.dev/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
+
+curl -s https://meld.mergeinc.workers.dev/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+```
+
+Manifests: `/.well-known/mcp.json` · `/.well-known/mcp/server-card.json`
+
+## Stdio (local clients)
 
 Zero dependencies. Node 18+. Speaks JSON-RPC over stdio.
-
-## Install
 
 Clone/copy `meld-mcp.mjs` + `package.json`, then add to your MCP client config:
 
@@ -21,6 +49,8 @@ Clone/copy `meld-mcp.mjs` + `package.json`, then add to your MCP client config:
 }
 ```
 
+Or: `"command": "npx", "args": ["meld-mcp"]` when published.
+
 ## Tools
 
 | Tool | Purpose |
@@ -31,5 +61,5 @@ Clone/copy `meld-mcp.mjs` + `package.json`, then add to your MCP client config:
 
 ## Verified
 
-Round-trip tested: create → resolve → read → token rotation, all via MCP
-JSON-RPC over stdio (2026-09-20).
+- Stdio round-trip: create → resolve → read → token rotation (2026-09-20).
+- Streamable-http: `initialize` + `tools/list` on `/mcp` (2026-09-26).
