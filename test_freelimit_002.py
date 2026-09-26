@@ -12,7 +12,7 @@ import sqlite3
 import sys
 import types
 
-DEPLOY = "/opt/data/profiles/meld/workspace/deploy"
+DEPLOY = str((__import__("pathlib").Path(__file__).resolve().parent / "deploy"))
 sys.path.insert(0, DEPLOY)
 
 # ── shim the Workers runtime imports before importing worker.py ──
@@ -121,16 +121,34 @@ class FakeRequest:
 
 
 def run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
-async def do_create(d1, ip, context="x", email=None):
+def _unwrap(result):
+    """create_meld may return JSONResponse (pricing header) or a plain dict."""
+    if hasattr(result, "body"):
+        raw = result.body
+        if isinstance(raw, (bytes, bytearray, memoryview)):
+            raw = bytes(raw).decode()
+        data = json.loads(raw)
+        # expose response headers for pricing assertions
+        data["_headers"] = {k.decode() if isinstance(k, bytes) else k:
+                            v.decode() if isinstance(v, bytes) else v
+                            for k, v in dict(result.headers).items()}
+        return data
+    return result
+
+
+async def do_create(d1, ip, context="x", email=None, headers=None):
     body = {"context": context}
     if email:
         body["email"] = email
-    req = FakeRequest(d1, body, {"x-forwarded-for": ip})
+    hdrs = {"x-forwarded-for": ip}
+    if headers:
+        hdrs.update(headers)
+    req = FakeRequest(d1, body, hdrs)
     try:
-        return ("ok", await worker.create_meld(req))
+        return ("ok", _unwrap(await worker.create_meld(req)))
     except worker.HTTPException as e:
         return ("err", e.status_code, (e.headers or {}))
 
@@ -417,12 +435,61 @@ def test_email_inert():
        all(r[0] == "ok" for r in results), str([r[:2] for r in results]))
 
 
+
+
+# ── T15: humans skip FREE_LIMIT; agents still walled; pricing header ────
+def test_human_skips_free_wall():
+    print("T15 humans-free: browser/human header skips FREE_LIMIT; agents wall")
+    d1 = fresh_db()
+    hip = "10.1.0.15"
+    # Explicit human header — beyond FREE_LIMIT still admitted
+    results = [run(do_create(d1, hip, context=f"h-{i}",
+                             headers={"x-meld-client": "human",
+                                      "user-agent": "curl/8.0"}))  # header wins over curl
+               for i in range(worker.FREE_LIMIT + 2)]
+    ok("T15.a human header admits past FREE_LIMIT",
+       all(r[0] == "ok" for r in results),
+       str([r[:2] for r in results]))
+    # Pricing header on create
+    hdrs = results[0][1].get("_headers", {})
+    pricing = hdrs.get("x-meld-pricing") or hdrs.get("X-Meld-Pricing")
+    ok("T15.b create carries X-Meld-Pricing",
+       pricing == worker.PRICING_HEADER, f"headers={hdrs}")
+
+    # Browser UA, missing X-Meld-Client => human
+    bip = "10.1.0.16"
+    browser = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    bres = [run(do_create(d1, bip, context=f"b-{i}",
+                          headers={"user-agent": browser}))
+            for i in range(worker.FREE_LIMIT + 2)]
+    ok("T15.c browser UA admits past FREE_LIMIT",
+       all(r[0] == "ok" for r in bres),
+       str([r[:2] for r in bres]))
+
+    # curl UA (no human header) => agent wall
+    aip = "10.1.0.17"
+    for i in range(worker.FREE_LIMIT):
+        run(do_create(d1, aip, context=f"a-{i}",
+                      headers={"user-agent": "curl/8.4.0", "x-meld-client": "agent"}))
+    r4 = run(do_create(d1, aip, context="a-wall",
+                       headers={"user-agent": "curl/8.4.0"}))
+    ok("T15.d curl UA walled on 4th",
+       r4[0] == "err" and r4[1] == 429, f"got {r4[:2]}")
+    detail_headers = r4[2] if r4[0] == "err" else {}
+    # HTTPException detail is the message; headers should mention pricing + agent msg path
+    ok("T15.e agent wall carries X-Meld-Pricing",
+       (detail_headers or {}).get("X-Meld-Pricing") == worker.PRICING_HEADER
+       or (detail_headers or {}).get("x-meld-pricing") == worker.PRICING_HEADER,
+       f"headers={detail_headers}")
+
+
 for t in [test_count_created_accumulates, test_live_rows_still_blocked,
           test_window_rolls, test_no_lease_bypass, test_first_hit_no_offense,
           test_second_hit_first_rung, test_ladder_walks, test_operator_permanent,
           test_webhook_exempt,
           test_nat_shared_ip, test_limiter_violation_registers, test_prune,
-          test_retry_after_wall, test_keys_limiter, test_email_inert]:
+          test_retry_after_wall, test_keys_limiter, test_email_inert,
+          test_human_skips_free_wall]:
     t()
 
 print(f"\n{passed}/{total} passed")
