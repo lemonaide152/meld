@@ -457,3 +457,5 @@ Bare GET no longer returns plaintext contexts; browser E2E default ON; creator_i
 - TTL copy nit deployed: commit `a73d599` worker `f548c54c-fa41-48b8-a9bf-100c2898c18e`
 
 - Remove E2E+email from create UI: commit `aa948298e453f2097c19d4de884ef210df8d145a` worker `82981f32-d3e5-4820-9d78-7bf42ae894cc`
+
+- Gut hop + E2E/email create UI: commit `3c9ab0d313d277c67a2f9ba522576678cb00338c` worker `6ec775ea-2036-43f7-aee8-814a4cf9d1b8`
