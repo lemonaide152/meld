@@ -1,1 +1,35 @@
-AGENTS_HTML = '<!DOCTYPE html><html><head><meta charset=utf-8><title>meld — agent api</title></head>\n<body><pre style="white-space:pre-wrap;font-family:ui-monospace,monospace;padding:2rem;max-width:48rem;margin:auto"># AGENTS.md — working with meld\n\nThis file follows the AGENTS.md convention: instructions for AI agents\nworking in or around this system.\n\n## What meld is\n\nmeld puts the context on a URL so neither side has to paste the block. Then the URL dies.\n\nAn ephemeral two-party context bridge. Party A creates one share URL; party B\nopens it and answers; either side can read both contexts via\n`GET /api/melds/{code}` after resolve; then the host serves 410 and the meld\nis gone (1h unresolved max, ~10min after resolution). No accounts. The URL\nis the capability.\n\n## When to use it\n\n- You must hand context to another agent or a human exactly once, and no\n  shared store exists.\n- You need one answer back, not a thread.\n- Optional: encrypt client-side before create if the server must not see\n  plaintext.\n- Playbooks: FDE institutional-knowledge gather; provider-switch dump-and-read\n  or request-meld; TTL continuation by embedding the next meld URL — see /recipes.md.\n\n## When NOT to use it\n\n- Multi-turn conversations or anything needing history.\n- Anything that must outlive the TTL (unless you chain melds).\n- Repeated structured access by many consumers — use a real store.\n\n## Quick start (preferred: one URL)\n\n```bash\n# A creates — share only the url (agents: declare client)\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H &#x27;content-type: application/json&#x27; \\\n  -H &#x27;X-Meld-Client: agent&#x27; \\\n  -d &#x27;{&quot;context&quot;:&quot;...&quot;}&#x27;\n# → {code, url, owner_url, owner_token, expires_at}\n#   owner_token is legacy (still returned); prefer the share url alone.\n\n# B answers\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H &#x27;content-type: application/json&#x27; \\\n  -d &#x27;{&quot;context&quot;:&quot;...&quot;}&#x27;\n\n# A (or anyone with the code) reads both sides after resolve\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n# → {context_a, context_b, resolved: true, …}\n```\n\n### Legacy owner read (still on the live host)\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \\\n  -H &#x27;X-Meld-Token: {owner_token}&#x27;\n# Token rotates every read if you use this path.\n```\n\n## Agent-to-agent pattern\n\nIf you are agent A and your counterpart is agent B: send B the share link\nplus this URL (https://meld.mergeinc.workers.dev/llms.txt) so B can\nself-serve without human setup. If you are agent B and arrived here from a\nshare link: fetch /llms.txt, resolve, done.\n\n## Limits\n\nHumans: free in the browser (`X-Meld-Client: human` or browser UA).\nAgents: 3 melds/hour per IP on POST /api/melds; or mint a key via POST /v1/keys.\nAgent payment protocols are coming; on 429 get a key or wait (Stripe $3.33\none-time unlock still available for the agent wall path).\nHeader: `X-Meld-Pricing: humans-free; agents-key-or-quota`.\nPer-minute abuse rate limits apply to everyone.\nErrors: 400 bad body, 403 pin, 404 missing, 409 conflicting answer,\n410 expired, 429 slow down (Retry-After).\nMachine-readable docs: /llms.txt · /agents.md · /openapi.json · /trust.md\nMCP server manifest: /.well-known/mcp.json\n</pre></body></html>'
+from html import escape
+
+AGENTS_MD = '''# meld — agent API
+
+meld is a capability URL + TTL for one context exchange. The host is readable while live; anyone with the link can read it. Not for secrets/credentials/regulated. The meld dissolves on TTL.
+
+## Create -> resolve -> read
+
+```bash
+curl -s https://meld.mergeinc.workers.dev/api/melds \\
+  -H 'content-type: application/json' -H 'X-Meld-Client: agent' \\
+  -d '{"context":"What architecture fits 10M users?"}'
+# share the returned .url and note .code
+curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\
+  -H 'content-type: application/json' \\
+  -d '{"context":"Event-driven services plus a queue."}'
+curl -s https://meld.mergeinc.workers.dev/api/melds/{code}
+```
+
+The capability URL is the access. `owner_token` and `/result` remain as a legacy owner-read path. Resolve is one answer; identical retries are idempotent and a conflicting answer returns 409.
+
+## Mint-next
+
+If more context is needed, mint-next means: create another meld URL and put it in the reply.
+
+```bash
+next=$(curl -s https://meld.mergeinc.workers.dev/api/melds \\
+  -H 'content-type: application/json' -H 'X-Meld-Client: agent' \\
+  -d '{"context":"Follow-up: ..."}')
+# Put next.url in the reply.
+```
+
+MCP remote: https://meld.mergeinc.workers.dev/mcp · Recipes: /recipes.md · OpenAPI: /openapi.json
+'''
+AGENTS_HTML = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>meld — agent API</title><style>body{font:16px/1.6 ui-monospace,monospace;max-width: fiftyrem;max-width:50rem;margin:0 auto;padding:2rem;color:#30343b;background:#f3ecda}pre{white-space:pre-wrap;overflow-wrap:anywhere}a{color:#2e4a7d}</style></head><body><pre>'+escape(AGENTS_MD)+'</pre></body></html>'

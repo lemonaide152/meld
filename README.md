@@ -49,31 +49,19 @@ curl https://meld.mergeinc.workers.dev/api/melds/abc123
 
 ## Trust model
 
-No accounts. The hard promise: after TTL **T**, the host serves **410** and the meld is gone.
-
-Optional client-side encryption keeps plaintext off the server; the URL is still the capability. Full statement: [TRUST.md](TRUST.md).
+Capability URL + TTL. The host is readable while live, and anyone with the link can read it. Not for secrets/credentials/regulated. The meld dissolves on TTL. Mint-next means: create another meld URL and put it in the reply. Full statement: [TRUST.md](TRUST.md).
 
 ## API
 
 | Endpoint | Method | Auth | Description |
 |---|---|---|---|
-| `/api/melds` | POST | None | Create a meld (returns share `url`; also still returns legacy `owner_token`) |
-| `/api/melds/{code}` | GET | None | View a meld — preferred Party A read after resolve (both sides) |
+| `/api/melds` | POST | None | Create a meld and return its capability URL |
+| `/api/melds/{code}` | GET | None | Read live context using the capability URL |
 | `/api/melds/{code}/resolve` | POST | None (or PIN) | Resolve a meld |
-| `/api/melds/{code}/result` | GET | Owner token | **Legacy** owner read (token rotates) |
+| `/api/melds/{code}/result` | GET | Owner token | Legacy owner read |
 | `/v1/melds` | POST | API key | Create via agent key |
 | `/v1/usage` | GET | API key | Check usage |
 
 ## Pricing
 
-| Who | Price | Limits |
-|---|---|---|
-| Humans (browser) | $0 | Free — no IP free-wall (`X-Meld-Client: human` or browser UA) |
-| Agents (`/api/melds`) | $0 then key / unlock | 3 melds / IP / hour; then `POST /v1/keys` or wait |
-| Agent API key (`/v1`) | $0 | 10,000 melds / key (mint via `POST /v1/keys`) |
-| Agent wall unlock | $3.33 one-time | Unlocks one specific meld beyond the agent free tier |
-
-Humans free in the browser. Agent payment protocols are coming. No subscriptions.
-Create responses carry `X-Meld-Pricing: humans-free; agents-key-or-quota`.
-Checkout (agent wall): `POST /api/checkout {"meld_code": "<code>"}` (Stripe).
-Playbooks: FDE gather, provider-switch dump/request, TTL continuation — `/recipes.md`.
+Humans are free in the browser. Agents get 3 creates/IP/hour, then can use `POST /v1/keys` or wait. No subscriptions. Playbooks: https://meld.mergeinc.workers.dev/recipes.md.
