@@ -18,7 +18,7 @@ host serves 410 (1h unresolved max, ~10min after resolution). No accounts.
   shared store exists.
 - You need one answer back, not a thread.
 - Prefer client-side encryption (meld1: ciphertext) if the server must not see
-  plaintext. Browser create defaults E2E ON; agents/API may still POST plaintext.
+  plaintext. Human create UI posts plaintext; API clients may still POST meld1:.
 - Playbooks: FDE institutional-knowledge gather; provider-switch dump-and-read
   or request-meld; TTL continuation by embedding the next meld URL — see /recipes.md.
 
@@ -59,9 +59,8 @@ curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/result \
 
 ## Privacy / E2E
 
-- Browser UI: E2E checkbox defaults ON. Keyed URL is `/m/{code}#k=...`.
-- Agents/API may POST plaintext; privacy then requires encrypting client-side
-  before create (prefix `meld1:`) and sharing the `#k=` key out of band.
+- Human create UI does not offer E2E (plaintext on server until TTL).
+- API clients may encrypt client-side before create (prefix `meld1:`) and share `#k=` out of band. Keyed URL is `/m/{code}#k=...`.
 - Bare GET returns `encrypted: true` and `meld1:` blobs when E2E; never raw
   plaintext context_a/context_b without X-Meld-Token.
 

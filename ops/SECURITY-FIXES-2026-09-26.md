@@ -17,3 +17,14 @@ Cleared for lemonaide152/meld before public ship.
 ## Design (SB-1)
 
 One coherent rule: **never return plaintext bodies without owner token**. Returning E2E ciphertext on bare GET is intentional and documented — it is not plaintext.
+
+## Follow-up (2026-09-26 PT) — human create UI
+
+SB-2 (browser E2E default ON) is **withdrawn from the human UI**. Unapproved features removed from create:
+
+- No E2E checkbox / no `#k=` create path in the browser form (no auto-encrypt on create).
+- No optional email field on create.
+- Claims updated: server can read content while the meld exists; ordinary context only; not a vault. Browser creates are plaintext until TTL (same as API/MCP unless a client posts `meld1:`).
+- Study tagging: put `study:v1:Pxx` in the **first line of context** (email field gone). API may still accept `email`.
+- Resolve card copy unchanged: “Dissolves on TTL.”
+- Server still accepts `meld1:` ciphertext from API clients; human UI does not expose E2E.

@@ -1,6 +1,6 @@
 # meld — Trust Model
 
-*Last updated: 2026-09-25. This document is the contract. When the code and
+*Last updated: 2026-09-26. This document is the contract. When the code and
 this document disagree, that is a bug — file it.*
 
 ## The only hard promise
@@ -32,7 +32,7 @@ If that is not acceptable, encrypt client-side before create (optional).
 
 ### Optional client-side encryption
 
-If you encrypt in the browser (or your own tooling) before POST, the server
+If you encrypt in your own tooling before POST (API clients), the server
 stores ciphertext it cannot open. The key lives with the parties (e.g. a
 `#k=` fragment). Lose the key, lose the content — there is no server-side
 recovery. This is an option, not the primary trust story.
@@ -64,7 +64,7 @@ is content-blind: throttle behavior, never police speech.
 
 ## Not for sensitive data
 
-**Do not put secrets, credentials, PII you cannot afford leaked, or regulated data into a meld.** Browser E2E reduces host readability (ciphertext on the server; key in your `#k=` link), but meld is not a vault and not an encryption-at-rest product promise. Treat every meld as disposable context handoff. API/MCP creates are plaintext on the server until TTL unless you encrypt client-side.
+**Do not put secrets, credentials, PII you cannot afford leaked, or regulated data into a meld.** The human create UI does not offer E2E. Browser / API / MCP creates store plaintext the server can read while the meld exists (until TTL). Optional client-side `meld1:` encryption remains available to API clients only — it is not a vault and not an encryption-at-rest product promise. Use meld for ordinary context handoff only.
 
 ## What we cannot protect you from
 
@@ -92,7 +92,11 @@ adjacent and must not become a content archive. Operational notes:
 
 ## Ship posture (2026-09-26)
 
-- Bare `GET /api/melds/{code}` returns metadata only (plus `meld1:` ciphertext when E2E). Plaintext bodies require `X-Meld-Token`.
-- Browser create defaults E2E ON; agents/API may still send plaintext unless they encrypt client-side.
+- Bare `GET /api/melds/{code}` returns metadata only (plus `meld1:` ciphertext when an API client used E2E). Plaintext bodies require `X-Meld-Token`.
+- Human create UI: no E2E checkbox, no email field. Browser creates are plaintext on the server until TTL (same honesty as API/MCP). API clients may still POST `meld1:` ciphertext.
 - `creator_ip` / `resolver_ip` are not stored on new meld rows.
+
+## Study tagging (pilots)
+
+Email was removed from the create UI. Pilots should put `study:v1:Pxx` in the **first line of context** (or similar) so study cohorts stay identifiable without the optional email field. Server may still accept `email` on the API; the human form does not collect it.
 
