@@ -62,6 +62,10 @@ is content-blind: throttle behavior, never police speech.
 
 ---
 
+## Not for sensitive data
+
+**Do not put secrets, credentials, PII you cannot afford leaked, or regulated data into a meld.** Browser E2E reduces host readability (ciphertext on the server; key in your `#k=` link), but meld is not a vault and not an encryption-at-rest product promise. Treat every meld as disposable context handoff. API/MCP creates are plaintext on the server until TTL unless you encrypt client-side.
+
 ## What we cannot protect you from
 
 1. **The link is the capability.** Whoever holds the meld URL can read
