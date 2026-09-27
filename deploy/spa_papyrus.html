@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>meld — context bridge to an agent</title>
+<meta name="description" content="meld puts the context on a URL so neither side has to paste the block. Then the URL dies. Built for agent developers and agent users.">
+<style>
+/* ---- tokens ----
+   papyrus paper  : #ece3cf (warm cream, slight grain via gradient)
+   blueprint ink  : #2e4a7d (thin construction lines)
+   text dark grey : #3d3d3d headings, #45443f body (7.65:1 on paper)
+*/
+:root{
+  --paper:#ece3cf;
+  --paper-hi:#f3ecda;
+  --ink:#2e4a7d;
+  --ink-faint:rgba(46,74,125,.30);
+  --ink-wash:rgba(46,74,125,.10);
+  --grey-dark:#3a3a38;
+  --grey-body:#45443f;
+  --grey-soft:#5f5e57;
+  --err:#8a3d2e;
+  --ff:Georgia,'Iowan Old Style','Times New Roman',serif;
+  --fm:'SF Mono','JetBrains Mono',ui-monospace,Menlo,monospace;
+  --t-xs:.72rem;--t-sm:.875rem;--t-md:1.05rem;--t-lg:1.35rem;--t-xl:clamp(1.15rem,3.8vw,1.55rem);
+  --s1:.5rem;--s2:1rem;--s3:1.75rem;--s4:2.5rem;--s7:5rem;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{overflow-x:clip;-webkit-text-size-adjust:100%}
+body{
+  background-color:var(--paper);
+  background-image:
+    repeating-linear-gradient(0deg, rgba(255,255,255,.05) 0 2px, rgba(0,0,0,.015) 2px 4px),
+    linear-gradient(180deg, var(--paper-hi) 0%, var(--paper) 55%, #e4d9c0 100%);
+  color:var(--grey-body);
+  font-family:var(--ff);
+  line-height:1.6;
+  min-height:100svh;
+}
+.sheet{
+  position:relative;
+  max-width:640px;
+  margin:var(--s4) auto;
+  padding:clamp(1.5rem,5vw,3rem);
+  border:1.5px solid var(--ink);
+  outline:1px solid var(--ink-faint);
+  outline-offset:5px;
+  min-height:calc(100svh - var(--s7));
+}
+.sheet::before{content:'';position:absolute;inset:.75rem;border:1px solid var(--ink-faint);pointer-events:none}
+.corner{position:absolute;width:22px;height:22px;pointer-events:none}
+.corner::before,.corner::after{content:'';position:absolute;background:var(--ink)}
+.corner::before{width:100%;height:2px;top:50%;transform:translateY(-50%)}
+.corner::after{height:100%;width:2px;left:50%;transform:translateX(-50%)}
+.c-tl{top:-11.5px;left:-11.5px}.c-tr{top:-11.5px;right:-11.5px}
+.c-bl{bottom:-11.5px;left:-11.5px}.c-br{bottom:-11.5px;right:-11.5px}
+.grid{position:absolute;inset:0;
+  background-image:linear-gradient(var(--ink-wash) 1px, transparent 1px),linear-gradient(90deg, var(--ink-wash) 1px, transparent 1px);
+  background-size:40px 40px;opacity:.35;pointer-events:none}
+.content{position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;padding:1rem 0 2rem}
+.wordmark{font-family:var(--fm);font-size:clamp(1.1rem,3.5vw,1.35rem);letter-spacing:.35em;margin-right:-.35em;text-transform:lowercase;color:var(--ink);font-weight:700}
+.tagline{font-family:var(--fm);font-size:var(--t-xs);letter-spacing:.22em;margin-right:-.22em;text-transform:uppercase;color:var(--grey-soft);margin-top:.6rem}
+.rule{width:100%;border:none;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink-faint);margin:var(--s3) 0;position:relative}
+.rule::after{content:'';position:absolute;left:50%;top:-4px;width:1px;height:7px;background:var(--ink);transform:translateX(-50%)}
+.hero{font-size:var(--t-xl);line-height:1.3;letter-spacing:-.01em;color:var(--grey-dark);font-weight:400;text-wrap:balance}
+.hero .who{font-family:var(--fm);color:var(--ink);font-weight:700;font-size:.62em;vertical-align:.28em;letter-spacing:.08em}
+.hero .arrow{color:var(--ink);font-family:var(--fm);font-weight:700}
+.subline{font-style:italic;color:var(--grey-soft);margin-top:var(--s2);font-size:var(--t-sm)}
+.steps{width:100%;max-width:34rem;margin-inline:auto;display:flex;flex-direction:column;gap:var(--s2);list-style:none;counter-reset:step;text-align:left}
+.step{display:flex;align-items:baseline;gap:var(--s2);font-size:var(--t-md);line-height:1.55;color:var(--grey-body)}
+.step .n{font-family:var(--fm);font-size:var(--t-xs);color:var(--ink);letter-spacing:.15em;flex:0 0 2ch;margin-left:-4ch;transform:translateY(-.1em)}
+.step em{font-style:normal;color:var(--grey-dark);font-weight:600}
+.foot{font-family:var(--fm);font-size:var(--t-xs);letter-spacing:.25em;margin-right:-.25em;text-transform:uppercase;color:var(--grey-soft);display:flex;flex-direction:column;align-items:center;gap:var(--s2)}
+.stamp{display:inline-block;border:1px solid var(--ink-faint);padding:.45em 1.1em;color:var(--ink);letter-spacing:.25em;margin-right:-.25em;box-shadow:inset 0 0 0 1px rgba(46,74,125,.04)}
+a,button{color:inherit;-webkit-tap-highlight-color:transparent}
+a:hover{color:var(--ink)}
+a:focus-visible,button:focus-visible{outline:2px solid var(--ink);outline-offset:3px;border-radius:1px}
+.chip-row{display:flex;flex-wrap:wrap;gap:.4rem;margin:.55rem 0 .35rem}
+.chip{font-family:var(--fm);font-size:.68rem;letter-spacing:.02em;padding:.35rem .65rem;border:1px solid var(--ink-faint);border-radius:999px;background:rgba(255,255,255,.45);color:var(--ink);cursor:pointer;line-height:1.3}
+.chip:hover{background:rgba(46,74,125,.08);border-color:var(--ink)}
+.chip:active{transform:translateY(1px)}
+.ctx-tools{display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-bottom:.4rem}
+.mic{font-family:var(--fm);font-size:.72rem;letter-spacing:.04em;padding:.35rem .7rem;border:1px solid var(--ink-faint);border-radius:8px;background:rgba(255,255,255,.5);color:var(--ink);cursor:pointer}
+.mic.on{background:rgba(138,61,46,.12);border-color:var(--err);color:var(--err)}
+.mic[hidden]{display:none!important}
+.audiences{display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin:1rem 0 1.25rem;text-align:left}
+.aud{border:1px solid var(--ink-faint);border-radius:10px;padding:.85rem 1rem;background:rgba(255,255,255,.35)}
+.aud h3{font-family:var(--fm);font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink);margin-bottom:.35rem}
+.aud p{font-size:.8125rem;color:var(--grey-soft);margin:0;line-height:1.45}
+.claim{font-family:var(--fm);font-size:.68rem;letter-spacing:.04em;color:var(--grey-soft);line-height:1.55;margin-top:.85rem;text-align:left}
+.claim strong{color:var(--grey-dark);font-weight:600}
+.devcard{margin-top:1.25rem;border:1px dashed var(--ink-faint);border-radius:10px;padding:1rem 1.1rem;text-align:left;background:rgba(255,255,255,.28)}
+.devcard h2{font-family:var(--fm);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ink);margin-bottom:.45rem}
+.devcard p{font-size:.8125rem;color:var(--grey-soft);margin:0 0 .65rem;line-height:1.5}
+.devcard .warn{font-size:.75rem;color:var(--grey-body);border-left:2px solid var(--ink);padding-left:.65rem;margin:.65rem 0;line-height:1.45}
+.devlinks{display:flex;flex-wrap:wrap;gap:.55rem .9rem;font-family:var(--fm);font-size:.72rem}
+.devlinks a{color:var(--ink);text-decoration:underline;text-underline-offset:2px}
+@media (max-width:480px){
+  .sheet{margin:var(--s2) auto;min-height:auto;padding:1.25rem}
+  .grid{background-size:28px 28px}
+  .rule{margin:var(--s2) 0}
+  .step{flex-direction:column;gap:.15rem}
+  .step .n{margin-left:0}
+  .audiences{grid-template-columns:1fr}
+}
+@keyframes sheet-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.masthead,.hero,.steps,.foot{animation:sheet-in .5s ease-out both}
+.hero{animation-delay:.06s}.steps{animation-delay:.12s}.foot{animation-delay:.18s}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-delay:0s!important;transition-duration:.01ms!important}}
+</style>
+</head>
+<body>
+<main class="sheet">
+  <span class="corner c-tl"></span><span class="corner c-tr"></span>
+  <span class="corner c-bl"></span><span class="corner c-br"></span>
+  <div class="grid"></div>
+  <div class="content" id="root"></div>
+
+<p style="margin-top:2rem;font-family:var(--fm);font-size:.72rem;letter-spacing:.15em;text-transform:uppercase;color:var(--grey-soft);text-align:center;position:relative"><a href="/agents" style="color:var(--ink)">agents</a> &nbsp;·&nbsp; <a href="/llms.txt" style="color:var(--ink)">llms.txt</a> &nbsp;·&nbsp; <a href="/mcp" style="color:var(--ink)">mcp</a> &nbsp;·&nbsp; <a href="/trust" style="color:var(--ink)">trust</a> &nbsp;·&nbsp; <a href="/upgrade" style="color:var(--ink)">pricing</a></p>
+</main>
+<script>
+const API=location.origin;
+let _m=null,_c=null,_pro=false,_rec=null;
+const _td=new TextDecoder(),_te=new TextEncoder();
+
+const CHIPS=[
+  {id:'hop',label:'Hop line',text:'[Hop instruction — instructional copy only]\\nYou are the receiving agent. Answer the context above. Then create a new meld with your answer (and any follow-up context), and append that new meld URL at the bottom of your reply so the line can continue. Stop after hop 10.'},
+  {id:'partyb',label:'You are Party B',text:'You are Party B. Read the context above. Reply with your side only — clear, concrete, and complete.'},
+  {id:'one',label:'One answer then stop',text:'Give one complete answer, then stop. Do not ask clarifying questions. Do not open a thread.'},
+  {id:'cursor',label:'Cursor / Claude dump',text:'Context for the agent (Cursor / Claude / MCP):\\n\\nGoal:\\nConstraints:\\nFiles / snippets:\\nWhat I need back:\\n'}
+];
+
+async function api(m,p,b,h){const r=await fetch(API+p,{method:m,headers:{'Content-Type':'application/json','X-Meld-Client':'human',...h},body:b?JSON.stringify(b):null});if(!r.ok){const d=await r.json().catch(()=>({detail:r.statusText}));throw new Error(d.detail||r.status)}return r.json()}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+async function _key(khex){const raw=new Uint8Array(khex.match(/.{2}/g).map(h=>parseInt(h,16)));return crypto.subtle.importKey('raw',raw,'AES-GCM',false,['encrypt','decrypt'])}
+async function _enc(plain,khex){const k=await _key(khex);const nonce=crypto.getRandomValues(new Uint8Array(12));const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv:nonce},k,_te.encode(plain));const buf=new Uint8Array(ct);const out=new Uint8Array(12+buf.length);out.set(nonce);out.set(buf,12);let bin='';out.forEach(b=>bin+=String.fromCharCode(b));return 'meld1:'+btoa(bin)}
+async function _dec(blob,khex){if(!blob.startsWith('meld1:'))return blob;const k=await _key(khex);const bin=atob(blob.slice(6));const buf=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)buf[i]=bin.charCodeAt(i);const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:buf.slice(0,12)},k,buf.slice(12));return _td.decode(pt)}
+function cp(t,b){(navigator.clipboard?navigator.clipboard.writeText(t):(function(e){e.value=t;e.select();document.execCommand('copy');document.body.removeChild(e)}(document.createElement('textarea'))));b.textContent='Copied!';b.classList.add('done');setTimeout(()=>{b.textContent='Copy';b.classList.remove('done')},2000)}
+
+function ttl(expiresAt){
+  const ms=new Date(expiresAt)-Date.now();
+  if(ms<=0)return null;
+  const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60);
+  if(h>0)return h+'h '+(m%60)+'m';
+  if(m>0)return m+'m '+(s%60)+'s';
+  return s+'s';
+}
+function startCountdown(el,expiresAt,onGone){
+  function tick(){
+    const left=ttl(expiresAt);
+    if(!left){el.textContent='this meld has dissolved';if(onGone){onGone();onGone=null}return}
+    el.textContent='dissolves in '+left;
+    setTimeout(tick,1000);
+  }
+  tick();
+}
+
+function insertChip(id){
+  const chip=CHIPS.find(c=>c.id===id);if(!chip)return;
+  const ta=document.getElementById('ctx');if(!ta)return;
+  const add=chip.text.replace(/\\n/g,'\n');
+  ta.value=(ta.value?ta.value.replace(/\s*$/,'')+'\n\n':'')+add;
+  ta.focus();
+  ta.setSelectionRange(ta.value.length,ta.value.length);
+}
+
+function speechSupported(){
+  return !!(window.SpeechRecognition||window.webkitSpeechRecognition);
+}
+function toggleMic(){
+  const btn=document.getElementById('mic');
+  const ta=document.getElementById('ctx');
+  if(!btn||!ta)return;
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){btn.hidden=true;return}
+  if(_rec){_rec.stop();_rec=null;btn.classList.remove('on');btn.textContent='Voice';return}
+  _rec=new SR();
+  _rec.continuous=true;_rec.interimResults=true;_rec.lang=(navigator.language||'en-US');
+  let base=ta.value;
+  _rec.onresult=function(ev){
+    let final='',interim='';
+    for(let i=ev.resultIndex;i<ev.results.length;i++){
+      const t=ev.results[i][0].transcript;
+      if(ev.results[i].isFinal)final+=t;else interim+=t;
+    }
+    if(final){base=(base&&!/\\s$/.test(base)?base+' ':'')+final;ta.value=base+(interim?' '+interim:'')}
+    else{ta.value=base+(base&&interim?' ':'')+interim}
+  };
+  _rec.onerror=function(){_rec=null;btn.classList.remove('on');btn.textContent='Voice'};
+  _rec.onend=function(){_rec=null;btn.classList.remove('on');btn.textContent='Voice'};
+  btn.classList.add('on');btn.textContent='Listening…';
+  try{_rec.start()}catch(e){_rec=null;btn.classList.remove('on');btn.textContent='Voice'}
+}
+function wireLanding(){
+  document.querySelectorAll('[data-chip]').forEach(el=>{
+    el.addEventListener('click',()=>insertChip(el.getAttribute('data-chip')));
+  });
+  const mic=document.getElementById('mic');
+  if(mic){
+    if(speechSupported()){mic.hidden=false;mic.addEventListener('click',toggleMic)}
+    else{mic.hidden=true}
+  }
+  const go=document.getElementById('go');
+  if(go)go.addEventListener('click',Cgo);
+  const cpbtn=document.getElementById('cpbtn');
+  if(cpbtn)cpbtn.onclick=function(){cp(document.getElementById('lk').textContent,this)};
+}
+
+function C(){return`<div style="text-align:left;width:100%">
+<div class="masthead" style="text-align:center;margin-bottom:1.25rem">
+  <div class="wordmark">meld</div>
+  <div class="tagline">context bridge → agent</div>
+</div>
+<h1 class="hero">Put the context on a URL. Hand it to an <span class="who">agent</span>. Then the URL dies.</h1>
+<p class="subline" style="margin:1rem 0 .5rem">Connective tissue human↔machine. Context is a commodity — access should be efficient. The agent is always the receiver (human→agent or agent→agent).</p>
+<p style="font-family:var(--fm);font-size:.72rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink);margin:0 0 1rem">Humans free in the browser · agents key / quota · $3.33 one-shot</p>
+<div class="audiences">
+  <div class="aud"><h3>Agent users</h3><p>Brain-dump for Cursor, Claude, or any agent. Share one link. No paste-bin theatre.</p></div>
+  <div class="aud"><h3>Agent developers</h3><p>Wire MCP / REST handoffs. Same capability URL. See the developer strip below.</p></div>
+</div>
+<div class="card" style="background:rgba(255,255,255,.4);border:1px solid var(--ink-faint);border-radius:12px;padding:1.5rem">
+<div id="f">
+  <div class="ctx-tools">
+    <label class="lbl" style="display:block;font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-soft);margin:0">Dump context for your agent</label>
+    <button type="button" class="mic" id="mic" hidden title="Browser speech-to-text">Voice</button>
+  </div>
+  <div class="chip-row" aria-label="Suggested blocks">
+    <button type="button" class="chip" data-chip="hop">Hop line</button>
+    <button type="button" class="chip" data-chip="partyb">You are Party B</button>
+    <button type="button" class="chip" data-chip="one">One answer then stop</button>
+    <button type="button" class="chip" data-chip="cursor">Cursor / Claude dump</button>
+  </div>
+  <textarea id="ctx" placeholder="Logs, requirements, a prompt, a problem — dump it for the receiving agent." style="width:100%;background:rgba(255,255,255,.55);border:1px solid var(--ink-faint);border-radius:8px;color:var(--grey-dark);font-family:var(--fm);font-size:.875rem;padding:.875rem;resize:vertical;min-height:130px"></textarea>
+  <label style="display:flex;gap:.5rem;align-items:flex-start;margin-top:.85rem;font-size:.8125rem;color:var(--grey-body);cursor:pointer;text-align:left"><input type="checkbox" id="e2e" checked style="accent-color:var(--ink);margin-top:.2rem"> <span><strong style="color:var(--grey-dark)">End-to-end encrypted</strong> (browser default) — ciphertext only on the server. Key lives in your <span style="font-family:var(--fm)">#k=</span> link. Lose the link, lose the content.</span></label>
+  <details style="margin-top:.75rem;font-size:.8125rem;color:var(--grey-soft)"><summary style="cursor:pointer;font-family:var(--fm);font-size:.68rem;letter-spacing:.08em;text-transform:uppercase">Optional email</summary>
+    <label style="display:block;margin-top:.5rem;font-size:.75rem;color:var(--grey-soft)">Email <span style="opacity:.7">(optional · study:v1 tag)</span></label>
+    <input type="email" id="em" placeholder="you@example.com" style="width:100%;margin-top:.35rem;background:rgba(255,255,255,.55);border:1px solid var(--ink-faint);border-radius:8px;color:var(--grey-dark);font-size:.875rem;padding:.65rem .75rem">
+  </details>
+  <div style="margin-top:1.25rem"><button class="btn" id="go" style="background:var(--ink);color:#f3ecda;border:none;border-radius:8px;padding:.7rem 1.5rem;font-size:.9375rem;cursor:pointer;font-weight:600">Generate meld link</button></div>
+  <div id="st" style="margin-top:.75rem;font-size:.875rem;color:var(--grey-soft)"></div>
+  <p class="claim"><strong>Capability URL + TTL.</strong> Bare share link does not expose plaintext. Browser create defaults to E2E.</p>
+</div>
+<div id="r" style="display:none">
+  <div style="border:1px solid var(--ink);padding:.75rem 1rem;border-radius:8px;background:rgba(46,74,125,.06);font-family:var(--fm);font-size:.8125rem;word-break:break-all;display:flex;gap:.5rem;align-items:flex-start"><span id="lk" style="flex:1"></span><button type="button" class="cp" id="cpbtn" style="flex-shrink:0;background:var(--ink);color:#f3ecda;border:none;border-radius:6px;padding:.35rem .7rem;font-size:.72rem;cursor:pointer;font-family:var(--fm)">Copy</button></div>
+  <p style="font-size:.75rem;color:var(--grey-soft);margin-top:.5rem">Owner / keyed link above. Share link (no token, no plaintext): <span id="sh" style="font-family:var(--fm)"></span></p>
+  <div id="exp" style="margin-top:1rem;font-family:var(--fm);font-size:.8125rem;color:var(--ink)"></div>
+  <div id="e2eNote" style="display:none;margin-top:.75rem;padding:.75rem;border:1px solid rgba(46,74,125,.35);border-radius:8px;background:rgba(46,74,125,.06);font-size:.8125rem"><strong>The decryption key is in your link</strong> after <span style="font-family:var(--fm)">#k=</span>. Bare share link does not expose plaintext. Lose the keyed link, lose the content.</div>
+  <p style="margin-top:1rem;font-size:.8125rem;color:var(--grey-soft)">Hand the link to your agent (or paste it into Cursor / Claude). When they resolve, check back with the owner link.</p>
+  <div id="ckbSlot" style="margin-top:.75rem"></div>
+  <div id="res"></div>
+</div>
+</div>
+<div class="devcard">
+  <h2>For agent developers</h2>
+  <p>Same product over the wire: create → share URL → resolve → read. MCP tools: <code>meld_create</code> / <code>meld_resolve</code> / <code>meld_read</code>.</p>
+  <p class="warn"><strong>API / MCP creates are plaintext on the server until TTL</strong> unless you encrypt client-side (<code>meld1:</code> + <code>#k=</code>). Do not assume host-blindness for agent traffic.</p>
+  <div class="devlinks">
+    <a href="/agents">/agents</a>
+    <a href="/llms.txt">/llms.txt</a>
+    <a href="/mcp">MCP · /mcp</a>
+    <a href="https://glama.ai/mcp/servers/lemonaide152/meld" target="_blank" rel="noopener">Glama</a>
+    <a href="/recipes.md">recipes</a>
+  </div>
+</div>
+</div>`}
+
+async function Cgo(){
+  const e=document.getElementById('go'),s=document.getElementById('st');
+  e.disabled=true;s.textContent='Creating...';
+  try{
+    let _k=null;
+    const plain=document.getElementById('ctx').value;
+    let send=plain;
+    if(document.getElementById('e2e').checked){_k=[...crypto.getRandomValues(new Uint8Array(32))].map(b=>b.toString(16).padStart(2,'0')).join('');send=await _enc(plain,_k)}
+    const body={context:send};
+    const em=document.getElementById('em');
+    if(em&&em.value.trim())body.email=em.value.trim();
+    const d=await api('POST','/api/melds',body);
+    _m={code:d.code,owner_token:d.owner_token};
+    if(_k){document.getElementById('lk').textContent=d.url+'#k='+_k;document.getElementById('sh').textContent=d.url;document.getElementById('e2eNote').style.display='block'}
+    else{document.getElementById('lk').textContent=d.owner_url||(d.url+'#t='+d.owner_token);document.getElementById('sh').textContent=d.url}
+    document.getElementById('f').style.display='none';
+    const r=document.getElementById('r');r.style.display='block';
+    startCountdown(document.getElementById('exp'),d.expires_at);
+    const slot=document.getElementById('ckbSlot');
+    if(slot&&_m.owner_token){slot.innerHTML='<button id="ckb" onclick="ck()" style="margin-top:.25rem;background:none;border:1px solid var(--ink-faint);color:var(--ink);padding:.5rem 1rem;cursor:pointer;border-radius:8px;font-size:.8125rem">Check for response</button>'}
+    s.textContent='';
+  }catch(err){
+    const m=err.message||'';
+    if(m.includes('429')||m.toLowerCase().includes('free')||m.toLowerCase().includes('agent')){s.innerHTML='Slow down or (for agents) get a key via <code>POST /v1/keys</code>. Humans in the browser stay free — <a href="/upgrade">details</a>.'}
+    else{s.textContent=m}
+  }finally{e.disabled=false}
+}
+
+function M(c,enc){return`<div class="card" style="background:rgba(255,255,255,.4);border:1px solid var(--ink-faint);border-radius:12px;padding:1.5rem;text-align:left"><h1 style="font-size:1.35rem;color:var(--grey-dark);margin-bottom:.5rem">Meld received</h1><p style="color:var(--grey-soft);margin-bottom:1rem">An agent (or human) shared context for you to answer.</p><div style="border:1px solid var(--ink-faint);border-radius:8px;padding:1rem;font-family:var(--fm);font-size:.8125rem;white-space:pre-wrap;max-height:280px;overflow-y:auto;background:rgba(255,255,255,.55)">${esc(c)}</div>${enc?'<p style="font-size:.75rem;color:var(--grey-soft);margin-top:.5rem">This meld is end-to-end encrypted — you are reading the decrypted copy via your link key.</p>':''}<div id="rf" style="margin-top:1.25rem"><label style="display:block;font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-soft);margin-bottom:.5rem">Your answer</label><textarea id="ctxb" placeholder="Answer for the receiving agent / party A." style="width:100%;background:rgba(255,255,255,.55);border:1px solid var(--ink-faint);border-radius:8px;color:var(--grey-dark);font-family:var(--fm);font-size:.875rem;padding:.875rem;resize:vertical;min-height:110px"></textarea><div style="margin-top:1rem;display:flex;align-items:center;gap:.75rem"><button id="rb" onclick="Rgo()" style="background:var(--ink);color:#f3ecda;border:none;border-radius:8px;padding:.7rem 1.5rem;font-size:.9375rem;cursor:pointer;font-weight:600">Resolve →</button><span id="rst" style="font-size:.875rem;color:var(--grey-soft)"></span></div></div><div id="rd" style="display:none"><div style="border:1px solid var(--ink);padding:.75rem 1rem;border-radius:8px;color:var(--ink);font-weight:600">Exchange complete. The bridge dissolves.</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:1rem"><div><label style="display:block;font-size:.75rem;font-weight:600;text-transform:uppercase;color:var(--grey-soft)">Their context</label><div style="border:1px solid var(--ink-faint);border-radius:8px;padding:1rem;font-family:var(--fm);font-size:.8125rem;white-space:pre-wrap;background:rgba(255,255,255,.55)" id="ta"></div></div><div><label style="display:block;font-size:.75rem;font-weight:600;text-transform:uppercase;color:var(--grey-soft)">Your context</label><div style="border:1px solid var(--ink-faint);border-radius:8px;padding:1rem;font-family:var(--fm);font-size:.8125rem;white-space:pre-wrap;background:rgba(255,255,255,.55)" id="tb"></div></div></div><div style="text-align:center;margin-top:1.5rem;padding:1.25rem;border:1px solid var(--ink-faint);border-radius:8px;background:rgba(255,255,255,.4)"><strong style="color:var(--ink)">You just used meld.</strong><p style="font-size:.8125rem;color:var(--grey-soft);margin:.25rem 0 .75rem">Capability URL + TTL. Nothing permanent.</p><a href="/" class="btn" style="display:inline-block;color:var(--ink)">Create your own meld</a></div></div></div>`}
+
+function RD(a,b,exp){return`<div class="card" style="background:rgba(255,255,255,.4);border:1px solid var(--ink-faint);border-radius:12px;padding:1.5rem;text-align:left"><div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem"><span style="width:10px;height:10px;border-radius:50%;background:var(--ink)"></span><h1 style="margin:0;font-size:1.35rem;color:var(--grey-dark)">Exchange complete</h1></div><p style="color:var(--grey-soft)">Both contexts merged.</p><div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:1rem"><div><label style="display:block;font-size:.75rem;font-weight:600;text-transform:uppercase;color:var(--grey-soft)">Party A</label><div style="border:1px solid var(--ink-faint);border-radius:8px;padding:1rem;font-family:var(--fm);font-size:.8125rem;white-space:pre-wrap;background:rgba(255,255,255,.55)">${esc(a)}</div></div><div><label style="display:block;font-size:.75rem;font-weight:600;text-transform:uppercase;color:var(--grey-soft)">Party B</label><div style="border:1px solid var(--ink-faint);border-radius:8px;padding:1rem;font-family:var(--fm);font-size:.8125rem;white-space:pre-wrap;background:rgba(255,255,255,.55)">${esc(b)}</div></div></div><p id="exp" style="margin-top:1.25rem;font-family:var(--fm);font-size:.8125rem;color:var(--ink)"></p><p style="text-align:center;color:var(--grey-soft);font-size:.8125rem;margin-top:1rem">Capability URL + TTL. No permanent record.</p><div style="text-align:center;margin-top:1.5rem;padding:1.25rem;border:1px solid var(--ink-faint);border-radius:8px;background:rgba(255,255,255,.4)"><strong style="color:var(--ink)">Run another exchange.</strong><p style="font-size:.8125rem;color:var(--grey-soft);margin:.25rem 0 .75rem">Create the next link while this one is fresh — or hop with a new URL at the bottom.</p><a href="/" class="btn" style="display:inline-block;color:var(--ink)">New meld</a></div></div>`}
+
+function ENC_CARD(){return'<div class="card" style="text-align:center;padding:3rem 2rem"><h1 style="color:var(--grey-dark)">Encrypted meld</h1><p style="color:var(--grey-soft);margin-top:.5rem">This meld is end-to-end encrypted. Open the original link you were given (it contains the key after #k=) to read it. Bare share link does not expose plaintext.</p><a href="/" class="btn" style="display:inline-block;margin-top:1rem;color:var(--ink)">Create a meld</a></div>'}
+
+async function Rgo(){
+  const e=document.getElementById('rb'),s=document.getElementById('rst');
+  e.disabled=true;s.innerHTML='...';
+  try{
+    let ans=document.getElementById('ctxb').value;
+    const fk2=(location.hash.match(/k=([0-9a-f]+)/)||[])[1];
+    if(fk2){ans=await _enc(ans,fk2)}
+    const d=await api('POST','/api/melds/'+_c+'/resolve',{context:ans});
+    document.getElementById('rf').style.display='none';
+    document.getElementById('rd').style.display='block';
+    document.getElementById('ta').textContent=d.context_a||'(empty)';
+    document.getElementById('tb').textContent=d.context_b||'(empty)';
+    s.textContent='';
+  }catch(err){s.textContent=err.message;e.disabled=false}
+}
+
+async function ck(){
+  if(!_m)return;const r=document.getElementById('res');
+  r.innerHTML='<span class="spin"></span>';const ckb=document.getElementById('ckb');if(ckb)ckb.disabled=true;
+  try{
+    const d=await api('GET','/api/melds/'+_m.code+'/result',null,{'X-Meld-Token':_m.owner_token});
+    if(d.owner_token){_m.owner_token=d.owner_token}
+    r.innerHTML='<div style="color:var(--ink);font-weight:600">Got response!</div>'+(d.context_b?'<label style="display:block;font-size:.75rem;font-weight:600;text-transform:uppercase;color:var(--grey-soft);margin-top:.75rem">Their context</label><div style="border:1px solid var(--ink-faint);border-radius:8px;padding:1rem;font-family:var(--fm);font-size:.8125rem;white-space:pre-wrap;background:rgba(255,255,255,.55)">'+esc(d.context_b)+'</div>':'');
+  }catch(e){r.innerHTML='<p style="font-size:.875rem;color:var(--grey-soft)">Not yet resolved — check back later</p>';if(ckb)ckb.disabled=false}
+}
+
+function UPGR(){return`<div class="card" style="background:rgba(255,255,255,.4);border:1px solid var(--ink-faint);border-radius:12px;padding:1.5rem;text-align:center"><h1 style="font-size:1.35rem;color:var(--grey-dark);margin-bottom:.5rem">Scale for agents</h1><p style="color:var(--grey-soft);margin-bottom:1rem">Humans in the browser are free. Agents share a small free IP quota; for sustained API use mint a key (<code>POST /v1/keys</code>, 10k melds/key) — agent payment protocols are coming.</p><p style="color:var(--grey-soft);margin-bottom:1.25rem;font-size:.875rem">Need one more agent create right now? Optional one-time unlock below. No subscription.</p><div style="display:flex;flex-direction:column;gap:.75rem;align-items:center"><span style="font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-soft)">Meld code to unlock (optional)</span><input id="mcode" placeholder="e.g. k3x9p2qz8r1m" style="width:min(320px,100%);background:rgba(255,255,255,.55);border:1px solid var(--ink-faint);border-radius:8px;color:var(--grey-dark);font-family:var(--fm);font-size:.875rem;padding:.7rem .875rem"><button class="btn" onclick="co()" style="background:var(--ink);color:#f3ecda;border:none;border-radius:8px;padding:.7rem 1.75rem;font-size:.9375rem;cursor:pointer;font-weight:600">Unlock one meld — $3.33</button></div><div id="cost" style="margin-top:1rem;font-size:.8125rem;color:var(--grey-soft);min-height:1.2em"></div><p style="margin-top:1.25rem;font-size:.75rem;color:var(--grey-soft)">One-time Stripe checkout. meld never sees your card.</p><a href="/" style="display:inline-block;margin-top:1rem;color:var(--ink)">Back to meld</a></div>`}
+async function co(){
+  const s=document.getElementById('cost');
+  const mc=(document.getElementById('mcode')||{}).value||'';
+  if(!mc){if(s)s.textContent='Enter the meld code (from the meld link) first.';return}
+  if(s)s.textContent='Opening Stripe checkout...';
+  try{
+    const d=await api('POST','/api/checkout',{meld_code:mc.trim()});
+    window.location.href=d.url;
+  }catch(err){
+    const m=err.message||'';
+    if(s)s.textContent='';
+    if(m.includes('429')||m.toLowerCase().includes('too many')){if(s)s.textContent='Too many attempts — take a minute and try again.'}
+    else if(m.includes('404')){if(s)s.textContent='No meld with that code — check the link.'}
+    else{alert(m||'Checkout unavailable — try again shortly.')}
+  }
+}
+
+async function init(){
+  const p=window.location.pathname;
+  const r=document.getElementById('root');
+  if(p==='/'||p===''||p.endsWith('.html')){r.innerHTML=C();wireLanding()}
+  else if(p.startsWith('/m/')){
+    _c=p.split('/m/')[1];
+    const ft=(location.hash.match(/t=([0-9a-f]{64})/)||[])[1];
+    if(ft&&!_m)_m={code:_c,owner_token:ft};
+    const fk=(location.hash.match(/k=([0-9a-f]+)/)||[])[1];
+    try{
+      const hdrs=ft?{'X-Meld-Token':ft}:{};
+      const d=await api('GET','/api/melds/'+_c,null,hdrs);
+      let a=d.context_a,b=d.context_b;
+      const isEnc=!!d.encrypted||(typeof a==='string'&&a.startsWith('meld1:'));
+      if(isEnc&&!fk&&!ft){r.innerHTML=ENC_CARD();return}
+      if(fk&&isEnc&&typeof a==='string'&&a.startsWith('meld1:')){a=await _dec(a,fk);if(b)b=await _dec(b,fk)}
+      if(d.resolved&&ft){
+        const rr=await fetch('/api/melds/'+_c+'/result',{headers:{'X-Meld-Token':ft,'X-Meld-Client':'human'}});
+        if(rr.ok){const rd=await rr.json();r.innerHTML=RD(rd.context_a,rd.context_b);startCountdown(document.getElementById('exp'),rd.expires_at||d.expires_at)}
+        else{r.innerHTML=RD(a||'(unavailable)','(owner view: token rejected)');startCountdown(document.getElementById('exp'),d.expires_at)}
+      }else if(d.resolved){
+        if(a==null&&b==null){r.innerHTML='<div class="card" style="text-align:center;padding:3rem 2rem"><h1 style="color:var(--grey-dark)">Resolved</h1><p style="color:var(--grey-soft);margin-top:.5rem">This meld is resolved. Open the owner link (#t=) or keyed E2E link (#k=) to read contexts.</p><a href="/" style="display:inline-block;margin-top:1rem;color:var(--ink)">Create a meld</a></div>'}
+        else{r.innerHTML=RD(a,b);startCountdown(document.getElementById('exp'),d.expires_at)}
+      }else{
+        if(a==null){a='(Party A\'s context is withheld on bare GET — answer below; resolve returns both sides. Or open the owner/E2E link.)'}
+        r.innerHTML=M(a,isEnc);if(ft){const slot=document.getElementById('ckbSlot');if(slot)slot.innerHTML='<button id="ckb" onclick="ck()" style="margin-top:.5rem;background:none;border:1px solid var(--ink-faint);color:var(--ink);padding:.5rem 1rem;cursor:pointer;border-radius:8px;font-size:.8125rem">Check for response</button><div id="res"></div>'}
+      }
+    }catch(e){
+      const m=e.message||'';
+      if(m.includes('410')||m.includes('expired')){r.innerHTML='<div class="card" style="text-align:center;padding:3rem 2rem"><h1 style="color:var(--grey-dark)">Gone</h1><p style="color:var(--grey-soft);margin-top:.5rem">This meld has dissolved.</p><a href="/" style="display:inline-block;margin-top:1rem;color:var(--ink)">Create a new one</a></div>'}
+      else{r.innerHTML='<div class="card" style="text-align:center;padding:3rem 2rem"><h1 style="color:var(--grey-dark)">Not found</h1><p style="color:var(--grey-soft);margin-top:.5rem">This meld does not exist.</p><a href="/" style="display:inline-block;margin-top:1rem;color:var(--ink)">Create a meld</a></div>'}
+    }
+  }
+  else if(p==='/upgrade'){r.innerHTML=UPGR()}
+  else{r.innerHTML='<div class="card" style="text-align:center;padding:3rem 2rem"><h1 style="color:var(--grey-dark)">Not found</h1><p style="color:var(--grey-soft);margin-top:.5rem">Page not found.</p><a href="/" style="display:inline-block;margin-top:1rem;color:var(--ink)">Create a meld</a></div>'}
+}
+init();
+</script>
+</body>
+</html>
