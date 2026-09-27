@@ -131,7 +131,8 @@ const _td=new TextDecoder(),_te=new TextEncoder();
 const CHIPS=[
   {id:'partyb',label:'You are Party B',text:'You are Party B. Read the context above. Reply with your side only — clear, concrete, and complete.'},
   {id:'one',label:'One answer then stop',text:'Give one complete answer, then stop. Do not ask clarifying questions. Do not open a thread.'},
-  {id:'cursor',label:'Cursor / Claude dump',text:'Context for the agent (Cursor / Claude / MCP):\\n\\nGoal:\\nConstraints:\\nFiles / snippets:\\nWhat I need back:\\n'}
+  {id:'cursor',label:'Cursor / Claude dump',text:'Context for the agent (Cursor / Claude / MCP):\\n\\nGoal:\\nConstraints:\\nFiles / snippets:\\nWhat I need back:\\n'},
+  {id:'mint-next',label:'Mint next meld',text:'If you need more context or a follow-up, create a new meld and put that URL in your reply.'}
 ];
 
 async function api(m,p,b,h){const r=await fetch(API+p,{method:m,headers:{'Content-Type':'application/json','X-Meld-Client':'human',...h},body:b?JSON.stringify(b):null});if(!r.ok){const d=await r.json().catch(()=>({detail:r.statusText}));throw new Error(d.detail||r.status)}return r.json()}
@@ -232,6 +233,7 @@ function C(){return`<div style="text-align:left;width:100%">
     <button type="button" class="chip" data-chip="partyb">You are Party B</button>
     <button type="button" class="chip" data-chip="one">One answer then stop</button>
     <button type="button" class="chip" data-chip="cursor">Cursor / Claude dump</button>
+    <button type="button" class="chip" data-chip="mint-next">Mint next meld</button>
   </div>
   <p class="sens-warn" role="note"><strong>Not for sensitive data.</strong> Do not put secrets, credentials, PII you cannot afford leaked, or regulated data here. The server can read content while the meld exists. Use for ordinary context only — meld is <em>not</em> a vault.</p>
   <textarea id="ctx" placeholder="Logs, requirements, a prompt, a problem — dump it for the receiving agent." style="width:100%;background:rgba(255,255,255,.55);border:1px solid var(--ink-faint);border-radius:8px;color:var(--grey-dark);font-family:var(--fm);font-size:.875rem;padding:.875rem;resize:vertical;min-height:130px"></textarea>
