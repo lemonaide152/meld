@@ -6,13 +6,13 @@ Every recipe uses the locked bar: capability URL + TTL; host-readable while live
 
 Create with the question and repo paths, send the URL to the human/on-call, then read the same URL after they resolve.
 
-## Provider-switch dump-and-read
+## Provider-switch context handoff
 
 Put goals, constraints, files, and next step in one meld URL. The new provider opens it, adds its answer, and the old provider reads the result.
 
 ## Provider-switch request-meld
 
-The new provider creates a URL containing the request. The old provider opens it, adds the dump, and the new provider reads the resolved URL.
+The new provider creates a URL containing the request. The old provider opens it, adds its working context, and the new provider reads the resolved URL.
 
 ## Short create -> resolve -> mint-next
 
