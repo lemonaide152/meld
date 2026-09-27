@@ -28,3 +28,7 @@ SB-2 (browser E2E default ON) is **withdrawn from the human UI**. Unapproved fea
 - Study tagging: put `study:v1:Pxx` in the **first line of context** (email field gone). API may still accept `email`.
 - Resolve card copy unchanged: “Dissolves on TTL.”
 - Server still accepts `meld1:` ciphertext from API clients; human UI does not expose E2E.
+
+## Follow-up — hop-line gutted
+
+Human UI: Hop line chip removed. No hop budget / 10-hop / hop-11 pay-or-new-line / meld-line rail. Need more later → create another meld. No server hop-line enforcement was live (line_id was residual-only).

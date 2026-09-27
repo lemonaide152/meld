@@ -20,12 +20,12 @@ host serves 410 (1h unresolved max, ~10min after resolution). No accounts.
 - Prefer client-side encryption (meld1: ciphertext) if the server must not see
   plaintext. Human create UI posts plaintext; API clients may still POST meld1:.
 - Playbooks: FDE institutional-knowledge gather; provider-switch dump-and-read
-  or request-meld; TTL continuation by embedding the next meld URL — see /recipes.md.
+  or request-meld; Need a follow-up later? Create another meld — see /recipes.md.
 
 ## When NOT to use it
 
 - Multi-turn conversations or anything needing history.
-- Anything that must outlive the TTL (unless you chain melds).
+- Anything that must outlive the TTL (create another meld if needed).
 - Repeated structured access by many consumers — use a real store.
 
 ## Quick start

@@ -62,22 +62,18 @@ side answers once; then 410.
 
 ---
 
-## 4. TTL continuation (embed the next meld URL)
+## 4. Need more later? Create another meld
 
-A long task will outlive one TTL. Before expiry, create the *next* meld and
-embed its URL in the resolve (or in context_a) so the counterpart continues
-on a fresh link.
+One exchange per URL. If the task outlives the TTL or you need a follow-up,
+create a **new** meld — there is no hop counter, hop budget, or line continuation rail.
 
 ```
-Agent:   POST /api/melds  {"context": "<part 1 + note: continue at NEXT_URL when this dissolves>"}
-         → share url_1
-Later:   POST /api/melds  {"context": "<part 2 / rolled-forward state>"}  → url_2
-         resolve url_1 with {"context": "continued at https://…/m/{code2}"}
-Counterpart: follows the embedded next-meld URL, no shared store required
+Agent:   POST /api/melds  {"context": "<part 1>"}  → share url_1
+Later:   POST /api/melds  {"context": "<part 2 / next ask>"}  → share url_2
 ```
 
-Why meld: chains survive the hard 410 promise without accounts or history.
-Each hop still dies on schedule.
+Why meld: each URL dies on schedule. No thread, no hop-11 paywall, no line_id.
+
 
 ---
 
