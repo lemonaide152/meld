@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>meld — context bridge to an agent</title>
-<meta name="description" content="meld puts the context on a URL so neither side has to paste the block. Then the URL dies. Built for agent developers and agent users.">
+<meta name="description" content="Context for your agent. One link. Then it’s gone.">
 <style>
 /* ---- tokens ----
    papyrus paper  : #ece3cf (warm cream, slight grain via gradient)
@@ -132,7 +132,7 @@ const CHIPS=[
   {id:'partyb',label:'You are Party B',text:'You are Party B. Read the context above. Reply with your side only — clear, concrete, and complete.'},
   {id:'one',label:'One answer then stop',text:'Give one complete answer, then stop. Do not ask clarifying questions. Do not open a thread.'},
   {id:'cursor',label:'Cursor / Claude dump',text:'Context for the agent (Cursor / Claude / MCP):\\n\\nGoal:\\nConstraints:\\nFiles / snippets:\\nWhat I need back:\\n'},
-  {id:'mint-next',label:'Mint next meld',text:'If you need more context or a follow-up, create a new meld and put that URL in your reply.'}
+  {id:'mint-next',label:'Agent — need more?',text:'Agent — need more? Mint a new meld and put the URL in your reply.'}
 ];
 
 async function api(m,p,b,h){const r=await fetch(API+p,{method:m,headers:{'Content-Type':'application/json','X-Meld-Client':'human',...h},body:b?JSON.stringify(b):null});if(!r.ok){const d=await r.json().catch(()=>({detail:r.statusText}));throw new Error(d.detail||r.status)}return r.json()}
@@ -216,13 +216,9 @@ function C(){return`<div style="text-align:left;width:100%">
   <div class="wordmark">meld</div>
   <div class="tagline">context bridge → agent</div>
 </div>
-<h1 class="hero">Put the context on a URL. Hand it to an <span class="who">agent</span>. Then the URL dies.</h1>
-<p class="subline" style="margin:1rem 0 .5rem">Connective tissue human↔machine. Context is a commodity — access should be efficient. The agent is always the receiver (human→agent or agent→agent).</p>
-<p style="font-family:var(--fm);font-size:.72rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink);margin:0 0 1rem">Humans free in the browser · agents key / quota · $3.33 one-shot</p>
-<div class="audiences">
-  <div class="aud"><h3>Agent users</h3><p>Brain-dump for Cursor, Claude, or any agent. Share one link. No paste-bin theatre.</p></div>
-  <div class="aud"><h3>Agent developers</h3><p>Wire MCP / REST handoffs. Same capability URL. See the developer strip below.</p></div>
-</div>
+<h1 class="hero">Context for your agent. One link. Then it’s gone.</h1>
+<p class="subline" style="margin:1rem 0 .5rem">Dump what you’d paste. Share the URL. Anyone with it can read it until it dissolves.</p>
+<p class="sens-warn" role="note">We can read it while it’s live. Anyone with the link can too. Not for secrets.</p>
 <div class="card" style="background:rgba(255,255,255,.4);border:1px solid var(--ink-faint);border-radius:12px;padding:1.5rem">
 <div id="f">
   <div class="ctx-tools">
@@ -233,13 +229,12 @@ function C(){return`<div style="text-align:left;width:100%">
     <button type="button" class="chip" data-chip="partyb">You are Party B</button>
     <button type="button" class="chip" data-chip="one">One answer then stop</button>
     <button type="button" class="chip" data-chip="cursor">Cursor / Claude dump</button>
-    <button type="button" class="chip" data-chip="mint-next">Mint next meld</button>
+    <button type="button" class="chip" data-chip="mint-next">Agent — need more?</button>
   </div>
-  <p class="sens-warn" role="note"><strong>Not for sensitive data.</strong> Do not put secrets, credentials, PII you cannot afford leaked, or regulated data here. The server can read content while the meld exists. Use for ordinary context only — meld is <em>not</em> a vault.</p>
   <textarea id="ctx" placeholder="Logs, requirements, a prompt, a problem — dump it for the receiving agent." style="width:100%;background:rgba(255,255,255,.55);border:1px solid var(--ink-faint);border-radius:8px;color:var(--grey-dark);font-family:var(--fm);font-size:.875rem;padding:.875rem;resize:vertical;min-height:130px"></textarea>
   <div style="margin-top:1.25rem"><button class="btn" id="go" style="background:var(--ink);color:#f3ecda;border:none;border-radius:8px;padding:.7rem 1.5rem;font-size:.9375rem;cursor:pointer;font-weight:600">Generate meld link</button></div>
   <div id="st" style="margin-top:.75rem;font-size:.875rem;color:var(--grey-soft)"></div>
-  <p class="claim"><strong>Capability URL + TTL.</strong> The link is the access. Host can read content while the meld exists. <strong>Not for sensitive data.</strong> Dissolves on TTL.</p>
+  <p class="claim">Capability URL + TTL · link = access · host can read while it lives · not for sensitive · dissolves on TTL</p>
 </div>
 <div id="r" style="display:none">
   <div style="border:1px solid var(--ink);padding:.75rem 1rem;border-radius:8px;background:rgba(46,74,125,.06);font-family:var(--fm);font-size:.8125rem;word-break:break-all;display:flex;gap:.5rem;align-items:flex-start"><span id="lk" style="flex:1"></span><button type="button" class="cp" id="cpbtn" style="flex-shrink:0;background:var(--ink);color:#f3ecda;border:none;border-radius:6px;padding:.35rem .7rem;font-size:.72rem;cursor:pointer;font-family:var(--fm)">Copy</button></div>
@@ -252,14 +247,11 @@ function C(){return`<div style="text-align:left;width:100%">
 </div>
 <div class="devcard">
   <h2>For agent developers</h2>
-  <p>Same product over the wire: create → share URL → resolve → read. MCP tools: <code>meld_create</code> / <code>meld_resolve</code> / <code>meld_read</code>.</p>
-  <p class="warn"><strong>Browser / API / MCP creates are plaintext on the server until TTL</strong> unless an API client encrypts client-side (<code>meld1:</code> + <code>#k=</code>). Do not assume host-blindness. <strong>Not for sensitive data</strong> (secrets, credentials, high-stakes PII, regulated data) — ordinary context only; not a vault.</p>
+  <p>API / MCP: create → share → resolve → read.</p>
   <div class="devlinks">
-    <a href="/agents">/agents</a>
-    <a href="/llms.txt">/llms.txt</a>
-    <a href="/mcp">MCP · /mcp</a>
-    <a href="https://glama.ai/mcp/servers/lemonaide152/meld" target="_blank" rel="noopener">Glama</a>
-    <a href="/recipes.md">recipes</a>
+    <a href="/mcp">MCP</a>
+    <a href="/agents">agent docs</a>
+    <a href="/llms.txt">llms.txt</a>
   </div>
 </div>
 </div>`}
