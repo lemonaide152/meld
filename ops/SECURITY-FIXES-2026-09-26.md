@@ -10,8 +10,8 @@ Cleared for lemonaide152/meld before public ship.
 
 ## Deploy
 
-- Git SHA: _(filled after commit)_
-- Worker version: _(filled after wrangler deploy)_
+- Git SHA: `1af712cf7437f6dc6c1649248dba79276cc4e393`
+- Worker version: `e8ddd81a-9146-4924-a3d5-db4569ab8e0a`
 - Live: https://meld.mergeinc.workers.dev
 
 ## Design (SB-1)
