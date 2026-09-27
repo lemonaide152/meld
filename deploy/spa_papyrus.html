@@ -96,6 +96,10 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--ink);outline-offset
 .devcard .warn{font-size:.75rem;color:var(--grey-body);border-left:2px solid var(--ink);padding-left:.65rem;margin:.65rem 0;line-height:1.45}
 .devlinks{display:flex;flex-wrap:wrap;gap:.55rem .9rem;font-family:var(--fm);font-size:.72rem}
 .devlinks a{color:var(--ink);text-decoration:underline;text-underline-offset:2px}
+.sens-warn{font-size:.78rem;line-height:1.45;color:var(--err);background:rgba(138,61,46,.08);border:1px solid rgba(138,61,46,.28);border-radius:8px;padding:.55rem .75rem;margin:.35rem 0 .55rem;text-align:left}
+.sens-warn strong{color:var(--err)}
+.sens-warn em{font-style:normal;font-weight:600}
+
 @media (max-width:480px){
   .sheet{margin:var(--s2) auto;min-height:auto;padding:1.25rem}
   .grid{background-size:28px 28px}
@@ -231,6 +235,7 @@ function C(){return`<div style="text-align:left;width:100%">
     <button type="button" class="chip" data-chip="one">One answer then stop</button>
     <button type="button" class="chip" data-chip="cursor">Cursor / Claude dump</button>
   </div>
+  <p class="sens-warn" role="note"><strong>Not for sensitive data.</strong> Do not put secrets, credentials, PII you cannot afford leaked, or regulated data here. E2E reduces host readability but meld is <em>not</em> a vault.</p>
   <textarea id="ctx" placeholder="Logs, requirements, a prompt, a problem — dump it for the receiving agent." style="width:100%;background:rgba(255,255,255,.55);border:1px solid var(--ink-faint);border-radius:8px;color:var(--grey-dark);font-family:var(--fm);font-size:.875rem;padding:.875rem;resize:vertical;min-height:130px"></textarea>
   <label style="display:flex;gap:.5rem;align-items:flex-start;margin-top:.85rem;font-size:.8125rem;color:var(--grey-body);cursor:pointer;text-align:left"><input type="checkbox" id="e2e" checked style="accent-color:var(--ink);margin-top:.2rem"> <span><strong style="color:var(--grey-dark)">End-to-end encrypted</strong> (browser default) — ciphertext only on the server. Key lives in your <span style="font-family:var(--fm)">#k=</span> link. Lose the link, lose the content.</span></label>
   <details style="margin-top:.75rem;font-size:.8125rem;color:var(--grey-soft)"><summary style="cursor:pointer;font-family:var(--fm);font-size:.68rem;letter-spacing:.08em;text-transform:uppercase">Optional email</summary>
@@ -239,7 +244,7 @@ function C(){return`<div style="text-align:left;width:100%">
   </details>
   <div style="margin-top:1.25rem"><button class="btn" id="go" style="background:var(--ink);color:#f3ecda;border:none;border-radius:8px;padding:.7rem 1.5rem;font-size:.9375rem;cursor:pointer;font-weight:600">Generate meld link</button></div>
   <div id="st" style="margin-top:.75rem;font-size:.875rem;color:var(--grey-soft)"></div>
-  <p class="claim"><strong>Capability URL + TTL.</strong> Bare share link does not expose plaintext. Browser create defaults to E2E.</p>
+  <p class="claim"><strong>Capability URL + TTL.</strong> Bare share link does not expose plaintext. Browser create defaults to E2E. <strong>Not for sensitive data</strong> — E2E is not a vault.</p>
 </div>
 <div id="r" style="display:none">
   <div style="border:1px solid var(--ink);padding:.75rem 1rem;border-radius:8px;background:rgba(46,74,125,.06);font-family:var(--fm);font-size:.8125rem;word-break:break-all;display:flex;gap:.5rem;align-items:flex-start"><span id="lk" style="flex:1"></span><button type="button" class="cp" id="cpbtn" style="flex-shrink:0;background:var(--ink);color:#f3ecda;border:none;border-radius:6px;padding:.35rem .7rem;font-size:.72rem;cursor:pointer;font-family:var(--fm)">Copy</button></div>
@@ -254,7 +259,7 @@ function C(){return`<div style="text-align:left;width:100%">
 <div class="devcard">
   <h2>For agent developers</h2>
   <p>Same product over the wire: create → share URL → resolve → read. MCP tools: <code>meld_create</code> / <code>meld_resolve</code> / <code>meld_read</code>.</p>
-  <p class="warn"><strong>API / MCP creates are plaintext on the server until TTL</strong> unless you encrypt client-side (<code>meld1:</code> + <code>#k=</code>). Do not assume host-blindness for agent traffic.</p>
+  <p class="warn"><strong>API / MCP creates are plaintext on the server until TTL</strong> unless you encrypt client-side (<code>meld1:</code> + <code>#k=</code>). Do not assume host-blindness for agent traffic. <strong>Not for sensitive data</strong> (secrets, credentials, high-stakes PII, regulated data) — E2E reduces host readability but is not a vault.</p>
   <div class="devlinks">
     <a href="/agents">/agents</a>
     <a href="/llms.txt">/llms.txt</a>
