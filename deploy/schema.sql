@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS melds (
   resolved_at TEXT,
   owner_token TEXT NOT NULL,
   owner_email TEXT,
-  creator_ip TEXT NOT NULL,
+  creator_ip TEXT NOT NULL,  -- SB-3: left empty on new writes; rate limits use rate/free_counts only
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   pin TEXT,
@@ -19,7 +19,7 @@ CREATE INDEX IF NOT EXISTS idx_melds_ip_created ON melds(creator_ip, created_at)
 CREATE INDEX IF NOT EXISTS idx_melds_expiry ON melds(expires_at);
 -- KPI: B→A conversion is measured by resolver_ip creating within 7d.
 -- Missing column broke live resolves (SQLITE no-such-column) until ALTERed.
-ALTER TABLE melds ADD COLUMN resolver_ip TEXT;
+ALTER TABLE melds ADD COLUMN resolver_ip TEXT;  -- SB-3: no longer written on resolve
 
 -- MELD-FREELIMIT-002: per-IP created-this-window counter (count creations,
 -- not live meld rows — melds are deleted on resolve/sweep, so a live-row

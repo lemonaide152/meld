@@ -438,3 +438,9 @@ None. No Show HN. No user asks.
 - Official MCP Registry `remotes[0].url` → `https://meld.mergeinc.workers.dev/mcp` (GitHub OIDC publisher).
 - Serve `/.well-known/glama.json` claim file if HTTP challenge ever needed again (GitHub claim already done).
 - Glama Admin still shows an attention triangle (likely publisher/support-contact incomplete) — cosmetic.
+
+## Security ship-blockers (SB-1/2/3) — evening PT
+
+Implemented and deployed — see `ops/SECURITY-FIXES-2026-09-26.md` for SHA + worker version.
+Bare GET no longer returns plaintext contexts; browser E2E default ON; creator_ip not stored on new meld rows.
+

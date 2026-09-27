@@ -17,7 +17,7 @@ Tester: meldsec profile. All findings verified with live probes, not static gues
 | Pro leases | D1 `pros` (hashed email → expiry) | Medium — monetization gate |
 | API keys | D1 `api_keys` (sha256 hash, 192-bit key) | Critical — metered agent access |
 | Stripe webhook secret | Worker secret | Critical — forges leases if leaked |
-| creator_ip | D1 `melds.creator_ip` | Low — rate-limit identity |
+| creator_ip / resolver_ip | *(not persisted on new meld rows — SB-3)* Rate identity lives in `rate` / `free_counts` / `ip_throttle` only | — |
 
 Trust boundaries: internet ↔ Cloudflare edge (CF-Connecting-IP set here) ↔ Worker
 (Python/ASGI) ↔ D1. Browser ↔ SPA (key in fragment). Stripe ↔ webhook (HMAC).
@@ -134,3 +134,24 @@ Trust boundaries: internet ↔ Cloudflare edge (CF-Connecting-IP set here) ↔ W
   forged webhooks rejected, expired leases fall through to free limits.
 - T5 (meter can't be gamed): holds now — free limit enforced on the
   unspoofable edge IP; XFF rotation verified ineffective post-fix.
+
+---
+
+## Ship blockers SB-1 / SB-2 / SB-3 (2026-09-26)
+
+Cleared before public ship:
+
+1. **SB-1 · token-less GET** — `GET /api/melds/{code}` bare = metadata only
+   (`resolved`, `expires_at`, `encrypted`, `seconds_remaining`). Plaintext
+   `context_a`/`context_b` require `X-Meld-Token`. E2E melds (`meld1:` prefix)
+   may return ciphertext on bare GET so `#k=` clients can decrypt client-side;
+   never plaintext. After resolve, bare GET does not leak plaintext `context_b`.
+2. **SB-2 · default E2E** — Browser create checkbox **default ON**. Trust copy
+   stays honest. Agents/API may still POST plaintext; privacy requires E2E /
+   keyed URL (`#k=`).
+3. **SB-3 · creator_ip at rest** — New meld rows store empty `creator_ip`;
+   `resolver_ip` is no longer written. Rate limits continue to use the edge /
+   request IP against `rate`, `free_counts`, and `ip_throttle` only.
+
+Residual for securitay (not in this ship): hop `line_id` headers (design-review
+only); M3 `/v1/keys` email-proof; scheduled D1 sweeper; CSP `unsafe-inline`.

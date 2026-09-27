@@ -85,3 +85,10 @@ adjacent and must not become a content archive. Operational notes:
   — expect **410**. That is the contract.
 - Optional: create an encrypted meld and `GET /api/melds/<code>` — you should
   see opaque ciphertext, not your plaintext.
+
+## Ship posture (2026-09-26)
+
+- Bare `GET /api/melds/{code}` returns metadata only (plus `meld1:` ciphertext when E2E). Plaintext bodies require `X-Meld-Token`.
+- Browser create defaults E2E ON; agents/API may still send plaintext unless they encrypt client-side.
+- `creator_ip` / `resolver_ip` are not stored on new meld rows.
+
