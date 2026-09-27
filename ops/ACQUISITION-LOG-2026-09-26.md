@@ -448,7 +448,8 @@ Bare GET no longer returns plaintext contexts; browser E2E default ON; creator_i
 ## Agent UX rewrite — ~20:51 PT (2026-09-26)
 
 - Commit: `f907d56` (sensitive-data warn) on top of `ec1edc4` (agent-developer/user landing)
-- Worker version: `6f9950a9-36e8-4b94-b1c3-634b81a882a6` (pre-trust-page patch; redeploy follows)
+- Worker version: `65b27236-844e-4525-8a40-edacc61244a4` (includes /trust sensitive-data section)
+- Final commit: `da433c5`
 - Live: https://meld.mergeinc.workers.dev — hero agent-receiver, chips+voice, agent-dev strip, not-for-sensitive warning
 - Smoke create: `hpcirp9nu11b` discard-tagged; bare GET metadata-only (SB-1 OK)
 - Encryption at rest: deferred — not claimed
