@@ -453,3 +453,5 @@ Bare GET no longer returns plaintext contexts; browser E2E default ON; creator_i
 - Live: https://meld.mergeinc.workers.dev — hero agent-receiver, chips+voice, agent-dev strip, not-for-sensitive warning
 - Smoke create: `hpcirp9nu11b` discard-tagged; bare GET metadata-only (SB-1 OK)
 - Encryption at rest: deferred — not claimed
+
+- TTL copy nit deployed: commit `a73d599` worker `f548c54c-fa41-48b8-a9bf-100c2898c18e`
