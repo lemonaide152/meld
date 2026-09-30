@@ -7,7 +7,7 @@ async function main() {
   console.log("Testing meld SDK against", BASE);
 
   // 1. Create
-  const m = await create("SDK test: the auth flow uses OAuth2+PKCE");
+  const m = await create("SDK test: the auth flow uses OAuth2+PKCE", { ttl: "1hr", baseUrl: BASE });
   assert(m.code && m.code.length === 12, "code should be 12 chars");
   assert(m.owner_token && m.owner_token.length === 64, "owner_token should be 64 chars");
   assert(m.owner_url && m.owner_url.includes("#t="), "owner_url should have fragment");

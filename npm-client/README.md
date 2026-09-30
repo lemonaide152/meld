@@ -16,7 +16,7 @@ npm install meld-bridge
 import { create, view, resolve, result } from "meld-bridge";
 
 // Agent A: create a meld
-const meld = await create("Auth flow uses OAuth2+PKCE, JWT tokens, refresh rotation");
+const meld = await create("Auth flow uses OAuth2+PKCE, JWT tokens, refresh rotation", { ttl: "1hr" });
 console.log(`Share this link: ${meld.url}`);
 console.log(`Save this token: ${meld.owner_token}`);
 
@@ -34,7 +34,7 @@ console.log(`Answer: ${res.context_b}`);
 ## CLI
 
 ```bash
-npx meld-bridge send "Auth flow uses OAuth2+PKCE"
+npx meld-bridge send --ttl 1hr "Auth flow uses OAuth2+PKCE"
 npx meld-bridge resolve <code> "Add rate limiting to token refresh"
 npx meld-bridge read <code> <owner_token>
 ```
@@ -48,7 +48,7 @@ meld makes dissolution the default — no cleanup, no stale data, no trust neede
 
 | Function | Description |
 |---|---|
-| `create(context, opts?)` | Create a meld, returns `{code, url, owner_token}` |
+| `create(context, { ttl })` | Create a bridge. `ttl` is required: `3m`, `1hr`, or `1d` |
 | `view(code)` | View context_a (and context_b if resolved) |
 | `resolve(code, context)` | Answer a meld |
 | `result(code, ownerToken)` | Read the merged result |

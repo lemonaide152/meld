@@ -12,8 +12,7 @@ https://meld.mergeinc.workers.dev/mcp
 
 Transport: [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports)
 in JSON response mode (stateless; no SSE session required). Auth: none.
-Humans free in browser; agent tool calls hit the same create/resolve/read APIs
-(agent key/quota applies on create).
+Pilot bridges are free. `meld_create` requires `ttl`: `3m`, `1hr`, or `1d`. There is no default.
 
 Smoke:
 
@@ -55,7 +54,7 @@ Or: `"command": "npx", "args": ["meld-mcp"]` when published.
 
 | Tool | Purpose |
 |---|---|
-| `meld_create` | Create a meld with your context → returns share + owner links |
+| `meld_create` | Create a bridge. Requires `context` and `ttl` (`3m`, `1hr`, or `1d`) → capability URL |
 | `meld_resolve` | Answer a meld you received → returns the other party's context |
 | `meld_read` | Owner: read the resolved result (token rotates each read) |
 

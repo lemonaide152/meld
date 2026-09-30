@@ -1,24 +1,323 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>meld — context bridge to an agent</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>meld — timed bridge</title>
+<!--MELD_PREVIEW-->
 <style>
-:root{--paper:#ece3cf;--ink:#2e4a7d;--text:#45443f;--soft:#68675f;--line:rgba(46,74,125,.32)}
-*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--text);font:16px/1.55 Georgia,serif}main{max-width:680px;margin:2rem auto;padding:2rem;border:1px solid var(--ink);min-height:calc(100vh - 4rem)}h1{font-size:1.55rem;font-weight:400}h2{font:700 .78rem ui-monospace,monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--ink)}p{color:var(--soft)}.chip{margin:.5rem 0;border:1px solid var(--line);background:#fff5;color:var(--ink);font:12px ui-monospace,monospace}textarea{width:100%;min-height:150px;padding:.85rem;border:1px solid var(--line);border-radius:8px;background:#fff8;color:var(--text);font:14px ui-monospace,monospace}button{padding:.7rem 1rem;border:1px solid var(--ink);border-radius:7px;background:var(--ink);color:#f3ecda;cursor:pointer}button:disabled{opacity:.55}.box{margin-top:1rem;padding:1rem;border:1px solid var(--line);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 ui-monospace,monospace;background:#fff6}.warn{padding:.7rem;border-left:3px solid #8a3d2e;color:#71372d;background:#8a3d2e12}.claim{font:12px/1.5 ui-monospace,monospace;color:var(--soft)}a{color:var(--ink)}nav{margin-top:2rem;font:12px ui-monospace,monospace}code{font-family:inherit}
+:root{
+  --bg:#10141c;--panel:#181e2a;--panel-2:#202838;--ink:#eef3fb;--muted:#a9b4c6;
+  --line:#313a4d;--accent:#7ee0c6;--accent-ink:#06241c;--warn:#f3d48a;--warn-bg:#3a2e14;
+  --danger:#ffb4a8;--ok:#b6f3df;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Segoe UI",ui-sans-serif,sans-serif}
+a{color:var(--accent)}
+button,input,textarea{font:inherit}
+.app{max-width:1080px;margin:0 auto;padding:1.25rem 1.1rem 3rem}
+.top{display:flex;justify-content:space-between;gap:1rem;align-items:baseline;margin-bottom:1.25rem}
+.brand{font-weight:700;letter-spacing:.04em}
+.brand span{color:var(--muted);font-weight:500}
+.top nav{font-size:.85rem;color:var(--muted)}
+.top nav a{color:var(--muted);margin-left:.75rem}
+.layout{display:grid;grid-template-columns:240px 1fr;gap:1rem;align-items:start}
+.rail,.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px}
+.rail{padding:1rem}
+.rail h2,.panel h2{margin:0 0 .75rem;font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.step{display:flex;gap:.7rem;padding:.65rem 0;border-top:1px solid var(--line);color:var(--muted)}
+.step:first-of-type{border-top:0}
+.step.on{color:var(--ink)}
+.step.done .n{background:var(--accent);color:var(--accent-ink)}
+.n{flex:0 0 auto;width:1.6rem;height:1.6rem;border-radius:99px;display:grid;place-items:center;border:1px solid var(--line);font-size:.8rem}
+.step.on .n{border-color:var(--accent);color:var(--accent)}
+.step small{display:block;color:var(--muted);font-size:.78rem}
+.panel{padding:1.15rem 1.2rem 1.25rem}
+h1{font-size:1.7rem;line-height:1.15;margin:.1rem 0 .45rem}
+.lede{color:var(--muted);margin:0 0 1rem}
+.needs{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin:0 0 1rem}
+.need{background:var(--panel-2);border-radius:12px;padding:.75rem .8rem}
+.need b{display:block;font-size:.92rem}
+.need span{display:block;color:var(--muted);font-size:.82rem;margin-top:.15rem}
+label{display:block;font-weight:650;margin:.2rem 0 .35rem}
+textarea{width:100%;min-height:180px;resize:vertical;padding:.85rem;border-radius:12px;border:1px solid var(--line);background:#0e131c;color:var(--ink)}
+textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.hint{color:var(--muted);font-size:.82rem;margin:.35rem 0 .9rem}
+.times{display:grid;grid-template-columns:repeat(3,1fr);gap:.55rem}
+.time{text-align:left;padding:.8rem;border-radius:12px;border:1px solid var(--line);background:#0e131c;color:var(--ink);cursor:pointer}
+.time b{display:block;font-size:1.02rem}
+.time span{display:block;color:var(--muted);font-size:.78rem;margin-top:.2rem}
+.time[aria-checked="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.time[aria-checked="true"] span{color:#24584a}
+.trust{margin:1rem 0;padding:.8rem .9rem;border-radius:12px;background:var(--warn-bg);color:var(--warn)}
+.trust strong{color:#ffe7ad}
+.trust ul{margin:.35rem 0 0;padding-left:1.1rem}
+.trust li{margin:.15rem 0}
+.actions{display:flex;gap:.7rem;align-items:center;flex-wrap:wrap}
+button.primary{background:var(--accent);color:var(--accent-ink);border:0;border-radius:999px;padding:.75rem 1.1rem;font-weight:700;cursor:pointer}
+button.primary:disabled{opacity:.55;cursor:wait}
+button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:.65rem .95rem;cursor:pointer}
+.status{color:var(--muted);min-height:1.2rem}
+.status.bad{color:var(--danger)}
+.box{margin:.7rem 0;padding:.9rem;border-radius:12px;background:#0e131c;border:1px solid var(--line);white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.45 ui-monospace,monospace}
+a.url{display:block;font-size:1rem;color:var(--ok);text-decoration:none}
+.meta{color:var(--muted);font-size:.9rem}
+.count{float:right;color:var(--muted);font-weight:500;font-size:.8rem}
+@media(max-width:800px){
+  .layout{grid-template-columns:1fr}
+  .needs,.times{grid-template-columns:1fr}
+  .rail{display:flex;gap:.4rem;overflow:auto}
+  .step{border-top:0;min-width:9.5rem}
+}
 </style>
-</head><body><main><nav><a href="/">meld</a> · <a href="/agents">agents</a> · <a href="/llms.txt">llms.txt</a> · <a href="/mcp">MCP</a></nav><div id="root"></div></main>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">meld <span>timed bridge</span></div>
+    <nav><a href="/">New bridge</a><a href="/agents">Agent API</a><a href="/trust">Trust</a><a href="/llms.txt">llms.txt</a></nav>
+  </header>
+  <div class="layout">
+    <aside class="rail" aria-label="Task steps">
+      <h2>This task</h2>
+      <div class="step on" id="s1"><div class="n">1</div><div>Write the handoff<small>What the other side must read</small></div></div>
+      <div class="step" id="s2"><div class="n">2</div><div>Choose the time<small>3 minutes, 1 hour, or 1 day</small></div></div>
+      <div class="step" id="s3"><div class="n">3</div><div>Share the link<small>The link is the bearer</small></div></div>
+      <div class="step" id="s4"><div class="n">4</div><div>Read the reply<small>Same link, until it expires</small></div></div>
+    </aside>
+    <main class="panel" id="root"></main>
+  </div>
+</div>
 <script>
-const API=location.origin;let code=null,ownerToken=null;
-const esc=s=>{const d=document.createElement('div');d.textContent=s??'';return d.innerHTML};
-async function api(method,path,body,headers={}){const r=await fetch(API+path,{method,headers:{'Content-Type':'application/json',...headers},body:body?JSON.stringify(body):undefined});const d=await r.json().catch(()=>({detail:r.statusText}));if(!r.ok)throw Error(d.detail||r.status);return d}
-function claim(){return '<p class="claim">Capability URL + TTL · host-readable while live · anyone with the link can read it · not for secrets/credentials/regulated · dissolves on TTL.</p>'}
-function landing(){root.innerHTML='<h1>Built years of context on one AI — switching feels like starting over.</h1><p>Tired of being the human copy-paste proxy between your agents? Pass the working context you’d lose in a switch. Put it in a meld, share the link, and the other agent reads it — until the timer ends and the link is gone.</p><button class="chip" id="mint" type="button">Agent — need more? Mint a new meld and put the URL in your reply.</button><textarea id="ctx" placeholder="Working context from the AI you’ve been using…"></textarea><p class="warn">We can read it while it’s live. Anyone with the link can too. Not for secrets.</p><p><button id="create">Generate meld link</button> <span id="status"></span></p>'+claim()+'<h2>Agent flow</h2><p>Create → share URL → resolve → read URL. Need more? Mint-next means: create another meld URL and put it in the reply.</p>';
-mint.onclick=()=>{ctx.value=(ctx.value?ctx.value+'\n\n':'')+'Agent — need more? Mint a new meld and put the URL in your reply.';ctx.focus()};create.onclick=async()=>{create.disabled=true;status.textContent='Creating…';try{const d=await api('POST','/api/melds',{context:ctx.value});code=d.code;ownerToken=d.owner_token;showCreated(d)}catch(e){status.textContent=e.message}finally{create.disabled=false}}}
-function showCreated(d){root.innerHTML='<h1>Meld created</h1><p>Share this URL. Anyone with the link can read it while live.</p><div class="box" id="share">'+esc(d.url)+'</div><p><button id="check">Check for response</button> <span id="status"></span></p><div id="result"></div>'+claim()+'<p><a href="/agents">Agent docs</a> · <a href="/recipes.md">Recipes</a></p>';check.onclick=checkResult}
-async function checkResult(){status.textContent='Checking…';try{const d=await api('GET','/api/melds/'+code);result.innerHTML='<div class="box"><b>Context A</b>\n'+esc(d.context_a)+'\n\n<b>Context B</b>\n'+esc(d.context_b||'(not resolved yet)')+'</div>';status.textContent=''}catch(e){status.textContent=e.message}}
-function meldPage(){code=decodeURIComponent(location.pathname.slice(3));api('GET','/api/melds/'+code).then(d=>{if(d.resolved){resolved(d)}else{receiver(d)}}).catch(e=>root.innerHTML='<h1>Meld unavailable</h1><p>'+esc(e.message)+'</p><p>This meld may have dissolved on TTL.</p>')}
-function receiver(d){root.innerHTML='<h1>Meld received</h1><p>Anyone with this link can read the live context.</p><div class="box">'+esc(d.context_a)+'</div><p><textarea id="answer" placeholder="Your answer..."></textarea></p><button id="resolve">Resolve</button> <span id="status"></span>'+claim();resolve.onclick=async()=>{resolve.disabled=true;try{const out=await api('POST','/api/melds/'+code+'/resolve',{context:answer.value});resolved(out)}catch(e){status.textContent=e.message;resolve.disabled=false}}}
-function resolved(d){root.innerHTML='<h1>Exchange complete</h1><div class="box"><b>Context A</b>\n'+esc(d.context_a)+'\n\n<b>Context B</b>\n'+esc(d.context_b)+'</div>'+claim()+'<p>Need more? Mint-next: create another meld URL and put it in the reply.</p><p><a href="/">Create another meld</a></p>'}
-const path=location.pathname;if(path.startsWith('/m/'))meldPage();else landing();
-</script></body></html>
+const API = location.origin;
+let code = null;
+let picked = "";
+const esc = s => { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; };
+async function api(method, path, body, headers = {}) {
+  const r = await fetch(API + path, {
+    method,
+    headers: { "Content-Type": "application/json", "X-Meld-Client": "human", ...headers },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const d = await r.json().catch(() => ({ detail: r.statusText }));
+  if (!r.ok) throw Error(d.detail || String(r.status));
+  return d;
+}
+function setSteps(active) {
+  for (let i = 1; i <= 4; i++) {
+    const el = document.getElementById("s" + i);
+    el.classList.toggle("on", i === active);
+    el.classList.toggle("done", i < active || active > 4);
+  }
+}
+function trustBlock() {
+  return '<div class="trust"><strong>Read this before you put text on the bridge.</strong><ul>'
+    + "<li>The link is the bearer. Anyone who has it can read the exchange while it is live.</li>"
+    + "<li>The host can read it while it is live.</li>"
+    + "<li>Not for secrets, credentials, or regulated data.</li>"
+    + "<li>The bridge dissolves when the timer you choose runs out. Then the link is gone.</li>"
+    + "</ul></div>";
+}
+function needsBlock() {
+  return '<div class="needs">'
+    + '<div class="need"><b>The handoff</b><span>The working context the other person or agent should read.</span></div>'
+    + '<div class="need"><b>A bridge time</b><span>Only three: 3 minutes, 1 hour, or 1 day.</span></div>'
+    + '<div class="need"><b>The capability URL</b><span>Sharing the link is what lets the other side in.</span></div>'
+    + '<div class="need"><b>A reply on that link</b><span>They open it, answer, and you read the reply here.</span></div>'
+    + "</div>";
+}
+function landing() {
+  document.title = "meld — timed bridge";
+  setSteps(1);
+  root.innerHTML = '<h1>Open a timed bridge</h1>'
+    + '<p class="lede">Hand one piece of working context to another person or agent. You get a capability URL. That URL is the shared bearer for the exchange, and it dies on the timer you pick.</p>'
+    + needsBlock()
+    + '<label for="ctx">1. Context the other side must read <span class="count" id="count">0 / 100000</span></label>'
+    + '<textarea id="ctx" placeholder="Decisions, constraints, and the next step they need. Ordinary working context only."></textarea>'
+    + '<p class="hint">This text is what they see when they open the link. Leave out secrets.</p>'
+    + '<label id="time-label">2. How long should this bridge stay live?</label>'
+    + '<div class="times" role="radiogroup" aria-labelledby="time-label">'
+    + timeBtn("3m", "3 minutes", "For a quick handoff. Dissolves in 3 minutes.")
+    + timeBtn("1hr", "1 hour", "For a working session. Dissolves in 1 hour.")
+    + timeBtn("1d", "1 day", "For a handoff that can wait. Dissolves in 1 day.")
+    + "</div>"
+    + '<p class="hint" id="time-hint">Choose one. Nothing is selected until you do. There is no other duration.</p>'
+    + trustBlock()
+    + '<div class="actions"><button class="primary" id="create" type="button">Create the bridge</button><span class="status" id="status" role="status"></span></div>';
+  const ctx = document.getElementById("ctx");
+  const count = document.getElementById("count");
+  ctx.addEventListener("input", () => {
+    count.textContent = ctx.value.length + " / 100000";
+    setSteps(ctx.value.trim() && picked ? 3 : ctx.value.trim() ? 2 : 1);
+  });
+  document.querySelectorAll(".time").forEach(btn => {
+    btn.addEventListener("click", () => selectTime(btn.dataset.ttl));
+  });
+  document.getElementById("create").addEventListener("click", createBridge);
+}
+function timeBtn(ttl, title, detail) {
+  return '<button type="button" class="time" role="radio" data-ttl="' + ttl + '" aria-checked="false"><b>' + title + '</b><span>' + detail + '</span></button>';
+}
+function selectTime(ttl) {
+  picked = ttl;
+  document.querySelectorAll(".time").forEach(btn => btn.setAttribute("aria-checked", btn.dataset.ttl === ttl ? "true" : "false"));
+  const labels = { "3m": "3 minutes", "1hr": "1 hour", "1d": "1 day" };
+  document.getElementById("time-hint").textContent = "Selected: " + labels[ttl] + ". The server will dissolve this bridge on that timer.";
+  const ctx = document.getElementById("ctx");
+  setSteps(ctx && ctx.value.trim() ? 3 : 2);
+}
+async function createBridge() {
+  const ctx = document.getElementById("ctx");
+  const status = document.getElementById("status");
+  const button = document.getElementById("create");
+  const text = ctx.value;
+  status.classList.remove("bad");
+  if (!text.trim()) {
+    status.classList.add("bad");
+    status.textContent = "Add the context the other side must read.";
+    ctx.focus();
+    return;
+  }
+  if (!picked) {
+    status.classList.add("bad");
+    status.textContent = "Choose a bridge time: 3 minutes, 1 hour, or 1 day.";
+    return;
+  }
+  button.disabled = true;
+  status.textContent = "Creating the bridge…";
+  try {
+    const d = await api("POST", "/api/melds", { context: text, ttl: picked });
+    code = d.code;
+    showCreated(d);
+  } catch (e) {
+    status.classList.add("bad");
+    status.textContent = e.message;
+    button.disabled = false;
+  }
+}
+function showCreated(d) {
+  document.title = "meld — bridge is live";
+  setSteps(3);
+  const when = d.expires_at ? new Date(d.expires_at).toLocaleString() : "the timer you chose";
+  root.innerHTML = '<h1>Share this capability URL</h1>'
+    + '<p class="lede">Send this link to the other person or agent. The link is the bearer: whoever has it can read the live exchange and write the reply.</p>'
+    + '<a class="box url" id="share" href="' + esc(d.url) + '">' + esc(d.url) + '</a>'
+    + '<p class="meta">Bridge time: <b>' + esc(ttlLabel(d.ttl || picked)) + '</b> · dissolves ' + esc(when) + '</p>'
+    + '<div class="needs">'
+    + '<div class="need"><b>You do this</b><span>Copy the URL and send it to the other side.</span></div>'
+    + '<div class="need"><b>They do this</b><span>Open the link, read your context, and write a reply.</span></div>'
+    + '<div class="need"><b>Then you</b><span>Stay on this page and check for the reply.</span></div>'
+    + '<div class="need"><b>Then it ends</b><span>When the timer hits, the bridge dissolves.</span></div>'
+    + '</div>'
+    + trustBlock()
+    + '<div class="actions"><button class="ghost" id="copy" type="button">Copy link</button><button class="primary" id="check" type="button">Check for the reply</button><span class="status" id="status" role="status"></span></div>'
+    + '<div id="result"></div>';
+  document.getElementById("copy").onclick = copyLink;
+  document.getElementById("check").onclick = () => checkResult(false);
+  checkResult(true);
+}
+function ttlLabel(ttl) {
+  return { "3m": "3 minutes", "1hr": "1 hour", "1d": "1 day" }[ttl] || ttl;
+}
+async function copyLink() {
+  const url = document.getElementById("share").textContent;
+  const status = document.getElementById("status");
+  try {
+    await navigator.clipboard.writeText(url);
+    status.classList.remove("bad");
+    status.textContent = "Link copied.";
+  } catch (e) {
+    status.classList.add("bad");
+    status.textContent = "Select the link and copy it.";
+  }
+}
+async function checkResult(quiet) {
+  const status = document.getElementById("status");
+  if (!quiet) status.textContent = "Checking this bridge…";
+  try {
+    const d = await api("GET", "/api/melds/" + code);
+    const waiting = !d.context_b;
+    document.getElementById("result").innerHTML = '<div class="box"><b>Your context</b>\n' + esc(d.context_a)
+      + '\n\n<b>Their reply</b>\n' + esc(d.context_b || "No reply yet. The bridge is still live.") + "</div>";
+    if (waiting) {
+      setSteps(4);
+      status.classList.remove("bad");
+      status.textContent = quiet ? "Watching this bridge." : "Still waiting for a reply.";
+    } else {
+      setSteps(5);
+      status.textContent = "Reply is on the link. The bridge still dissolves on the timer.";
+    }
+  } catch (e) {
+    status.classList.add("bad");
+    status.textContent = e.message;
+  }
+}
+function meldPage() {
+  document.title = "meld — this bridge expires";
+  code = decodeURIComponent(location.pathname.slice(3).split("/")[0]);
+  setSteps(4);
+  root.innerHTML = "<h1>Opening this bridge…</h1><p class='status' id='status'>Loading the live exchange.</p>";
+  api("GET", "/api/melds/" + code).then(d => {
+    if (d.resolved && d.context_b) resolved(d);
+    else receiver(d);
+  }).catch(e => {
+    root.innerHTML = "<h1>This bridge is unavailable</h1><p>" + esc(e.message) + "</p><p class='lede'>It may have dissolved on its timer. This preview never included the exchange.</p><p><a href='/'>Open a new bridge</a></p>";
+  });
+}
+function remainingText(d) {
+  if (typeof d.seconds_remaining === "number") {
+    const s = d.seconds_remaining;
+    if (s < 90) return s + " seconds left";
+    if (s < 7200) return Math.round(s / 60) + " minutes left";
+    return Math.round(s / 3600) + " hours left";
+  }
+  return d.expires_at ? ("dissolves " + new Date(d.expires_at).toLocaleString()) : "dissolves on its timer";
+}
+function receiver(d) {
+  document.title = "meld — this bridge expires";
+  setSteps(4);
+  root.innerHTML = "<h1>Reply on this bridge</h1>"
+    + "<p class='lede'>You have the link, so you can read what was sent and write the reply. " + esc(remainingText(d)) + ".</p>"
+    + needsBlock()
+    + "<label>What they sent</label><div class='box'>" + esc(d.context_a) + "</div>"
+    + "<label for='answer'>Your reply</label><textarea id='answer' placeholder='The answer they asked for. Ordinary working context only.'></textarea>"
+    + trustBlock()
+    + "<div class='actions'><button class='primary' id='resolve' type='button'>Put the reply on this link</button><span class='status' id='status' role='status'></span></div>";
+  document.getElementById("resolve").onclick = async () => {
+    const answer = document.getElementById("answer");
+    const status = document.getElementById("status");
+    const button = document.getElementById("resolve");
+    if (!answer.value.trim()) {
+      status.classList.add("bad");
+      status.textContent = "Write the reply first.";
+      answer.focus();
+      return;
+    }
+    button.disabled = true;
+    status.classList.remove("bad");
+    status.textContent = "Sending the reply…";
+    try {
+      const out = await api("POST", "/api/melds/" + code + "/resolve", { context: answer.value });
+      resolved(out);
+    } catch (e) {
+      status.classList.add("bad");
+      status.textContent = e.message;
+      button.disabled = false;
+    }
+  };
+}
+function resolved(d) {
+  document.title = "meld — this bridge expires";
+  setSteps(5);
+  root.innerHTML = "<h1>Both sides are on the link</h1>"
+    + "<p class='lede'>The exchange stays readable by anyone with this link until the timer ends. Then it dissolves.</p>"
+    + "<div class='box'><b>Context</b>\n" + esc(d.context_a) + "\n\n<b>Reply</b>\n" + esc(d.context_b) + "</div>"
+    + trustBlock()
+    + "<p><a href='/'>Open another bridge</a></p>";
+}
+const path = location.pathname;
+if (path.startsWith("/m/")) meldPage();
+else landing();
+</script>
+</body>
+</html>

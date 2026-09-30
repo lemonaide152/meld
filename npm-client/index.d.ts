@@ -32,10 +32,12 @@ export interface MeldOptions {
   baseUrl?: string;
   /** API key for agent tier (Bearer auth) */
   apiKey?: string;
+  /** Required on create: 3m, 1hr, or 1d. There is no default. */
+  ttl?: "3m" | "1hr" | "1d";
 }
 
-/** Create a new meld with your context */
-export declare function create(context: string, opts?: MeldOptions): Promise<MeldResponse>;
+/** Create a timed bridge. opts.ttl is required: 3m, 1hr, or 1d. */
+export declare function create(context: string, opts: MeldOptions & { ttl: "3m" | "1hr" | "1d" }): Promise<MeldResponse>;
 
 /** View a meld by code (returns context_a, and context_b if resolved) */
 export declare function view(code: string, opts?: MeldOptions): Promise<MeldView>;

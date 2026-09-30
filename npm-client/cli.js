@@ -22,9 +22,14 @@ async function api(method, path, body, extraHeaders = {}) {
 async function main() {
   try {
     if (cmd === "send") {
-      const context = args.join(" ");
-      if (!context) { console.error("Usage: meld send <your context>"); process.exit(1); }
-      const m = await api("POST", "/api/melds", { context });
+      const ttlFlag = args.indexOf("--ttl");
+      const ttl = ttlFlag >= 0 ? args[ttlFlag + 1] : "";
+      const context = args.filter((a, i) => a !== "--ttl" && i !== ttlFlag + 1).join(" ");
+      if (!["3m", "1hr", "1d"].includes(ttl) || !context) {
+        console.error("Usage: meld send --ttl <3m|1hr|1d> <your context>");
+        process.exit(1);
+      }
+      const m = await api("POST", "/api/melds", { context, ttl });
       console.log(`\n  meld created: ${m.code}\n`);
       console.log(`  share link:  ${m.url}`);
       if (m.owner_url) {
@@ -71,7 +76,7 @@ async function main() {
   meld — ephemeral context bridge
 
   Usage:
-    meld send <context>              Create a meld
+    meld send --ttl <3m|1hr|1d> <context>   Create a timed bridge
     meld resolve <code> <answer>     Resolve a meld
     meld read <code> <owner_token>   Read the result
     meld view <code>                 View a meld

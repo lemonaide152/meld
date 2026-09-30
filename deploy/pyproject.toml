@@ -1,7 +1,7 @@
 [project]
 name = "meld"
 version = "1.0.0"
-description = "Ephemeral zero-knowledge context bridge"
+description = "Timed capability-URL context bridge"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi",

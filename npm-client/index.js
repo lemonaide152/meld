@@ -4,13 +4,18 @@ function getBase(opts) {
   return (opts && opts.baseUrl) || process.env.MELD_URL || DEFAULT_BASE;
 }
 
+const BRIDGE_TTLS = new Set(["3m", "1hr", "1d"]);
+
 export async function create(context, opts = {}) {
+  if (!BRIDGE_TTLS.has(opts.ttl)) {
+    throw new Error("ttl is required: 3m, 1hr, or 1d. There is no default.");
+  }
   const base = getBase(opts);
   const headers = { "Content-Type": "application/json" };
   if (opts.apiKey) headers["Authorization"] = `Bearer ${opts.apiKey}`;
   const res = await fetch(`${base}/api/melds`, {
     method: "POST", headers,
-    body: JSON.stringify({ context })
+    body: JSON.stringify({ context, ttl: opts.ttl })
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
