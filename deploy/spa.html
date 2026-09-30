@@ -367,6 +367,7 @@ async function checkResult(quiet) {
 function meldPage() {
   stopWatch();
   revealTop();
+  // Unfurl gate: this title stays generic. Never put the exchange in document.title or meta.
   document.title = "meld — this bridge expires";
   code = decodeURIComponent(location.pathname.slice(3).split("/")[0]);
   setReceiverJob(1);
