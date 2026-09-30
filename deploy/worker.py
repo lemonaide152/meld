@@ -3,9 +3,11 @@ meld — timed context bridge. Cloudflare Workers port (D1-backed).
 - capability URL is the shared bearer for one exchange
 - every meld lives 1 hour; other ttl values are rejected; omit ttl to get 1hr
 - mint-next creates a new meld with its own 1 hour clock (not an extend)
-- pilot creates are free (no payment wall); per-minute abuse limits remain
+- humans are free; agents get 3 creates/IP/hour, then HTTP 402 x402 (USDC on Base)
 - host-readable while live; anyone with the link can read it; dissolves on TTL
 State lives in D1 (survives restarts — an upgrade over the RAM dict).
+Production Worker meld stays on the free pilot until this branch is deployed
+somewhere else. This file does not deploy production.
 """
 import hashlib
 import json
@@ -35,6 +37,7 @@ from preview_meta import (
     capability_meta,
     capability_preview_document,
 )
+import x402_pay
 
 app = FastAPI(title="meld", version="1.0.0", docs_url=None, redoc_url=None)
 
@@ -163,11 +166,11 @@ async def _hop_parent(conn, prev):
     return prev, thread_id
 
 
-async def _insert_meld(conn, context, ttl_value, prev_value, email, pin_hash):
+async def _insert_meld(conn, context, ttl_value, prev_value, email, pin_hash, code=None):
     """Insert one meld. Lifetime is always 1 hour, including a mint-next hop."""
     ttl_key, ttl_seconds = _require_ttl(ttl_value)
     prev_code, thread_id = await _hop_parent(conn, prev_value)
-    code = _code()
+    code = code or _code()
     token = _token()
     now = _now()
     expiry = (datetime.datetime.now(datetime.timezone.utc)
@@ -191,9 +194,9 @@ async def _insert_meld(conn, context, ttl_value, prev_value, email, pin_hash):
     }
 
 
-# ── human vs agent create classifier (retained; pilot creates do not use it) ─
-# Pilot timed bridges are free for humans and agents. Per-minute abuse limits
-# still apply. This classifier is not a payment gate.
+# ── human vs agent create classifier ─────────────────────────────────────
+# Humans skip the hourly free wall. Agents hit it, then x402 when configured.
+# Per-minute abuse limits apply to everyone.
 _AGENT_UA_MARKERS = (
     "curl/",
     "python-requests",
@@ -213,7 +216,7 @@ _BROWSER_UA_HINTS = (
     "crios/",
     "fxios/",
 )
-PRICING_HEADER = "pilot-free"
+PRICING_HEADER = "humans-free; agents-key-or-quota-or-x402"
 # SKU is one hour on this link. Mint-next is another link with its own hour.
 TTL_KEY = "1hr"
 HOUR_SECONDS = 60 * 60
@@ -258,6 +261,12 @@ def _client_ip(request: Request) -> str:
 
 async def _fetch(url, headers=None, body=None, method="GET"):
     """Use JS fetch from Python Workers — build init via JSON.parse (avoids JsProxy)."""
+    _status, text = await _fetch_full(url, headers=headers, body=body, method=method)
+    return text
+
+
+async def _fetch_full(url, headers=None, body=None, method="GET"):
+    """Same as _fetch, but also returns the HTTP status (facilitator verify/settle)."""
     import json as _json
     import js
     init_dict = {"method": method, "headers": headers or {}}
@@ -265,7 +274,14 @@ async def _fetch(url, headers=None, body=None, method="GET"):
         init_dict["body"] = body
     init = js.JSON.parse(_json.dumps(init_dict))
     resp = await js.fetch(url, init)
-    return await resp.text()
+    return int(resp.status), await resp.text()
+
+
+async def _x402_http_post(url, headers, body):
+    return await _fetch_full(url, headers=headers, body=body, method="POST")
+
+
+x402_pay.http_post = _x402_http_post
 
 
 
@@ -306,8 +322,7 @@ async def _rate_limit(db_conn, kind: str, ip: str) -> bool:
 
 
 async def _check_meld_limit(db_conn, ip: str) -> bool:
-    """Legacy created-count helper. Pilot POST /api/melds does not call this.
-    Per-minute abuse limits still apply on create."""
+    """True while this IP is still inside the agent free-create quota."""
     window_key = str(int(time.time() // (FREE_EXPIRY_HOURS * 3600)))
     row = await db_conn.prepare(
         "INSERT INTO free_counts (ip, window_key, n) VALUES (?, ?, 1) "
@@ -448,7 +463,9 @@ async def security(request: Request, call_next):
         resp.headers["Access-Control-Allow-Origin"] = "*"
         resp.headers["Access-Control-Allow-Headers"] = (
             "Content-Type, Accept, Authorization, X-Meld-Token, X-Meld-Client, "
-            "X-Forwarded-For, Mcp-Session-Id, Mcp-Protocol-Version")
+            "X-Forwarded-For, Mcp-Session-Id, Mcp-Protocol-Version, "
+            "PAYMENT-SIGNATURE")
+        resp.headers["Access-Control-Expose-Headers"] = "PAYMENT-REQUIRED, PAYMENT-RESPONSE"
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
     return _apply_security_headers(resp)
 
@@ -515,10 +532,38 @@ _CORS_PREFLIGHT_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": (
         "Content-Type, Accept, Authorization, X-Meld-Token, X-Meld-Client, "
-        "X-Forwarded-For, Mcp-Session-Id, Mcp-Protocol-Version"),
+        "X-Forwarded-For, Mcp-Session-Id, Mcp-Protocol-Version, "
+        "PAYMENT-SIGNATURE"),
+    "Access-Control-Expose-Headers": "PAYMENT-REQUIRED, PAYMENT-RESPONSE",
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Max-Age": "86400",
 }
+
+
+@app.exception_handler(HTTPException)
+async def _handle_http_exception(request: Request, exc: HTTPException):
+    """402 bodies are the x402 PaymentRequired object, not {"detail": ...}."""
+    headers = {str(k): str(v) for k, v in dict(exc.headers or {}).items()}
+    if exc.status_code == 402 and isinstance(exc.detail, dict):
+        return JSONResponse(exc.detail, status_code=402, headers=headers)
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=headers)
+
+
+def _x402_resource_url(request: Request, path: str) -> str:
+    """Pin the challenge resource to an allowlisted host. Never echo an arbitrary Host."""
+    host = (request.headers.get("host") or "").split(":")[0].strip().lower()
+    if host not in ALLOWED_HOSTS:
+        host = "meld.mergeinc.workers.dev"
+    return f"https://{host}{path}"
+
+
+def _x402_cfg(request: Request) -> dict:
+    env = request.scope.get("env") if request.scope else None
+    return x402_pay.config_from_env(env)
+
+
+def _raise_x402(body: dict, status: int = 402):
+    raise HTTPException(status, body, headers=x402_pay.challenge_headers(body, PRICING_HEADER))
 
 
 @app.options("/api/{rest:path}")
@@ -547,48 +592,210 @@ async def create_meld(request: Request):
     ip = _client_ip(request)
     body = await request.json()
     context = _require_context(body.get("context", ""))
+    # Reject bad ttl before facilitator settle (omit or 1hr only).
+    _require_ttl(body.get("ttl"))
 
     if not await _rate_limit(conn, "create", ip):
         raise HTTPException(429, "Too many requests. Please slow down.",
                             headers={"Retry-After": "60"})
     email = body.get("email")
     pin = body.get("pin")
-    # Check a mint-next parent before the sweeper. Sweeping first would delete
-    # an expired parent and turn a 410 into a plain miss. The parent's clock
-    # is not moved.
-    made = await _insert_meld(
-        conn,
-        context,
-        body.get("ttl"),
-        body.get("prev_code"),
-        email if isinstance(email, str) and len(email) <= 254 else None,
-        hashlib.sha256(pin.encode()).hexdigest() if isinstance(pin, str) and 0 < len(pin) <= 128 else None,
+    email_v = email if isinstance(email, str) and len(email) <= 254 else None
+    pin_hash = (
+        hashlib.sha256(pin.encode()).hexdigest()
+        if isinstance(pin, str) and 0 < len(pin) <= 128 else None
     )
-    # Amortized sweeper: piggyback cleanup of expired melds + throttle/counter
-    # prune on create traffic. Pilot creates stay free. Per-minute limits apply.
+
+    human = _is_human_client(request)
+    settlement = None
+    if not human and not await _check_meld_limit(conn, ip):
+        await _funnel(conn, "free_limit_hit")
+        # MELD-FREELIMIT-002: unpaid wall hits feed the throttle ladder, one
+        # offense per exhausted window (NAT guard: 2 hits in-window for rung 1).
+        cfg = _x402_cfg(request)
+        resource_url = _x402_resource_url(request, "/api/melds")
+        if not cfg["pay_to"]:
+            await _register_wall_hit(conn, ip)
+            retry_after = str(max(1, int(
+                (datetime.datetime.fromtimestamp(
+                    (int(time.time() // (FREE_EXPIRY_HOURS * 3600)) + 1)
+                    * FREE_EXPIRY_HOURS * 3600, datetime.timezone.utc)
+                 - datetime.datetime.now(datetime.timezone.utc)).total_seconds())))
+            raise HTTPException(
+                429,
+                "Agent free limit reached (3/hour per IP). "
+                "Get a key via POST /v1/keys, pay with x402 once X402_PAY_TO is set, "
+                "or wait. https://meld.mergeinc.workers.dev/upgrade.md",
+                headers={"Retry-After": retry_after, "X-Meld-Pricing": PRICING_HEADER},
+            )
+        presented = x402_pay.payment_header(request)
+        if not presented:
+            await _register_wall_hit(conn, ip)
+            _raise_x402(x402_pay.challenge(resource_url, cfg["pay_to"]))
+        try:
+            settlement = await x402_pay.settle_payment(
+                cfg, presented, resource_url, PRICING_HEADER)
+        except x402_pay.PaymentRejected as rejected:
+            await _register_wall_hit(conn, ip)
+            raise HTTPException(
+                rejected.status, rejected.body, headers=rejected.headers)
+
+    # Check mint-next parent inside _insert_meld before this sweeper. Sweeping
+    # first would delete an expired parent and turn a 410 into a plain miss.
+    minted = await _mint_meld(
+        conn, context, body.get("ttl"), body.get("prev_code"),
+        email_v, pin_hash, settlement)
+    if minted == "redeemed":
+        cfg = _x402_cfg(request)
+        challenge = x402_pay.challenge(
+            _x402_resource_url(request, "/api/melds"), cfg["pay_to"],
+            error="payment already redeemed")
+        _raise_x402(challenge)
+    # Amortized sweeper after hop/insert so an expired parent still yields 410.
     try:
         await conn.prepare("DELETE FROM melds WHERE expires_at <= ?").bind(_now()).run()
         await _throttle_prune(conn)
     except Exception:
         pass  # never block create on sweep failure
-    code = made["code"]
-    token = made["token"]
+    return _meld_created_response(request, minted)
+
+
+async def _mint_meld(conn, context, ttl_value, prev_value, email, pin_hash, settlement):
+    """Claim a settlement if any, then insert via _insert_meld (fixed 1hr + mint-next).
+
+    Returns a dict for _meld_created_response, or "redeemed" when this tx or
+    nonce was already used. payTo is never written.
+    """
+    code = _code()
+    claimed = False
+    if settlement is not None:
+        claimed = await x402_pay.claim_payment(conn, settlement, code, _now())
+        if not claimed:
+            return "redeemed"
+    try:
+        made = await _insert_meld(
+            conn, context, ttl_value, prev_value, email, pin_hash, code=code)
+        if settlement is not None:
+            now = _now()
+            await conn.prepare(
+                "UPDATE melds SET paid = 1 WHERE code = ?").bind(code).run()
+            await conn.prepare(
+                "INSERT INTO meld_payments (stripe_session_id, meld_code,"
+                " amount_cents, paid_at) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(stripe_session_id) DO NOTHING").bind(
+                "x402:" + settlement["transaction"], code,
+                x402_pay.AMOUNT_CENTS, now).run()
+            await conn.prepare(
+                "INSERT INTO ledger (at, event, customer_id)"
+                " VALUES (?, 'x402.unlock', ?)").bind(
+                now, settlement.get("payer") or "").run()
+            await _funnel(conn, "x402_settled")
+    except Exception:
+        if claimed:
+            await x402_pay.release_claim(conn, settlement["transaction"])
+        raise
     await _funnel(conn, "created")
+    return {
+        "code": made["code"],
+        "token": made["token"],
+        "context": context,
+        "expiry": made["expires_at"],
+        "ttl": made["ttl"],
+        "prev_code": made["prev_code"],
+        "thread_id": made["thread_id"],
+        "settlement": settlement,
+    }
+
+
+def _meld_created_response(request, minted):
+    code = minted["code"]
+    token = minted["token"]
+    host = request.headers.get("host", "localhost")
+    scheme = request.url.scheme
+    headers = {"X-Meld-Pricing": PRICING_HEADER}
+    if minted["settlement"] is not None:
+        headers["PAYMENT-RESPONSE"] = x402_pay.settlement_header(minted["settlement"])
+        headers["Access-Control-Expose-Headers"] = "PAYMENT-REQUIRED, PAYMENT-RESPONSE"
     return JSONResponse(
         {
             "code": code,
-            "url": f"{request.url.scheme}://{request.headers.get('host', 'localhost')}/m/{code}",
-            "owner_url": f"{request.url.scheme}://{request.headers.get('host', 'localhost')}/m/{code}#t={token}",
+            "url": f"{scheme}://{host}/m/{code}",
+            "owner_url": f"{scheme}://{host}/m/{code}#t={token}",
             "owner_token": token,
-            "context_a": context,
+            "context_a": minted["context"],
             "resolved": False,
-            "ttl": made["ttl"],
-            "expires_at": made["expires_at"],
-            "prev_code": made["prev_code"],
-            "thread_id": made["thread_id"],
+            "ttl": minted["ttl"],
+            "expires_at": minted["expiry"],
+            "prev_code": minted["prev_code"],
+            "thread_id": minted["thread_id"],
         },
-        headers={"X-Meld-Pricing": PRICING_HEADER},
+        headers=headers,
     )
+
+
+
+@app.get("/api/x402")
+@app.post("/api/x402")
+async def x402_resource(request: Request):
+    """Listing URL for agent-pay markets. Unpaid requests return HTTP 402.
+
+    POST with a settled PAYMENT-SIGNATURE mints one meld (same $3.33 as Stripe).
+    Context and ttl are checked before settle. Omit ttl or send 1hr; other values 400.
+    """
+    cfg = _x402_cfg(request)
+    resource_url = _x402_resource_url(request, "/api/x402")
+    if not cfg["pay_to"]:
+        return JSONResponse(
+            {
+                "error": "x402_not_configured",
+                "detail": (
+                    "Set Cloudflare secret X402_PAY_TO to the Base address that "
+                    "should receive USDC. No payee is built into this worker."
+                ),
+            },
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
+        )
+    presented = x402_pay.payment_header(request)
+    if request.method == "GET" or not presented:
+        body = x402_pay.challenge(resource_url, cfg["pay_to"])
+        return JSONResponse(
+            body, status_code=402,
+            headers=x402_pay.challenge_headers(body, PRICING_HEADER))
+    conn = db(request)
+    ip = _client_ip(request)
+    if not await _rate_limit(conn, "create", ip):
+        raise HTTPException(429, "Too many requests. Please slow down.",
+                            headers={"Retry-After": "60"})
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Body must be JSON: {\"context\": \"...\", \"ttl\": \"1hr\"}")
+    context = _require_context(body.get("context", ""))
+    ttl_key, ttl_seconds = _require_ttl(body.get("ttl"))
+    try:
+        settlement = await x402_pay.settle_payment(
+            cfg, presented, resource_url, PRICING_HEADER)
+    except x402_pay.PaymentRejected as rejected:
+        raise HTTPException(
+            rejected.status, rejected.body, headers=rejected.headers)
+    email = body.get("email")
+    pin = body.get("pin")
+    email_v = email if isinstance(email, str) and len(email) <= 254 else None
+    pin_hash = (
+        hashlib.sha256(pin.encode()).hexdigest()
+        if isinstance(pin, str) and 0 < len(pin) <= 128 else None
+    )
+    minted = await _mint_meld(
+        conn, context, body.get("ttl"), body.get("prev_code"),
+        email_v, pin_hash, settlement)
+    if minted == "redeemed":
+        challenge = x402_pay.challenge(
+            resource_url, cfg["pay_to"], error="payment already redeemed")
+        _raise_x402(challenge)
+    return _meld_created_response(request, minted)
 
 
 @app.get("/api/melds/{code}")
@@ -1384,8 +1591,8 @@ _MCP_TOOLS = [
         "name": "meld_create",
         "description": (
             "Create a timed bridge. Returns a capability URL (the shared bearer) for the "
-            "other party. Every meld lives 1 hour. Omit ttl or send 1hr. Pilot bridges "
-            "are free. The host can read the exchange while it is live; anyone with the "
+            "other party. Every meld lives 1 hour. Omit ttl or send 1hr. After the agent "
+            "free quota, create returns HTTP 402. The host can read the exchange while it is live; anyone with the "
             "link can too. Not for secrets. Dissolves when that hour ends. prev_code "
             "mints the next link with its own 1 hour. That is not an extend."
         ),
@@ -1568,6 +1775,8 @@ async def _mcp_call_tool(name: str, args: dict, request: Request):
             }
         raise ValueError(f"Unknown tool: {name}")
     except HTTPException as e:
+        if e.status_code == 402 and isinstance(e.detail, dict):
+            raise x402_pay.PaymentRejected(e.status_code, e.detail, dict(e.headers or {})) from e
         detail = e.detail if isinstance(e.detail, str) else str(e.detail)
         raise RuntimeError(detail) from e
 
@@ -1597,7 +1806,8 @@ async def _mcp_handle_message(msg: dict, request: Request):
                     "1hr. prev_code mints a new link with its own hour (not an extend). "
                     "The returned URL is the capability. Host-readable while live; anyone "
                     "with the link can read it; not for secrets; dissolves after that hour. "
-                    "Pilot creates are free. Base: https://meld.mergeinc.workers.dev"
+                    "After the agent free quota, meld_create returns HTTP 402. "
+                    "Base: https://meld.mergeinc.workers.dev"
                 ),
             },
         }
@@ -1619,6 +1829,8 @@ async def _mcp_handle_message(msg: dict, request: Request):
                     "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
                 },
             }
+        except x402_pay.PaymentRejected:
+            raise
         except Exception as e:
             return {
                 "jsonrpc": "2.0",
@@ -1661,7 +1873,11 @@ async def mcp_post(request: Request):
             responses.append({"jsonrpc": "2.0", "id": None,
                               "error": {"code": -32600, "message": "Invalid Request"}})
             continue
-        r = await _mcp_handle_message(m, request)
+        try:
+            r = await _mcp_handle_message(m, request)
+        except x402_pay.PaymentRejected as rejected:
+            headers = {**cors, **dict(rejected.headers or {})}
+            return JSONResponse(rejected.body, status_code=rejected.status, headers=headers)
         if r is not None:
             responses.append(r)
 
@@ -1803,13 +2019,35 @@ Sitemap: https://meld.mergeinc.workers.dev/sitemap.xml
 
 TRUST_MD = '# meld — trust model\n\n- Capability URL + 1 hour: the URL grants access while that meld is live.\n- Host-readable while live.\n- Anyone with the link can read it.\n- Not for secrets/credentials/regulated.\n- Each link lives 1 hour, then it dissolves. The server enforces that clock.\n- Mint-next creates a new bearer URL with its own hour. That is not an extend. It is not a forever thread.\n- Expired hops are deleted. A chain read returns only hops that are still live. Dissolved plaintext is not kept on the chain.\n- This is not a private room and not a vault.\n\nThe host stores ordinary context for the live hour and deletes the meld after expiry. There are no accounts or long-term content archives. Rate-limit identity is IP-based. Use meld for ordinary, disposable handoffs only.\n\n## Link previews\n\n`/`, `/agents`, and `/trust` use a product card: a temporary resource to align context. Each link lives 1 hour, then it dies. Not for secrets.\n\n`/m/{code}` unfurls as a generic card only: title “meld — this bridge expires”, description “This link expires. The exchange is not included in this preview.” Slack, X, and Discord GET the URL. The meld body is not copied into `og:title`, `og:description`, `twitter:*`, or that preview HTML. The crawler response has no script and does not read the meld.\n'
 
-UPGRADE_MD = """# meld — pilot
+UPGRADE_MD = """# meld — pricing
 
-Timed bridges are free for pilot users. No payment is required to create one.
+Production Worker `meld` stays on the free pilot. This document describes the worker that charges agents after the free quota. Do not put these secrets on Worker `meld`.
 
 Each link lives 1 hour. Omit ttl or send `1hr`. The server rejects any other lifetime. Mint-next is another link with its own hour. That is not an extend.
 
+Humans: free in the browser (`X-Meld-Client: human` or a browser user agent).
+Agents on POST /api/melds: 3 creates per IP per hour, then HTTP 402 (x402) or a key, or wait.
+Header: `X-Meld-Pricing: humans-free; agents-key-or-quota-or-x402`.
+
 The link is the capability. The host can read the exchange while it is live. Anyone with the link can read it. Not for secrets, credentials, or regulated data. When the hour ends, the bridge dissolves.
+
+## x402 (agents) — USDC on Base, same $3.33
+
+- Unpaid probe: `GET /api/x402` returns HTTP 402 once `X402_PAY_TO` is set. Without that secret the probe is HTTP 503 and the agent wall on POST /api/melds stays HTTP 429.
+- Paid create: `POST /api/x402` with `{"context":"...","ttl":"1hr"}` and header `PAYMENT-SIGNATURE`.
+- The same challenge is returned by `POST /api/melds` and MCP `meld_create` after the agent free quota. Omit `ttl` or send `1hr` before settle.
+- Scheme exact, network `eip155:8453` (Base), asset USDC `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`, amount `3330000` atomic units ($3.33, 6 decimals).
+- Unlock happens only after facilitator verify and settle return a transaction for that amount and payTo. A JSON flag does not unlock. On-chain USDC settlement is irreversible.
+
+Set with `npx wrangler secret put` on the preview Worker only. Do not commit the values.
+
+| Secret | Required | Purpose |
+|---|---|---|
+| `X402_PAY_TO` | Yes, before a 402 with payTo | Base address that receives USDC. |
+| `X402_FACILITATOR_URL` | Yes, before a signature can unlock | https origin. Worker POSTs `{url}/verify` and `{url}/settle`. Base mainnet: `https://api.cdp.coinbase.com/platform/v2/x402`. |
+| `X402_FACILITATOR_AUTH` | When the facilitator requires it | Full Authorization header value (CDP: the bearer credential). |
+
+Browser unlock remains `POST /api/checkout` with `{"meld_code":"<code>"}`. One payment, no subscription.
 
 Abuse limits still apply: 20 creates/min, 10 resolves/min, 60 views/min per IP.
 """
@@ -1833,7 +2071,7 @@ MCP_SERVER_CARD = {
             'description': (
                 'Create a timed bridge. Lifetime is 1 hour. Omit ttl or send 1hr. '
                 'prev_code mints a new link with its own hour (not an extend). '
-                'Returns the capability URL. Pilot creates are free.'
+                'Returns the capability URL. After the agent free quota, create returns HTTP 402.'
             ),
             'inputSchema': {
                 'type': 'object',
@@ -1887,7 +2125,7 @@ AGENT_CARD = {
     'version': '1.0.0',
     'protocolVersion': '0.2.9',
     'protocols': ['http', 'a2a', 'mcp'],
-    'pricing': {'unit': 'request', 'amount': 0, 'currency': 'free', 'note': 'Pilot bridges are free. Each link is 1 hour. Mint-next is another 1 hour link.'},
+    'pricing': {'unit': 'request', 'amount': 0, 'currency': 'free', 'note': 'Humans free in browser. Agents: 3 creates/IP/hour then HTTP 402. Each link is 1 hour. Mint-next is another 1 hour link.'},
     'availability': {'now': True, 'window_hours': 168, 'sla': 'best-effort'},
     'contact': {
         'http': 'https://meld.mergeinc.workers.dev/api/melds',
@@ -1900,7 +2138,7 @@ AGENT_CARD = {
     'provider': {'organization': 'meld', 'url': 'https://meld.mergeinc.workers.dev'},
     'documentationUrl': 'https://meld.mergeinc.workers.dev/agents.md',
     'skills': [
-        {'id': 'meld-create', 'name': 'meld_create', 'description': 'Create a timed bridge. Lifetime is 1 hour. Omit ttl or send 1hr. prev_code mints a new link with its own hour, not an extend. Returns the capability URL. Pilot creates are free.', 'tags': ['context-sharing', 'ephemeral', 'handoff', 'rendezvous', 'agent-to-agent'], 'examples': ['Create a meld with context. The link lives 1 hour.']},
+        {'id': 'meld-create', 'name': 'meld_create', 'description': 'Create a timed bridge. Lifetime is 1 hour. Omit ttl or send 1hr. prev_code mints a new link with its own hour, not an extend. Returns the capability URL. After the agent free quota, create returns HTTP 402.', 'tags': ['context-sharing', 'ephemeral', 'handoff', 'rendezvous', 'agent-to-agent'], 'examples': ['Create a meld with context. The link lives 1 hour.']},
         {'id': 'meld-resolve', 'name': 'meld_resolve', 'description': "Answer a meld link you were given. Submit your context and receive the original party's context. Idempotent for identical answers; conflicting answers rejected with 409.", 'tags': ['context-sharing', 'answer', 'handoff'], 'examples': ['Resolve meld code abc123 with context: Event-driven services plus a queue.']},
         {'id': 'meld-read', 'name': 'meld_read', 'description': "Read the counterpart's answer using the owner token. Token rotates on every read; persist the new token.", 'tags': ['context-sharing', 'read', 'result'], 'examples': ['Read result for meld code abc123 with the owner token from create.']},
     ],
@@ -1991,7 +2229,7 @@ AI_PLUGIN = {
     "name_for_human": "meld",
     "name_for_model": "meld",
     "description_for_human": "Capability URL + TTL for a one-time context handoff. Host-readable while live; anyone with the link can read it; dissolves on TTL.",
-    "description_for_model": "Create a capability URL that lives 1 hour. POST /api/melds with {context} or {context, ttl:\"1hr\"}. Other ttl values are rejected. Optional prev_code mints a new link with its own hour (not an extend). The URL is the capability. Counterpart POST /api/melds/{code}/resolve; GET /api/melds/{code} returns the live context to anyone with the link. GET /api/melds/{code}/chain returns only hops that are still live. Host-readable while live, not for secrets/credentials/regulated, dissolves after that hour. Pilot creates are free.",
+    "description_for_model": "Create a capability URL that lives 1 hour. POST /api/melds with {context} or {context, ttl:\"1hr\"}. Other ttl values are rejected. Optional prev_code mints a new link with its own hour (not an extend). The URL is the capability. Counterpart POST /api/melds/{code}/resolve; GET /api/melds/{code} returns the live context to anyone with the link. GET /api/melds/{code}/chain returns only hops that are still live. Host-readable while live, not for secrets/credentials/regulated, dissolves after that hour. After the agent free quota, create returns HTTP 402.",
     "auth": {"type": "none"},
     "api": {
         "type": "openapi",

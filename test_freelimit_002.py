@@ -190,7 +190,7 @@ def test_count_created_accumulates():
     live = d1.q("SELECT COUNT(*) c FROM melds")[0]["c"]
     ok("T1.b store is empty", live == 0, f"live={live}")
     r4 = run(do_create(d1, ip))
-    ok("T1.c 4th create admitted (pilot bridges are not quota-walled)", r4[0] == "ok",
+    ok("T1.c 4th create walled (429) despite 0 live rows", r4[0] == "err" and r4[1] == 429,
        f"got {r4[0]} {r4[1] if r4[0] == 'err' else 'created'}")
 
 
@@ -202,20 +202,23 @@ def test_live_rows_still_blocked():
     for _ in range(3):
         run(do_create(d1, ip))
     r4 = run(do_create(d1, ip))
-    ok("T2 4th concurrent create admitted", r4[0] == "ok", f"got {r4[:2]}")
+    ok("T2 4th concurrent create walled", r4[0] == "err" and r4[1] == 429, f"got {r4[:2]}")
 
 
 
 # ── T3: hourly window rolls over ────────────────────────────────────────
 def test_window_rolls():
-    print("T3 pilot: hourly free wall is not applied")
+    print("T3 window roll: old window stops counting")
     d1 = fresh_db()
     ip = "10.1.0.3"
-    results = [run(do_create(d1, ip, context=f"w-{i}")) for i in range(5)]
-    ok("T3 five creates admitted with explicit ttl", all(r[0] == "ok" for r in results),
-       str([r[:2] for r in results]))
-    ok("T3 create does not charge a free-tier counter",
-       not d1.q("SELECT 1 FROM free_counts WHERE ip=?", ip))
+    for _ in range(3):
+        run(do_create(d1, ip))
+    run(do_create(d1, ip))  # wall hit #1 — must NOT offend (NAT guard)
+    d1.q("UPDATE free_counts SET window_key = '0'")
+    r = run(do_create(d1, ip))
+    ok("T3 create admitted in a fresh window", r[0] == "ok", f"got {r[:2]}")
+    n = d1.q("SELECT n FROM free_counts WHERE ip=? AND window_key != '0'", ip)[0]["n"]
+    ok("T3 new-window counter started at 1 (old window not counted)", n == 1, f"n={n}")
 
 # ── T4: NO lease bypass (no-pro directive) ───────────────────────────────
 def test_no_lease_bypass():
@@ -225,67 +228,74 @@ def test_no_lease_bypass():
     email = "pro@example.com"
     results = [run(do_create(d1, ip, email=email)) for _ in range(5)]
     admitted = sum(1 for r in results if r[0] == "ok")
-    ok("T4 email confers no payment and does not wall the 5th create",
-       admitted == 5 and all(r[0] == "ok" for r in results),
+    ok("T4 exactly FREE_LIMIT admits, then wall (no lease bypass)",
+       admitted == worker.FREE_LIMIT and results[worker.FREE_LIMIT][0] == "err",
        str([(r[0], r[1] if r[0] == "err" else "") for r in results]))
 
 
 # ── T5: first wall hit records no offense, no ban ───────────────────────
 def test_first_hit_no_offense():
-    print("T5 pilot creates do not arm the ban ladder")
+    print("T5 first wall hit: 429 only, no ladder rung")
     d1 = fresh_db()
     ip = "10.1.0.5"
     for _ in range(3):
         run(do_create(d1, ip))
     r4 = run(do_create(d1, ip))
-    ok("T5.a 4th create admitted", r4[0] == "ok", f"got {r4[:2]}")
+    ok("T5.a 4th create walled", r4[0] == "err" and r4[1] == 429, f"got {r4[:2]}")
     row = throttle_row(d1, ip)
-    ok("T5.b no throttle row from a free-tier wall", row is None,
+    ok("T5.b violation recorded with 0 offenses", row is not None
+       and row["wall_hits"] == 1 and row["offense_count"] == 0,
        f"row={dict(row) if row else None}")
     rej = run(worker._throttle_reject(d1, ip, "/api/melds"))
-    ok("T5.c no ban after ordinary creates", rej is None, f"rej={rej}")
+    ok("T5.c no ban after single wall hit", rej is None, f"rej={rej}")
 
 
 # ── T6: second wall hit in a window => rung 1 (1 minute) ────────────────
 def test_second_hit_first_rung():
-    print("T6 pilot creates do not record a free-wall offense")
+    print("T6 second wall hit: 1-minute ban rung")
     d1 = fresh_db()
     ip = "10.1.0.6"
-    results = [run(do_create(d1, ip, context=f"p-{i}")) for i in range(5)]
-    ok("T6.a five creates admitted", all(r[0] == "ok" for r in results),
-       str([r[:2] for r in results]))
-    ok("T6.b no ban row", throttle_row(d1, ip) is None)
+    for _ in range(5):
+        run(do_create(d1, ip))  # 3 OK + 2 wall hits
+    row = throttle_row(d1, ip)
+    ok("T6.a offense 1 recorded", row["offense_count"] == 1,
+       f"offense_count={row['offense_count']}")
+    bu = datetime.datetime.fromisoformat(row["banned_until"])
+    remain = (bu - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+    ok("T6.b ban duration ≈ 60s", 55 <= remain <= 60, f"remaining={remain}")
     rej = run(worker._throttle_reject(d1, ip, "/api/melds"))
-    ok("T6.c IP is not banned", rej is None, f"rej={rej}")
+    ok("T6.c banned IP gets 429", rej is not None and rej.status_code == 429,
+       f"rej={rej}")
+    ok("T6.d Retry-After is real seconds",
+       rej is not None and 1 <= int(rej.headers.get("Retry-After", "0")) <= 60,
+       f"headers={dict(rej.headers) if rej else None}")
 
 
 # ── T7: ladder walks 1m→10m→1h→24h, capped at rolling 24h (audit F1) ────
 def test_ladder_walks():
-    print("T7 ladder walk across windows via abuse denials (no worker-issued permanence)")
+    print("T7 ladder walk across windows (no worker-issued permanence)")
     d1 = fresh_db()
     ip = "10.1.0.7"
-    # Two denials in a window earn one offense. Pilot creates do not do this;
-    # the per-minute limiter still records denials through _register_wall_hit.
-    run(worker._register_wall_hit(d1, ip))
-    run(worker._register_wall_hit(d1, ip))
+    for _ in range(5):
+        run(do_create(d1, ip))          # window 1: offense 1
     expected = [60, 600, 3600, 86400]
-    row = throttle_row(d1, ip)
-    remain = (datetime.datetime.fromisoformat(row["banned_until"])
-              - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
-    ok("T7.1 rung 1 ≈ 60s", abs(remain - expected[0]) < 5, f"remaining={remain}")
     for w in range(2, 9):
+        # simulate the hourly window rolling over
         d1.q("UPDATE ip_throttle SET hit_window='0', offense_window='0' WHERE ip=?", ip)
-        run(worker._register_wall_hit(d1, ip))
-        run(worker._register_wall_hit(d1, ip))
+        run(do_create(d1, ip))          # hit 1 in new window — no offense
+        run(do_create(d1, ip))          # hit 2 — offense w
         row = throttle_row(d1, ip)
         if w <= 4:
-            remain = (datetime.datetime.fromisoformat(row["banned_until"])
-                      - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+            bu = datetime.datetime.fromisoformat(row["banned_until"])
+            remain = (bu - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
             ok(f"T7.{w} rung {w} ≈ {expected[w - 1]}s",
                abs(remain - expected[w - 1]) < 5, f"remaining={remain}")
-        else:
-            ok(f"T7.{w} offense {w}: permanent stays 0 (worker-capped)",
-               row["permanent"] == 0, f"permanent={row['permanent']}")
+    # audit F1: windows 5..8 — ladder is exhausted, IP rolls 24h bans,
+    # permanent NEVER set by the worker (legit NAT office must survive)
+    for w in range(5, 9):
+        ok(f"T7.{w} offense {w}: permanent stays 0 (worker-capped)",
+           throttle_row(d1, ip)["permanent"] == 0,
+           f"permanent={throttle_row(d1, ip)['permanent']}")
     rej = run(worker._throttle_reject(d1, ip, "/api/melds"))
     ok("T7.8 walk-to-cap => 429 with Retry-After (recoverable, not 403)",
        rej is not None and rej.status_code == 429 and "Retry-After" in rej.headers,
@@ -319,16 +329,24 @@ def test_webhook_exempt():
 
 # ── T9: NAT simulation — shared IP collects 429s, never a 403 walk ─────
 def test_nat_shared_ip():
-    print("T9 pilot creates are not payment-walled")
+    print("T9 NAT simulation: one IP, many users, single window")
     d1 = fresh_db()
     ip = "10.1.0.9"
-    results = [run(do_create(d1, ip, context=f"nat-user-{n}")) for n in range(6)]
-    ok("T9.a shared-IP creates stay admitted", all(r[0] == "ok" for r in results),
-       str([r[:2] for r in results]))
-    blob = " ".join(str(r) for r in results).lower()
-    ok("T9.b responses do not upsell checkout",
-       "checkout" not in blob and "3.33" not in blob, blob[:180])
-    ok("T9.c no free-wall ban", throttle_row(d1, ip) is None)
+    for _ in range(3):
+        run(do_create(d1, ip))
+    statuses = []
+    for n in range(40):  # 40 distinct NAT users slam the shared IP
+        r = run(do_create(d1, ip, context=f"nat-user-{n}"))
+        statuses.append(r[1] if r[0] == "err" else 200)
+    ok("T9.a every response is 429 (never 403)", all(s == 429 for s in statuses),
+       str(sorted(set(statuses))))
+    row = throttle_row(d1, ip)
+    ok("T9.b exactly ONE offense for the whole window", row["offense_count"] == 1,
+       f"offense_count={row['offense_count']}")
+    rej = run(worker._throttle_reject(d1, ip, "/api/melds"))
+    ok("T9.c shared IP ban is 429+Retry-After, not silent 403",
+       rej is not None and rej.status_code == 429
+       and "Retry-After" in rej.headers, f"rej={rej}")
 
 
 # ── T10: per-minute limiter violations also feed the ladder ────────────
@@ -359,19 +377,21 @@ def test_prune():
        not throttle_row(d1, "10.9.9.9"))
     ok("T11.b stale free_counts window pruned",
        not d1.q("SELECT 1 FROM free_counts WHERE ip='10.9.9.9'"))
-    ok("T11.c pilot create does not charge a free-tier counter",
-       not d1.q("SELECT 1 FROM free_counts WHERE ip='10.1.0.11'"))
+    ok("T11.c current-window counters survive",
+       d1.q("SELECT n FROM free_counts WHERE ip='10.1.0.11'")[0]["n"] == 1)
 
 
 # ── T12: free-wall 429 carries Retry-After (melde2e finding) ────────────
 def test_retry_after_wall():
-    print("T12 pilot create is not a free-wall 429")
+    print("T12 wall 429 includes real Retry-After seconds")
     d1 = fresh_db()
     ip = "10.1.0.12"
     for _ in range(3):
         run(do_create(d1, ip))
     r4 = run(do_create(d1, ip))
-    ok("T12 4th create admitted", r4[0] == "ok", f"r4={r4[:2]}")
+    ra = int(r4[2].get("Retry-After", "0")) if r4[0] == "err" else 0
+    ok("T12 Retry-After is 1..3600 (time to next hour window)",
+       r4[0] == "err" and r4[1] == 429 and 1 <= ra <= 3600, f"r4={r4}")
 
 
 # ── T13: /v1/keys rate-limited (no-pro: no probe-403s anymore) ───────────
@@ -419,40 +439,48 @@ def test_email_inert():
 
 # ── T15: humans skip FREE_LIMIT; agents still walled; pricing header ────
 def test_human_skips_free_wall():
-    print("T15 pilot-free: humans and agents are not payment-walled")
+    print("T15 humans-free: browser/human header skips FREE_LIMIT; agents wall")
     d1 = fresh_db()
     hip = "10.1.0.15"
+    # Explicit human header — beyond FREE_LIMIT still admitted
     results = [run(do_create(d1, hip, context=f"h-{i}",
                              headers={"x-meld-client": "human",
-                                      "user-agent": "curl/8.0"}))
+                                      "user-agent": "curl/8.0"}))  # header wins over curl
                for i in range(worker.FREE_LIMIT + 2)]
-    ok("T15.a human header admits past the old free limit",
+    ok("T15.a human header admits past FREE_LIMIT",
        all(r[0] == "ok" for r in results),
        str([r[:2] for r in results]))
+    # Pricing header on create
     hdrs = results[0][1].get("_headers", {})
     pricing = hdrs.get("x-meld-pricing") or hdrs.get("X-Meld-Pricing")
     ok("T15.b create carries X-Meld-Pricing",
        pricing == worker.PRICING_HEADER, f"headers={hdrs}")
 
+    # Browser UA, missing X-Meld-Client => human
     bip = "10.1.0.16"
     browser = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     bres = [run(do_create(d1, bip, context=f"b-{i}",
                           headers={"user-agent": browser}))
             for i in range(worker.FREE_LIMIT + 2)]
-    ok("T15.c browser UA admits past the old free limit",
+    ok("T15.c browser UA admits past FREE_LIMIT",
        all(r[0] == "ok" for r in bres),
        str([r[:2] for r in bres]))
 
+    # curl UA (no human header) => agent wall
     aip = "10.1.0.17"
-    ares = [run(do_create(d1, aip, context=f"a-{i}",
-                          headers={"user-agent": "curl/8.4.0", "x-meld-client": "agent"}))
-            for i in range(worker.FREE_LIMIT + 2)]
-    ok("T15.d agent creates admitted past the old free limit",
-       all(r[0] == "ok" for r in ares), str([r[:2] for r in ares]))
-    blob = " ".join(str(r) for r in ares).lower()
-    ok("T15.e agent create does not upsell checkout",
-       "checkout" not in blob and "3.33" not in blob and pricing == "pilot-free",
-       blob[:180])
+    for i in range(worker.FREE_LIMIT):
+        run(do_create(d1, aip, context=f"a-{i}",
+                      headers={"user-agent": "curl/8.4.0", "x-meld-client": "agent"}))
+    r4 = run(do_create(d1, aip, context="a-wall",
+                       headers={"user-agent": "curl/8.4.0"}))
+    ok("T15.d curl UA walled on 4th",
+       r4[0] == "err" and r4[1] == 429, f"got {r4[:2]}")
+    detail_headers = r4[2] if r4[0] == "err" else {}
+    # HTTPException detail is the message; headers should mention pricing + agent msg path
+    ok("T15.e agent wall carries X-Meld-Pricing",
+       (detail_headers or {}).get("X-Meld-Pricing") == worker.PRICING_HEADER
+       or (detail_headers or {}).get("x-meld-pricing") == worker.PRICING_HEADER,
+       f"headers={detail_headers}")
 
 
 for t in [test_count_created_accumulates, test_live_rows_still_blocked,

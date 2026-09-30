@@ -10,6 +10,8 @@ One hour on this link. Mint-next starts another link with its own hour. That is 
 
 https://meld.mergeinc.workers.dev
 
+Production Worker `meld` is the free pilot. This branch does not deploy it. x402 testing uses a separate preview Worker. Steps: [E2E_RUNBOOK.md](E2E_RUNBOOK.md).
+
 ## Try it
 
 - Browser: open the live URL, paste context, share the link.
@@ -59,9 +61,13 @@ Capability URL. The host is readable while live, and anyone with the link can re
 | `/api/melds/{code}` | GET | None | Read live context using the capability URL |
 | `/api/melds/{code}/resolve` | POST | None (or PIN) | Resolve a meld |
 | `/api/melds/{code}/result` | GET | Owner token | Legacy owner read |
+| `/api/x402` | GET | None | Unpaid x402 probe (HTTP 402 once the payee secret is set) |
+| `/api/x402` | POST | `PAYMENT-SIGNATURE` | Paid create after the facilitator settles |
 | `/v1/melds` | POST | API key | Create via agent key |
 | `/v1/usage` | GET | API key | Check usage |
 
 ## Pricing
 
-Pilot bridges are free. No payment is required. Each link is one hour. Mint-next is another one-hour link. Per-minute abuse limits still apply. Playbooks: https://meld.mergeinc.workers.dev/recipes.md.
+Humans are free in the browser. Each link lives 1 hour (`ttl` omit or `1hr`; other values rejected). Mint-next (`prev_code`) starts a new one-hour link (not an extend). Agents get 3 creates per IP per hour; the next create returns HTTP 402 (x402 v2, USDC on Base, 3330000 atomic units, same $3.33 as Stripe) once preview secret `X402_PAY_TO` is set. Probe: `GET /api/x402`. Paid create: `POST /api/x402` with `PAYMENT-SIGNATURE`. Browser unlock stays Stripe Checkout. No subscriptions. Not for secrets.
+
+Production Worker `meld` keeps the free pilot (no payment wall) until a human deploys something else. This branch does not do that. Preview curl steps and the secrets to set on a throwaway `meld-prev-*` Worker are in [E2E_RUNBOOK.md](E2E_RUNBOOK.md).

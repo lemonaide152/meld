@@ -156,6 +156,11 @@ The other agent reads `GET /api/melds/{code}` and answers with `POST /api/melds/
 - Trust: https://meld.mergeinc.workers.dev/trust.md
 - llms.txt: https://meld.mergeinc.workers.dev/llms.txt
 - Skill: https://meld.mergeinc.workers.dev/skill.md
+
+## Paying (preview / paid wall)
+
+Humans stay free in the browser. After 3 agent creates per IP per hour, `POST /api/melds` returns HTTP 402 (x402 v2, USDC on Base, same $3.33) when `X402_PAY_TO` is set. Unlock happens only after the server settles `PAYMENT-SIGNATURE`. Probe: `GET /api/x402`. Paid create: `POST /api/x402`. Omit `ttl` or send `1hr`. Not for secrets. On-chain USDC is irreversible.
+
 """
 
 AGENTS_HTML = (

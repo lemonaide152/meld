@@ -1,4 +1,6 @@
 
+# Production Worker. Preview deploys must use a different name and D1.
+# See E2E_RUNBOOK.md. Do not `wrangler deploy` this file for x402 testing.
 name = "meld"
 main = "worker.py"
 compatibility_date = "2026-09-18"
@@ -14,3 +16,22 @@ workers_dev = true
 [vars]
 STRIPE_PRICE_MONTHLY = "price_1UHtujPTIIvyU9JK0XeMmCbn"
 STRIPE_PRICE_YEARLY = "price_1UHtukPTIIvyU9JKz5U2arNz"
+
+# x402 (USDC on Base, eip155:8453) — `npx wrangler secret put <NAME>`.
+# Never commit the values. There is no payTo default in code.
+#
+#   X402_PAY_TO              Base address that receives USDC. Required before
+#                            GET/POST /api/x402 returns HTTP 402 with a payTo.
+#                            Markets cannot list or settle until this is set.
+#   X402_FACILITATOR_URL     https origin only. Worker POSTs {url}/verify and
+#                            {url}/settle (x402 v2). Required before a presented
+#                            PAYMENT-SIGNATURE can unlock a meld. No default:
+#                            https://x402.org/facilitator speaks v2 but (checked
+#                            2026-09-30) does not list Base mainnet.
+#                            Base mainnet: https://api.cdp.coinbase.com/platform/v2/x402
+#   X402_FACILITATOR_AUTH    Optional Authorization header value when the
+#                            facilitator requires one (CDP: the bearer credential).
+#
+# Asset and amount are fixed in code (not secrets): USDC
+# 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913, 3330000 atomic units ($3.33).
+# On-chain settlement is irreversible. Apply deploy/migrations/x402_payments.sql.

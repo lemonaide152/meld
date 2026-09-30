@@ -103,3 +103,15 @@ CREATE TABLE IF NOT EXISTS meld_payments (
   paid_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_meld_payments_code ON meld_payments(meld_code);
+
+-- x402 exact USDC on Base. Idempotency is the tx hash and the EIP-3009 nonce.
+-- payTo is NOT a column: the payee lives only in the X402_PAY_TO secret.
+CREATE TABLE IF NOT EXISTS x402_payments (
+  tx_hash TEXT PRIMARY KEY,
+  nonce TEXT NOT NULL UNIQUE,
+  meld_code TEXT NOT NULL,
+  amount_atomic TEXT NOT NULL,
+  payer TEXT,
+  network TEXT NOT NULL,
+  paid_at TEXT NOT NULL
+);

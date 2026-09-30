@@ -317,7 +317,9 @@ def test_legacy_template_paths_404():
        "A temporary resource to align context." in body and "Create the bridge" in body)
     upgrade = run(worker.upgrade_md())
     text = bytes(upgrade.body).decode()
-    ok("upgrade.md still served", "pilot" in text.lower() and "$3.33" not in text)
+    ok("upgrade.md still served",
+       "402" in text and "3m" in text and "X402_PAY_TO" in text and "not for secrets" in text.lower(),
+       text[:180])
 
 
 def test_mobile_first_human_ui():
@@ -472,8 +474,11 @@ def test_shipped_docs_describe_mint_next():
     ok("product surfaces say a hop is not an extend", "not an extend" in lowered)
     ok("product copy does not offer 3m", "3m" not in readable)
     ok("product copy does not offer 1d", "1d" not in readable)
-    ok("upgrade doc does not sell a bridge", "$3.33" not in worker.UPGRADE_MD and "checkout" not in worker.UPGRADE_MD.lower())
-    ok("pricing header is pilot-free", worker.PRICING_HEADER == "pilot-free")
+    ok("upgrade doc names the x402 secrets",
+       "X402_PAY_TO" in worker.UPGRADE_MD and "X402_FACILITATOR_URL" in worker.UPGRADE_MD
+       and "no subscription" in worker.UPGRADE_MD.lower())
+    ok("pricing header is the agent x402 wall",
+       worker.PRICING_HEADER == "humans-free; agents-key-or-quota-or-x402")
 
 
 for t in (test_ttl_required_and_enforced, test_resolve_keeps_chosen_ttl,
