@@ -213,6 +213,45 @@ def test_share_preview_hides_body():
        and "stripe" not in lowered and "$3.33" not in lowered and "hop-line" not in lowered)
 
 
+def test_receiver_job_and_soft_poll():
+    print("receiver job and soft poll")
+    html = worker.APP_HTML
+    ok("opener has their own job rail",
+       'id="receiver-rail"' in html and "Your job" in html
+       and ">Read<" in html and ">Reply<" in html and ">Done<" in html)
+    ok("creator rail stays for the person opening a bridge",
+       'id="creator-rail"' in html and "Write the handoff" in html)
+    receiver = html.split("function receiver(", 1)[1].split("function resolved(", 1)[0]
+    landing = html.split("function landing(", 1)[1].split("function timeBtn(", 1)[0]
+    ok("reply page does not render the needs grid", "needsBlock" not in receiver)
+    ok("create page still explains the handoff", "needsBlock()" in landing)
+    ok("waiting page polls the existing view endpoint",
+       "function startWatch(" in html and "scheduleWatch(10000)" in html
+       and "/api/melds/" in html.split("async function checkResult", 1)[1])
+    ok("rate-limit backoff stays on the same read",
+       "scheduleWatch(45000)" in html and "visibilitychange" in html and "document.hidden" in html)
+    ok("receiver page does not start the watch",
+       "stopWatch();" in html.split("function meldPage(", 1)[1].split("function remainingText(", 1)[0]
+       and "startWatch()" not in html.split("function meldPage(", 1)[1].split("function remainingText(", 1)[0])
+
+
+def test_legacy_template_paths_404():
+    print("legacy template paths")
+    from fastapi import HTTPException
+    for path in ("upgrade", "success", "cancel", "error", "app/templates/index.html", "templates/upgrade.html"):
+        try:
+            run(worker.serve_page(path))
+            ok(f"{path} is not served", False, "returned a page")
+        except HTTPException as e:
+            ok(f"{path} is not served", e.status_code == 404, str(e.status_code))
+    home = run(worker.serve_page("anything-else"))
+    body = bytes(home.body).decode()
+    ok("unknown product paths still get the workspace", "Open a timed bridge" in body)
+    upgrade = run(worker.upgrade_md())
+    text = bytes(upgrade.body).decode()
+    ok("upgrade.md still served", "pilot" in text.lower() and "$3.33" not in text)
+
+
 def test_shipped_docs_drop_mint_next():
     print("docs")
     blob = "\n".join([
@@ -227,6 +266,7 @@ def test_shipped_docs_drop_mint_next():
 
 for t in (test_ttl_required_and_enforced, test_resolve_keeps_chosen_ttl,
           test_mcp_selector_has_no_default, test_share_preview_hides_body,
+          test_receiver_job_and_soft_poll, test_legacy_template_paths_404,
           test_shipped_docs_drop_mint_next):
     t()
 

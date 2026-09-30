@@ -24,6 +24,7 @@ button,input,textarea{font:inherit}
 .layout{display:grid;grid-template-columns:240px 1fr;gap:1rem;align-items:start}
 .rail,.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px}
 .rail{padding:1rem}
+.rail.off{display:none !important}
 .rail h2,.panel h2{margin:0 0 .75rem;font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
 .step{display:flex;gap:.7rem;padding:.65rem 0;border-top:1px solid var(--line);color:var(--muted)}
 .step:first-of-type{border-top:0}
@@ -78,12 +79,18 @@ a.url{display:block;font-size:1rem;color:var(--ok);text-decoration:none}
     <nav><a href="/">New bridge</a><a href="/agents">Agent API</a><a href="/trust">Trust</a><a href="/llms.txt">llms.txt</a></nav>
   </header>
   <div class="layout">
-    <aside class="rail" aria-label="Task steps">
+    <aside class="rail" id="creator-rail" aria-label="Task steps">
       <h2>This task</h2>
       <div class="step on" id="s1"><div class="n">1</div><div>Write the handoff<small>What the other side must read</small></div></div>
       <div class="step" id="s2"><div class="n">2</div><div>Choose the time<small>3 minutes, 1 hour, or 1 day</small></div></div>
       <div class="step" id="s3"><div class="n">3</div><div>Share the link<small>The link is the bearer</small></div></div>
       <div class="step" id="s4"><div class="n">4</div><div>Read the reply<small>Same link, until it expires</small></div></div>
+    </aside>
+    <aside class="rail off" id="receiver-rail" aria-label="Your job">
+      <h2>Your job</h2>
+      <div class="step on" id="r1"><div class="n">1</div><div>Read<small>What they sent on this link</small></div></div>
+      <div class="step" id="r2"><div class="n">2</div><div>Reply<small>Put your answer on this link</small></div></div>
+      <div class="step" id="r3"><div class="n">3</div><div>Done<small>Both sides stay until the timer ends</small></div></div>
     </aside>
     <main class="panel" id="root"></main>
   </div>
@@ -92,6 +99,9 @@ a.url{display:block;font-size:1rem;color:var(--ok);text-decoration:none}
 const API = location.origin;
 let code = null;
 let picked = "";
+let watching = false;
+let watchTimer = null;
+// One read every 10s is 6/min, under the 60/min view limit. No new auth.
 const esc = s => { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; };
 async function api(method, path, body, headers = {}) {
   const r = await fetch(API + path, {
@@ -104,18 +114,32 @@ async function api(method, path, body, headers = {}) {
   return d;
 }
 function setSteps(active) {
+  document.getElementById("creator-rail").classList.remove("off");
+  document.getElementById("receiver-rail").classList.add("off");
   for (let i = 1; i <= 4; i++) {
     const el = document.getElementById("s" + i);
     el.classList.toggle("on", i === active);
     el.classList.toggle("done", i < active || active > 4);
   }
 }
-function trustBlock() {
+function setReceiverJob(active) {
+  document.getElementById("creator-rail").classList.add("off");
+  document.getElementById("receiver-rail").classList.remove("off");
+  for (let i = 1; i <= 3; i++) {
+    const el = document.getElementById("r" + i);
+    el.classList.toggle("on", i === active);
+    el.classList.toggle("done", i < active || active > 3);
+  }
+}
+function trustBlock(forOpener) {
+  const last = forOpener
+    ? "The bridge dissolves when its timer runs out. Then the link is gone."
+    : "The bridge dissolves when the timer you choose runs out. Then the link is gone.";
   return '<div class="trust"><strong>Read this before you put text on the bridge.</strong><ul>'
     + "<li>The link is the bearer. Anyone who has it can read the exchange while it is live.</li>"
     + "<li>The host can read it while it is live.</li>"
     + "<li>Not for secrets, credentials, or regulated data.</li>"
-    + "<li>The bridge dissolves when the timer you choose runs out. Then the link is gone.</li>"
+    + "<li>" + last + "</li>"
     + "</ul></div>";
 }
 function needsBlock() {
@@ -127,6 +151,7 @@ function needsBlock() {
     + "</div>";
 }
 function landing() {
+  stopWatch();
   document.title = "meld — timed bridge";
   setSteps(1);
   root.innerHTML = '<h1>Open a timed bridge</h1>'
@@ -206,7 +231,7 @@ function showCreated(d) {
     + '<div class="needs">'
     + '<div class="need"><b>You do this</b><span>Copy the URL and send it to the other side.</span></div>'
     + '<div class="need"><b>They do this</b><span>Open the link, read your context, and write a reply.</span></div>'
-    + '<div class="need"><b>Then you</b><span>Stay on this page and check for the reply.</span></div>'
+    + '<div class="need"><b>Then you</b><span>Stay on this page. It watches for the reply.</span></div>'
     + '<div class="need"><b>Then it ends</b><span>When the timer hits, the bridge dissolves.</span></div>'
     + '</div>'
     + trustBlock()
@@ -214,7 +239,7 @@ function showCreated(d) {
     + '<div id="result"></div>';
   document.getElementById("copy").onclick = copyLink;
   document.getElementById("check").onclick = () => checkResult(false);
-  checkResult(true);
+  startWatch();
 }
 function ttlLabel(ttl) {
   return { "3m": "3 minutes", "1hr": "1 hour", "1d": "1 day" }[ttl] || ttl;
@@ -231,31 +256,66 @@ async function copyLink() {
     status.textContent = "Select the link and copy it.";
   }
 }
+function stopWatch() {
+  watching = false;
+  if (watchTimer) {
+    clearTimeout(watchTimer);
+    watchTimer = null;
+  }
+}
+function startWatch() {
+  watching = true;
+  checkResult(true);
+}
+function scheduleWatch(delay) {
+  if (!watching) return;
+  if (watchTimer) clearTimeout(watchTimer);
+  watchTimer = setTimeout(() => checkResult(true), delay);
+}
 async function checkResult(quiet) {
   const status = document.getElementById("status");
+  const result = document.getElementById("result");
+  if (!status || !result) {
+    stopWatch();
+    return;
+  }
   if (!quiet) status.textContent = "Checking this bridge…";
   try {
     const d = await api("GET", "/api/melds/" + code);
     const waiting = !d.context_b;
-    document.getElementById("result").innerHTML = '<div class="box"><b>Your context</b>\n' + esc(d.context_a)
+    result.innerHTML = '<div class="box"><b>Your context</b>\n' + esc(d.context_a)
       + '\n\n<b>Their reply</b>\n' + esc(d.context_b || "No reply yet. The bridge is still live.") + "</div>";
     if (waiting) {
       setSteps(4);
       status.classList.remove("bad");
-      status.textContent = quiet ? "Watching this bridge." : "Still waiting for a reply.";
+      status.textContent = "Watching for a reply.";
+      scheduleWatch(10000);
     } else {
       setSteps(5);
       status.textContent = "Reply is on the link. The bridge still dissolves on the timer.";
+      stopWatch();
     }
   } catch (e) {
+    const msg = e.message || "";
+    const limited = /too many|429/i.test(msg);
+    const gone = /expired|410|not found|404|unavailable/i.test(msg);
+    if (limited && watching) {
+      status.classList.remove("bad");
+      status.textContent = "Watching for a reply. Slowing down.";
+      scheduleWatch(45000);
+      return;
+    }
     status.classList.add("bad");
-    status.textContent = e.message;
+    status.textContent = msg;
+    if (watching && !gone) scheduleWatch(20000);
+    else stopWatch();
   }
 }
 function meldPage() {
+  stopWatch();
   document.title = "meld — this bridge expires";
   code = decodeURIComponent(location.pathname.slice(3).split("/")[0]);
-  setSteps(4);
+  setReceiverJob(1);
   root.innerHTML = "<h1>Opening this bridge…</h1><p class='status' id='status'>Loading the live exchange.</p>";
   api("GET", "/api/melds/" + code).then(d => {
     if (d.resolved && d.context_b) resolved(d);
@@ -275,13 +335,12 @@ function remainingText(d) {
 }
 function receiver(d) {
   document.title = "meld — this bridge expires";
-  setSteps(4);
+  setReceiverJob(2);
   root.innerHTML = "<h1>Reply on this bridge</h1>"
-    + "<p class='lede'>You have the link, so you can read what was sent and write the reply. " + esc(remainingText(d)) + ".</p>"
-    + needsBlock()
+    + "<p class='lede'>Read what they sent, write the reply, and you are done. " + esc(remainingText(d)) + ".</p>"
     + "<label>What they sent</label><div class='box'>" + esc(d.context_a) + "</div>"
     + "<label for='answer'>Your reply</label><textarea id='answer' placeholder='The answer they asked for. Ordinary working context only.'></textarea>"
-    + trustBlock()
+    + trustBlock(true)
     + "<div class='actions'><button class='primary' id='resolve' type='button'>Put the reply on this link</button><span class='status' id='status' role='status'></span></div>";
   document.getElementById("resolve").onclick = async () => {
     const answer = document.getElementById("answer");
@@ -308,13 +367,24 @@ function receiver(d) {
 }
 function resolved(d) {
   document.title = "meld — this bridge expires";
-  setSteps(5);
+  setReceiverJob(4);
   root.innerHTML = "<h1>Both sides are on the link</h1>"
     + "<p class='lede'>The exchange stays readable by anyone with this link until the timer ends. Then it dissolves.</p>"
     + "<div class='box'><b>Context</b>\n" + esc(d.context_a) + "\n\n<b>Reply</b>\n" + esc(d.context_b) + "</div>"
     + trustBlock()
     + "<p><a href='/'>Open another bridge</a></p>";
 }
+document.addEventListener("visibilitychange", () => {
+  if (!watching) return;
+  if (document.hidden) {
+    if (watchTimer) {
+      clearTimeout(watchTimer);
+      watchTimer = null;
+    }
+  } else {
+    scheduleWatch(1000);
+  }
+});
 const path = location.pathname;
 if (path.startsWith("/m/")) meldPage();
 else landing();

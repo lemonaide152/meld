@@ -1488,8 +1488,35 @@ async def mcp_delete():
 
 
 
+# Old FastAPI mint-era pages (app/templates and /upgrade, /success, /cancel, /error).
+# The worker does not render those templates. Unknown product paths still get the SPA.
+# These paths 404 so the mint-era URLs are not a live surface. /upgrade.md and /pro stay.
+_LEGACY_PAGE_PATHS = frozenset({
+    "upgrade", "success", "cancel", "error",
+    "index.html", "upgrade.html", "success.html", "cancel.html",
+    "error.html", "meld.html", "base.html",
+})
+_LEGACY_TEMPLATE_NAMES = frozenset({
+    "index.html", "upgrade.html", "success.html", "cancel.html",
+    "error.html", "meld.html", "base.html",
+})
+
+
+def _legacy_template_path(path: str) -> bool:
+    norm = (path or "").strip("/").lower()
+    if not norm or norm.endswith(".md"):
+        return False
+    if norm in _LEGACY_PAGE_PATHS:
+        return True
+    if norm.startswith("app/templates") or norm.startswith("templates/"):
+        return True
+    return norm.rsplit("/", 1)[-1] in _LEGACY_TEMPLATE_NAMES
+
+
 @app.get("/{path:path}")
 async def serve_page(path: str):
+    if _legacy_template_path(path):
+        raise HTTPException(404, "Not found")
     return HTMLResponse(_render_page(share=False))
 
 
