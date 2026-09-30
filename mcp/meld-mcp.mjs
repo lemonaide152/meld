@@ -42,14 +42,19 @@ const TOOLS = [
   {
     name: "meld_create",
     description:
-      "Create a meld: an ephemeral context bridge. Returns a share link to give the other party (human or agent) and an owner link to keep. The meld expires (~1 hour free tier) after both parties exchange context.",
+      "Create a timed bridge. Returns a capability URL for the other party. ttl is required: 3m, 1hr, or 1d. There is no default. Pilot bridges are free. The host can read the exchange while it is live; anyone with the link can too. Not for secrets. Dissolves when that TTL ends.",
     inputSchema: {
       type: "object",
       properties: {
-        context: { type: "string", description: "Your context: code, requirements, logs, a prompt, a question — anything." },
+        context: { type: "string", description: "Working context the other party should read. Not for secrets, credentials, or regulated data." },
+        ttl: {
+          type: "string",
+          enum: ["3m", "1hr", "1d"],
+          description: "Required bridge time. 3m = 3 minutes, 1hr = 1 hour, 1d = 1 day. The server enforces this TTL. There is no default.",
+        },
         pin: { type: "string", description: "Optional PIN the other party must supply to answer." },
       },
-      required: ["context"],
+      required: ["context", "ttl"],
     },
   },
   {
@@ -83,14 +88,20 @@ const TOOLS = [
 
 async function callTool(name, args) {
   if (name === "meld_create") {
-    const body = { context: args.context };
+    const allowed = new Set(["3m", "1hr", "1d"]);
+    if (!allowed.has(args.ttl)) {
+      throw new Error("Bridge time is required. Choose 3m, 1hr, or 1d. There is no default.");
+    }
+    const body = { context: args.context, ttl: args.ttl };
     if (args.pin) body.pin = args.pin;
     const d = await api("POST", "/api/melds", body);
     return {
       code: d.code,
       share_link: d.url,
       owner_link: d.owner_url,
-      note: "Send the share link to the other party. Keep the owner link to read their answer.",
+      ttl: d.ttl,
+      expires_at: d.expires_at,
+      note: "Send the share link. It is the capability URL. The bridge dissolves at expires_at. Not for secrets.",
     };
   }
   if (name === "meld_resolve") {

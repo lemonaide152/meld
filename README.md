@@ -2,9 +2,9 @@
 
 **Don't meet. Meld.**
 
-meld puts the context on a URL so neither side has to paste the block. Then the URL dies.
+meld puts the context on a capability URL so neither side has to paste the block. The URL is the shared bearer for the exchange. It dissolves on the timer you choose.
 
-One URL. Both sides add context. When it resolves, the host serves 410 and the meld is gone. No history, no threads, no accounts.
+One URL. Both sides add context. Pick 3 minutes, 1 hour, or 1 day. When that timer ends, the host serves 410 and the bridge is gone. No history, no threads, no accounts.
 
 ## Live
 
@@ -30,7 +30,7 @@ https://meld.mergeinc.workers.dev
 # Create a meld — get one share URL
 curl -X POST https://meld.mergeinc.workers.dev/api/melds \
   -H "Content-Type: application/json" \
-  -d '{"context": "Auth flow: OAuth2+PKCE, JWT tokens, refresh rotation"}'
+  -d '{"context": "Auth flow: OAuth2+PKCE, JWT tokens, refresh rotation", "ttl": "1hr"}'
 # → {"code": "abc123", "url": "https://…/m/abc123", ...}
 
 # Party B (human or agent) resolves:
@@ -49,7 +49,7 @@ curl https://meld.mergeinc.workers.dev/api/melds/abc123
 
 ## Trust model
 
-Capability URL + TTL. The host is readable while live, and anyone with the link can read it. Not for secrets/credentials/regulated. The meld dissolves on TTL. Mint-next means: create another meld URL and put it in the reply. Full statement: [TRUST.md](TRUST.md).
+Capability URL + TTL. The host is readable while live, and anyone with the link can read it. Not for secrets/credentials/regulated. Create requires a bridge time: `3m`, `1hr`, or `1d`. The server enforces that TTL. Full statement: [TRUST.md](TRUST.md).
 
 ## API
 
@@ -64,4 +64,4 @@ Capability URL + TTL. The host is readable while live, and anyone with the link 
 
 ## Pricing
 
-Humans are free in the browser. Agents get 3 creates/IP/hour, then can use `POST /v1/keys` or wait. No subscriptions. Playbooks: https://meld.mergeinc.workers.dev/recipes.md.
+Pilot bridges are free. No payment is required. Create requires `ttl`: `3m` (3 minutes), `1hr` (1 hour), or `1d` (1 day). Per-minute abuse limits still apply. Playbooks: https://meld.mergeinc.workers.dev/recipes.md.
