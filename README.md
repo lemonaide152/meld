@@ -49,7 +49,7 @@ curl https://meld.mergeinc.workers.dev/api/melds/abc123
 
 ## Trust model
 
-Capability URL + TTL. The host is readable while live, and anyone with the link can read it. Not for secrets/credentials/regulated. Create requires a bridge time: `3m`, `1hr`, or `1d`. The server enforces that TTL. Full statement: [TRUST.md](TRUST.md).
+Capability URL + TTL. The host is readable while live, and anyone with the link can read it. Not for secrets/credentials/regulated. Create requires a bridge time: `3m`, `1hr`, or `1d`. The server enforces that TTL. Link previews of `/m/{code}` are a generic card only (title “meld — this bridge expires”). The meld body is not placed in Open Graph or Twitter tags. Full statement: [TRUST.md](TRUST.md).
 
 ## API
 

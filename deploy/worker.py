@@ -12,6 +12,7 @@ import secrets
 import string
 import time
 import datetime
+from html import escape as html_escape
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
@@ -19,6 +20,16 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from workers import asgi
 from agents_content import AGENTS_HTML
 from app_content import APP_HTML
+from og_png import PNG as OG_PNG
+from preview_meta import (
+    SITE,
+    META_SLOT,
+    MARKETING_TITLE,
+    CAPABILITY_TITLE,
+    marketing_meta,
+    capability_meta,
+    capability_preview_document,
+)
 
 app = FastAPI(title="meld", version="1.0.0", docs_url=None, redoc_url=None)
 
@@ -1014,41 +1025,67 @@ async def v1_usage(request: Request):
 
 # ── SPA ──────────────────────────────────────────────────────────────────
 
-# ── SPA ──────────────────────────────────────────────────────────────────
+# Raw shell. Card tags are inserted per route so /m/{code} never inherits
+# the homepage image card. Stub HTML used by unit tests has no slot.
 PAGE = APP_HTML
-
-# Homepage preview describes the product. A bare /m/{code} share must not put
-# the exchange into og:title, og:description, or the initial HTML.
-_PRODUCT_PREVIEW = (
-    '<meta name="description" content="Open a timed bridge. Share the capability URL. '
-    'It dissolves when the timer ends.">'
-)
-_SHARE_PREVIEW = (
-    '<meta name="description" content="This link expires. The exchange is not included in this preview.">'
-    '<meta name="robots" content="noindex, nofollow">'
-    '<meta property="og:title" content="meld — this bridge expires">'
-    '<meta property="og:description" content="This link expires. The exchange is not included in this preview.">'
-    '<meta property="og:type" content="website">'
-    '<meta name="twitter:card" content="summary">'
-    '<meta name="twitter:title" content="meld — this bridge expires">'
-    '<meta name="twitter:description" content="This link expires. The exchange is not included in this preview.">'
-)
+_HOME_TITLE = "<title>meld — timed bridge</title>"
 
 
 def _render_page(*, share: bool) -> str:
-    preview = _SHARE_PREVIEW if share else _PRODUCT_PREVIEW
-    html = PAGE.replace("<!--MELD_PREVIEW-->", preview, 1)
+    """Homepage card vs generic expires-only card for a capability URL."""
+    if META_SLOT not in PAGE:
+        return PAGE
     if share:
-        html = html.replace(
-            "<title>meld — timed bridge</title>",
-            "<title>meld — this bridge expires</title>",
-            1,
+        html = PAGE.replace(META_SLOT, capability_meta(), 1)
+        return html.replace(
+            _HOME_TITLE, f"<title>{html_escape(CAPABILITY_TITLE)}</title>", 1
         )
-    return html
+    html = PAGE.replace(META_SLOT, marketing_meta(SITE + "/"), 1)
+    return html.replace(_HOME_TITLE, f"<title>{html_escape(MARKETING_TITLE)}</title>", 1)
 
+# Crawlers that build link cards. Search crawlers are not listed: /m/ HTML
+# carries noindex, and the initial markup still has no meld body.
+_LINK_PREVIEW_BOTS = (
+    "twitterbot",
+    "slackbot",
+    "slack-imgproxy",
+    "discordbot",
+    "facebookexternalhit",
+    "facebot",
+    "linkedinbot",
+    "whatsapp",
+    "telegrambot",
+    "embedly",
+    "iframely",
+    "redditbot",
+    "pinterest",
+    "vkshare",
+    "quora link preview",
+    "skypeuripreview",
+)
+
+
+def _is_link_preview_bot(request: Request) -> bool:
+    ua = (request.headers.get("user-agent") or "").lower()
+    return any(bot in ua for bot in _LINK_PREVIEW_BOTS)
+
+
+@app.get("/og.png")
+async def og_image():
+    """Static 1200×630 product card. No meld content."""
+    return Response(
+        content=OG_PNG,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 @app.get("/m/{code}")
 async def serve_meld(request: Request, code: str):
+    # Unfurl gate: preview crawlers get a generic card and this branch does
+    # not read the meld. Human HTML is the SPA with the same generic tags;
+    # context loads in the browser and is never written into meta tags.
+    if _is_link_preview_bot(request):
+        return HTMLResponse(capability_preview_document())
     if "application/json" in request.headers.get("accept", ""):
         conn = db(request)
         ip = _client_ip(request)
@@ -1552,7 +1589,7 @@ Sitemap: https://meld.mergeinc.workers.dev/sitemap.xml
 
 AGENTS_MD = '# meld — agent API\n\nmeld is a capability URL + TTL for one context exchange. Host-readable while live; anyone with the link can read it. Not for secrets/credentials/regulated. The meld dissolves on TTL.\n\n## Create -> resolve -> read\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' -H \'X-Meld-Client: agent\' \\\n  -d \'{"context":"What architecture fits 10M users?","ttl":"1hr"}\'\n# share the returned .url and note .code\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"Event-driven services plus a queue."}\'\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\nThe capability URL is the access. `owner_token` and `/result` remain as a legacy owner-read path. Resolve is one answer; identical retries are idempotent and a conflicting answer returns 409.\n\n## Bridge time\n\n`ttl` is required on create and must be `3m`, `1hr`, or `1d`. The server enforces that lifetime. There is no default. Pilot creates are free.\n\nMCP remote: https://meld.mergeinc.workers.dev/mcp · Recipes: /recipes.md · OpenAPI: /openapi.json\n'
 
-TRUST_MD = '# meld — trust model\n\n- Capability URL + TTL: the URL grants access while the meld is live.\n- Host-readable while live.\n- Anyone with the link can read it.\n- Not for secrets/credentials/regulated.\n- Dissolves on the TTL chosen at create: 3 minutes (`3m`), 1 hour (`1hr`), or 1 day (`1d`).\n- Bridge time is required: 3m, 1hr, or 1d. The server enforces that TTL. There is no default.\n\nThe host stores ordinary context for the live TTL and deletes the meld after expiry. There are no accounts or long-term content archives. Rate-limit identity is IP-based. Use meld for ordinary, disposable handoffs only.\n'
+TRUST_MD = '# meld — trust model\n\n- Capability URL + TTL: the URL grants access while the meld is live.\n- Host-readable while live.\n- Anyone with the link can read it.\n- Not for secrets/credentials/regulated.\n- Dissolves on the TTL chosen at create: 3 minutes (`3m`), 1 hour (`1hr`), or 1 day (`1d`).\n- Bridge time is required: 3m, 1hr, or 1d. The server enforces that TTL. There is no default.\n\nThe host stores ordinary context for the live TTL and deletes the meld after expiry. There are no accounts or long-term content archives. Rate-limit identity is IP-based. Use meld for ordinary, disposable handoffs only.\n\n## Link previews\n\n`/`, `/agents`, and `/trust` use a product card: "Context for your agent. One link. Then it\'s gone." It is a timed bridge (time on this link). Host-readable while live. Anyone with the link can read it. Not for secrets. It dissolves on TTL.\n\n`/m/{code}` unfurls as a generic card only: title "meld — this bridge expires", description "This link expires. The exchange is not included in this preview." Slack, X, and Discord GET the URL. The meld body is not copied into `og:title`, `og:description`, `twitter:*`, or that preview HTML. The crawler response has no script and does not read the meld.\n'
 
 UPGRADE_MD = """# meld — pilot
 
@@ -1714,18 +1751,27 @@ AI_PLUGIN = {
 }
 
 
-TRUST_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>meld — trust model</title><style>body{font:16px/1.6 system-ui;max-width:680px;margin:2rem auto;padding:0 1rem;color:#30343b}code{font-family:ui-monospace,monospace}</style></head><body>
-<h1>meld — trust model</h1>
-<ul>
-<li><strong>Capability URL + TTL.</strong> The URL grants access while the meld is live.</li>
-<li><strong>Host-readable while live.</strong></li>
-<li><strong>Anyone with the link can read it.</strong></li>
-<li><strong>Not for secrets/credentials/regulated.</strong></li>
-<li><strong>Dissolves on TTL.</strong> Choose 3 minutes, 1 hour, or 1 day at create. The server enforces that timer.</li>
-</ul>
-<p>meld is an ephemeral context handoff, not a vault. The host stores ordinary context only for the live TTL, then deletes the meld. There are no accounts or long-term content archives.</p>
-<p><a href="/llms.txt">Agent docs</a> · <a href="/agents">Agents</a> · <a href="/">Create a meld</a></p>
-</body></html>"""
+TRUST_HTML = (
+    '<!doctype html><html><head><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    '<title>meld — trust model</title>'
+    + marketing_meta(SITE + "/trust")
+    + '<style>body{font:16px/1.6 system-ui;max-width:680px;margin:2rem auto;padding:0 1rem;color:#30343b}code{font-family:ui-monospace,monospace}</style></head><body>\n'
+    "<h1>meld — trust model</h1>\n"
+    "<ul>\n"
+    "<li><strong>Capability URL + TTL.</strong> The URL grants access while the meld is live.</li>\n"
+    "<li><strong>Host-readable while live.</strong></li>\n"
+    "<li><strong>Anyone with the link can read it.</strong></li>\n"
+    "<li><strong>Not for secrets/credentials/regulated.</strong></li>\n"
+    "<li><strong>Dissolves on TTL.</strong> Choose 3 minutes, 1 hour, or 1 day at create. The server enforces that timer.</li>\n"
+    "</ul>\n"
+    "<p>meld is an ephemeral context handoff, not a vault. The host stores ordinary context only for the live TTL, then deletes the meld. There are no accounts or long-term content archives.</p>\n"
+    "<h2>Link previews</h2>\n"
+    "<p><code>/</code>, <code>/agents</code>, and <code>/trust</code> use a product card: “Context for your agent. One link. Then it’s gone.” It is a timed bridge (time on this link). Host-readable while live. Anyone with the link can read it. Not for secrets. It dissolves on TTL.</p>\n"
+    "<p><code>/m/{code}</code> unfurls as a generic card only: title “meld — this bridge expires”, description “This link expires. The exchange is not included in this preview.” Slack, X, and Discord GET the URL. The meld body is not copied into <code>og:title</code>, <code>og:description</code>, <code>twitter:*</code>, or that preview HTML. That crawler response has no script and does not read the meld.</p>\n"
+    '<p><a href="/llms.txt">Agent docs</a> · <a href="/agents">Agents</a> · <a href="/">Create a meld</a></p>\n'
+    "</body></html>"
+)
 
 # Workers ASGI entrypoint
 Default = asgi.entrypoint(app)
