@@ -54,6 +54,10 @@ MELD_PRICE_CENTS = 333  # $3.33 — operator decision 2026-09-22
 # R4: the only origins a checkout success/cancel may redirect to. Never
 # derived from the Host header (open-redirect-via-checkout).
 ALLOWED_HOSTS = {"meld.mergeinc.workers.dev", "meld.sh", "www.meld.sh"}
+# Preview workers only. One DNS label: meld-prev-<id>.mergeinc.workers.dev.
+# Not added to ALLOWED_HOSTS (checkout redirects stay on the production origins).
+_PREVIEW_HOST_PREFIX = "meld-prev-"
+_PREVIEW_HOST_SUFFIX = ".mergeinc.workers.dev"
 # rate limits: (max, window_seconds)
 RL = {"create": (20, 60), "resolve": (10, 60), "view": (60, 60), "checkout": (5, 60)}
 
@@ -549,10 +553,32 @@ async def _handle_http_exception(request: Request, exc: HTTPException):
     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=headers)
 
 
+def _is_preview_resource_host(host: str) -> bool:
+    """True only for meld-prev-<label>.mergeinc.workers.dev.
+
+    Prefix and suffix are both required. The preview name is one label, so a
+    host with an extra dot, a different parent, or an empty id does not match.
+    """
+    if not host.startswith(_PREVIEW_HOST_PREFIX) or not host.endswith(_PREVIEW_HOST_SUFFIX):
+        return False
+    label = host[: -len(_PREVIEW_HOST_SUFFIX)]
+    if "." in label or len(label) > 63:
+        return False
+    ident = label[len(_PREVIEW_HOST_PREFIX):]
+    if not ident or ident[0] == "-" or ident[-1] == "-":
+        return False
+    return all(c.isdigit() or ("a" <= c <= "z") or c == "-" for c in ident)
+
+
 def _x402_resource_url(request: Request, path: str) -> str:
-    """Pin the challenge resource to an allowlisted host. Never echo an arbitrary Host."""
+    """Pin the challenge resource to an allowlisted host. Never echo an arbitrary Host.
+
+    Preview workers (meld-prev-<id>.mergeinc.workers.dev) keep their own URL so
+    settle matches the worker that issued the challenge. Anything else that is
+    not a production origin is pinned to meld.mergeinc.workers.dev.
+    """
     host = (request.headers.get("host") or "").split(":")[0].strip().lower()
-    if host not in ALLOWED_HOSTS:
+    if host not in ALLOWED_HOSTS and not _is_preview_resource_host(host):
         host = "meld.mergeinc.workers.dev"
     return f"https://{host}{path}"
 

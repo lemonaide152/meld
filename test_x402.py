@@ -275,6 +275,44 @@ def test_probe_challenge_shape():
     ok("unpaid POST is 402", unpaid.status_code == 402 and _body(unpaid)["accepts"][0]["payTo"] == PAY_TO)
 
 
+def test_preview_host_stays_on_the_challenge():
+    print("preview Host is the resource; unknown Host pins to prod")
+    d1 = fresh_db()
+    preview = "meld-prev-3a59b6c0-1e98-422d-a7e1-5f9d9f2fc3b4.mergeinc.workers.dev"
+    req = FakeRequest(d1, {}, {"host": preview}, method="GET", path="/api/x402")
+    body = _body(run(worker.x402_resource(req)))
+    ok("preview resource url",
+       body["resource"]["url"] == f"https://{preview}/api/x402",
+       body["resource"]["url"])
+    with_port = FakeRequest(
+        d1, {}, {"host": preview + ":443"}, method="GET", path="/api/x402")
+    port_body = _body(run(worker.x402_resource(with_port)))
+    ok("preview host with port drops the port",
+       port_body["resource"]["url"] == f"https://{preview}/api/x402",
+       port_body["resource"]["url"])
+    upper = FakeRequest(
+        d1, {}, {"host": preview.upper()}, method="GET", path="/api/x402")
+    upper_body = _body(run(worker.x402_resource(upper)))
+    ok("preview host is case-insensitive",
+       upper_body["resource"]["url"] == f"https://{preview}/api/x402",
+       upper_body["resource"]["url"])
+    prod = "https://meld.mergeinc.workers.dev/api/x402"
+    rejected = (
+        "evil.example",
+        "meld-prev-3a59.mergeinc.workers.dev.evil.example",
+        "not-meld-prev-3a59.mergeinc.workers.dev",
+        "meld-prev-3a59.other.workers.dev",
+        "meld-prev-a.b.mergeinc.workers.dev",
+        "meld-prev-.mergeinc.workers.dev",
+        "meld.mergeinc.workers.dev.evil.example",
+    )
+    for host in rejected:
+        got = _body(run(worker.x402_resource(
+            FakeRequest(d1, {}, {"host": host}, method="GET", path="/api/x402"))))
+        ok(f"unknown host {host} pins to prod",
+           got["resource"]["url"] == prod, got["resource"]["url"])
+
+
 def test_wall_and_client_claim():
     print("agent wall is 402; client paid flag does not unlock")
     d1 = fresh_db()
@@ -587,6 +625,7 @@ def test_docs_and_source_keep_secrets_out():
 def main():
     test_unconfigured_probe_has_no_address()
     test_probe_challenge_shape()
+    test_preview_host_stays_on_the_challenge()
     test_wall_and_client_claim()
     test_rejects_before_facilitator()
     test_settle_must_return_tx()

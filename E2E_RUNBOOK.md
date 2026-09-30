@@ -124,7 +124,7 @@ Expect HTTP 402. The JSON body and the `PAYMENT-REQUIRED` header (base64 JSON) b
 - `accepts[0].amount`: `3330000`
 - `accepts[0].asset`: `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`
 - `accepts[0].payTo`: the preview's `X402_PAY_TO`
-- `resource.url`: `$BASE/api/x402`
+- `resource.url`: `$BASE/api/x402` when Host is `meld-prev-<guid>.mergeinc.workers.dev`. Any other Host is pinned to `https://meld.mergeinc.workers.dev/api/x402`.
 
 Before `X402_PAY_TO` is set, the same GET returns HTTP 503 and does not invent an address.
 
