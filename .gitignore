@@ -12,6 +12,7 @@ deploy/.venv*/
 deploy/python_modules/
 deploy/node_modules/
 deploy/.wrangler/
+deploy/wrangler.preview.toml
 node_modules/
 
 # local acquisition secrets (never commit)
