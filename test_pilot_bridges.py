@@ -252,6 +252,38 @@ def test_legacy_template_paths_404():
     ok("upgrade.md still served", "pilot" in text.lower() and "$3.33" not in text)
 
 
+def test_mobile_first_human_ui():
+    print("mobile-first human ui")
+    html = worker.APP_HTML
+    css = html.split("<style>", 1)[1].split("</style>", 1)[0]
+    base, _, enhanced = css.partition("@media")
+    flat_base = "".join(base.split())
+    ok("phone base has no max-width breakpoint",
+       "@media (max-width" not in css and "@media(max-width" not in css)
+    ok("phone base stacks the page and the time picker",
+       ".layout{display:grid;grid-template-columns:1fr" in flat_base
+       and ".times{display:grid;grid-template-columns:1fr" in flat_base)
+    ok("wider screens enhance the time picker to three columns",
+       "min-width:50rem" in enhanced and "repeat(3,minmax(0,1fr))" in "".join(enhanced.split()))
+    ok("primary controls declare a 44px tap target",
+       "min-height:44px" in css)
+    ok("waiting still pauses while the tab is hidden",
+       "visibilitychange" in html and "document.hidden" in html
+       and "clearTimeout(watchTimer)" in html and "scheduleWatch(10000)" in html)
+    ok("trust warn and ttl disclosure stay on the create flow",
+       "Read this before you put text on the bridge." in html
+       and "Not for secrets, credentials, or regulated data." in html
+       and "The host can read it while it is live." in html
+       and "3 minutes" in html and "1 hour" in html and "1 day" in html)
+    landing = html.split("function landing(", 1)[1].split("function timeBtn(", 1)[0]
+    trust_at = landing.find("trustBlock()")
+    times_at = landing.find('class="times"')
+    create_at = landing.find('id="create"')
+    needs_at = landing.find("needsBlock()")
+    ok("trust sits above the time picker and the create button follows it",
+       0 < trust_at < times_at < create_at < needs_at, f"{trust_at, times_at, create_at, needs_at}")
+
+
 def test_shipped_docs_drop_mint_next():
     print("docs")
     blob = "\n".join([
@@ -266,8 +298,8 @@ def test_shipped_docs_drop_mint_next():
 
 for t in (test_ttl_required_and_enforced, test_resolve_keeps_chosen_ttl,
           test_mcp_selector_has_no_default, test_share_preview_hides_body,
-          test_receiver_job_and_soft_poll, test_legacy_template_paths_404,
-          test_shipped_docs_drop_mint_next):
+          test_receiver_job_and_soft_poll, test_mobile_first_human_ui,
+          test_legacy_template_paths_404, test_shipped_docs_drop_mint_next):
     t()
 
 print(f"\n{passed}/{total} passed")

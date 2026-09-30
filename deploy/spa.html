@@ -2,73 +2,119 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>meld — timed bridge</title>
 <!--MELD_PREVIEW-->
 <style>
+/* Mobile-first: base rules are for a ~375px phone. Wider layouts enhance in min-width queries. */
 :root{
   --bg:#10141c;--panel:#181e2a;--panel-2:#202838;--ink:#eef3fb;--muted:#a9b4c6;
   --line:#313a4d;--accent:#7ee0c6;--accent-ink:#06241c;--warn:#f3d48a;--warn-bg:#3a2e14;
   --danger:#ffb4a8;--ok:#b6f3df;
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Segoe UI",ui-sans-serif,sans-serif}
+html{-webkit-text-size-adjust:100%;overflow-x:clip}
+body{
+  margin:0;background:var(--bg);color:var(--ink);
+  font:16px/1.5 "Segoe UI",ui-sans-serif,sans-serif;
+  overflow-x:clip;
+}
 a{color:var(--accent)}
 button,input,textarea{font:inherit}
-.app{max-width:1080px;margin:0 auto;padding:1.25rem 1.1rem 3rem}
-.top{display:flex;justify-content:space-between;gap:1rem;align-items:baseline;margin-bottom:1.25rem}
-.brand{font-weight:700;letter-spacing:.04em}
+button{touch-action:manipulation}
+.app{
+  width:100%;max-width:1080px;margin:0 auto;
+  padding:0.75rem max(0.85rem, env(safe-area-inset-right)) calc(2.5rem + env(safe-area-inset-bottom)) max(0.85rem, env(safe-area-inset-left));
+}
+.top{
+  display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;
+  gap:0.15rem 0.75rem;margin-bottom:0.55rem;
+}
+.brand{font-weight:700;letter-spacing:.04em;min-height:44px;display:flex;align-items:center;gap:.4rem}
 .brand span{color:var(--muted);font-weight:500}
-.top nav{font-size:.85rem;color:var(--muted)}
-.top nav a{color:var(--muted);margin-left:.75rem}
-.layout{display:grid;grid-template-columns:240px 1fr;gap:1rem;align-items:start}
-.rail,.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px}
-.rail{padding:1rem}
+.top nav{display:flex;flex-wrap:wrap;align-items:center;font-size:.875rem;color:var(--muted);margin-left:auto}
+.top nav a{color:var(--muted);margin:0;min-height:44px;display:inline-flex;align-items:center;padding:0 .5rem}
+.layout{display:grid;grid-template-columns:1fr;gap:.75rem;align-items:start}
+.layout>*{min-width:0}
+.rail,.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;min-width:0;max-width:100%}
+.rail{padding:.5rem .65rem .55rem}
 .rail.off{display:none !important}
-.rail h2,.panel h2{margin:0 0 .75rem;font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
-.step{display:flex;gap:.7rem;padding:.65rem 0;border-top:1px solid var(--line);color:var(--muted)}
-.step:first-of-type{border-top:0}
+.rail h2,.panel h2{margin:0 0 .45rem;font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+#creator-rail,#receiver-rail{display:grid;gap:.35rem .55rem;align-items:start}
+#creator-rail{grid-template-columns:repeat(2,minmax(0,1fr))}
+#receiver-rail{grid-template-columns:repeat(3,minmax(0,1fr))}
+.rail h2{grid-column:1 / -1;margin:0}
+.step{display:flex;gap:.4rem;padding:.2rem 0;border-top:0;color:var(--muted);min-width:0}
+#receiver-rail .step{flex-direction:column;align-items:flex-start;gap:.2rem}
 .step.on{color:var(--ink)}
 .step.done .n{background:var(--accent);color:var(--accent-ink)}
-.n{flex:0 0 auto;width:1.6rem;height:1.6rem;border-radius:99px;display:grid;place-items:center;border:1px solid var(--line);font-size:.8rem}
+.n{flex:0 0 auto;width:1.75rem;height:1.75rem;border-radius:99px;display:grid;place-items:center;border:1px solid var(--line);font-size:.8rem}
 .step.on .n{border-color:var(--accent);color:var(--accent)}
-.step small{display:block;color:var(--muted);font-size:.78rem}
-.panel{padding:1.15rem 1.2rem 1.25rem}
-h1{font-size:1.7rem;line-height:1.15;margin:.1rem 0 .45rem}
-.lede{color:var(--muted);margin:0 0 1rem}
-.needs{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin:0 0 1rem}
-.need{background:var(--panel-2);border-radius:12px;padding:.75rem .8rem}
-.need b{display:block;font-size:.92rem}
-.need span{display:block;color:var(--muted);font-size:.82rem;margin-top:.15rem}
-label{display:block;font-weight:650;margin:.2rem 0 .35rem}
-textarea{width:100%;min-height:180px;resize:vertical;padding:.85rem;border-radius:12px;border:1px solid var(--line);background:#0e131c;color:var(--ink)}
+.step small{display:block;color:var(--muted);font-size:.75rem;line-height:1.3}
+.panel{padding:.75rem .8rem .9rem}
+h1{font-size:1.45rem;line-height:1.2;margin:.05rem 0 .3rem;overflow-wrap:anywhere}
+.lede{color:var(--muted);margin:0 0 .6rem;font-size:1rem;line-height:1.45}
+.needs{display:grid;grid-template-columns:1fr;gap:.55rem;margin:.9rem 0 0}
+.need{background:var(--panel-2);border-radius:12px;padding:.75rem .8rem;min-width:0}
+.need b{display:block;font-size:.95rem}
+.need span{display:block;color:var(--muted);font-size:.85rem;line-height:1.4;margin-top:.15rem}
+label{display:flex;justify-content:space-between;align-items:baseline;gap:.5rem;flex-wrap:wrap;font-weight:650;margin:.2rem 0 .35rem}
+textarea{
+  width:100%;max-width:100%;min-height:7.5rem;resize:vertical;
+  padding:.75rem;border-radius:12px;border:1px solid var(--line);
+  background:#0e131c;color:var(--ink);
+  font-size:1rem;line-height:1.45;
+  scroll-margin-bottom:6rem;
+}
 textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.hint{color:var(--muted);font-size:.82rem;margin:.35rem 0 .9rem}
-.times{display:grid;grid-template-columns:repeat(3,1fr);gap:.55rem}
-.time{text-align:left;padding:.8rem;border-radius:12px;border:1px solid var(--line);background:#0e131c;color:var(--ink);cursor:pointer}
-.time b{display:block;font-size:1.02rem}
-.time span{display:block;color:var(--muted);font-size:.78rem;margin-top:.2rem}
+.hint{color:var(--muted);font-size:.85rem;line-height:1.4;margin:.35rem 0 .75rem}
+.times{display:grid;grid-template-columns:1fr;gap:.5rem}
+.time{
+  text-align:left;width:100%;min-height:44px;
+  padding:.7rem .85rem;border-radius:12px;border:1px solid var(--line);
+  background:#0e131c;color:var(--ink);cursor:pointer;
+}
+.time b{display:block;font-size:1rem;line-height:1.25}
+.time span{display:block;color:var(--muted);font-size:.85rem;line-height:1.35;margin-top:.15rem}
 .time[aria-checked="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
 .time[aria-checked="true"] span{color:#24584a}
-.trust{margin:1rem 0;padding:.8rem .9rem;border-radius:12px;background:var(--warn-bg);color:var(--warn)}
+.trust{margin:.7rem 0;padding:.75rem .85rem;border-radius:12px;background:var(--warn-bg);color:var(--warn);overflow:visible}
 .trust strong{color:#ffe7ad}
 .trust ul{margin:.35rem 0 0;padding-left:1.1rem}
-.trust li{margin:.15rem 0}
-.actions{display:flex;gap:.7rem;align-items:center;flex-wrap:wrap}
-button.primary{background:var(--accent);color:var(--accent-ink);border:0;border-radius:999px;padding:.75rem 1.1rem;font-weight:700;cursor:pointer}
+.trust li{margin:.2rem 0}
+.actions{display:flex;flex-direction:column;align-items:stretch;gap:.55rem;scroll-margin-bottom:1rem}
+button.primary,button.ghost{min-height:44px;width:100%;display:inline-flex;align-items:center;justify-content:center;scroll-margin:12px}
+button.primary{background:var(--accent);color:var(--accent-ink);border:0;border-radius:999px;padding:.75rem 1.15rem;font-weight:700;cursor:pointer}
 button.primary:disabled{opacity:.55;cursor:wait}
-button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:.65rem .95rem;cursor:pointer}
+button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:.7rem 1rem;cursor:pointer}
 .status{color:var(--muted);min-height:1.2rem}
 .status.bad{color:var(--danger)}
-.box{margin:.7rem 0;padding:.9rem;border-radius:12px;background:#0e131c;border:1px solid var(--line);white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.45 ui-monospace,monospace}
-a.url{display:block;font-size:1rem;color:var(--ok);text-decoration:none}
-.meta{color:var(--muted);font-size:.9rem}
-.count{float:right;color:var(--muted);font-weight:500;font-size:.8rem}
-@media(max-width:800px){
-  .layout{grid-template-columns:1fr}
-  .needs,.times{grid-template-columns:1fr}
-  .rail{display:flex;gap:.4rem;overflow:auto}
-  .step{border-top:0;min-width:9.5rem}
+.box{
+  margin:.7rem 0;padding:.9rem;border-radius:12px;background:#0e131c;border:1px solid var(--line);
+  white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-width:100%;
+  font:.875rem/1.45 ui-monospace,monospace;
+}
+a.url{display:block;font-size:1rem;line-height:1.4;color:var(--ok);text-decoration:none;overflow-wrap:anywhere}
+.meta{color:var(--muted);font-size:.95rem;overflow-wrap:anywhere}
+.count{float:none;margin-left:auto;color:var(--muted);font-weight:500;font-size:.8rem}
+@media (min-width:50rem){
+  .app{padding:1.25rem 1.1rem 3rem}
+  .top{flex-wrap:nowrap;margin-bottom:1.25rem}
+  .top nav{flex-wrap:nowrap}
+  .layout{grid-template-columns:15rem 1fr;gap:1rem}
+  #creator-rail,#receiver-rail{display:block;padding:1rem}
+  .rail h2{margin:0 0 .75rem}
+  .step{flex-direction:row;align-items:flex-start;gap:.7rem;padding:.65rem 0;border-top:1px solid var(--line)}
+  #receiver-rail .step{flex-direction:row;align-items:flex-start;gap:.7rem}
+  .step:first-of-type{border-top:0}
+  .step small{font-size:.78rem}
+  .panel{padding:1.15rem 1.2rem 1.25rem}
+  h1{font-size:1.7rem;line-height:1.15}
+  .needs{grid-template-columns:1fr 1fr;gap:.6rem}
+  textarea{min-height:180px}
+  .times{grid-template-columns:repeat(3,minmax(0,1fr));gap:.55rem}
+  .actions{flex-direction:row;flex-wrap:wrap;align-items:center;gap:.7rem}
+  button.primary,button.ghost{width:auto}
 }
 </style>
 </head>
@@ -122,6 +168,9 @@ function setSteps(active) {
     el.classList.toggle("done", i < active || active > 4);
   }
 }
+function revealTop() {
+  window.scrollTo(0, 0);
+}
 function setReceiverJob(active) {
   document.getElementById("creator-rail").classList.add("off");
   document.getElementById("receiver-rail").classList.remove("off");
@@ -152,11 +201,12 @@ function needsBlock() {
 }
 function landing() {
   stopWatch();
+  revealTop();
   document.title = "meld — timed bridge";
   setSteps(1);
   root.innerHTML = '<h1>Open a timed bridge</h1>'
     + '<p class="lede">Hand one piece of working context to another person or agent. You get a capability URL. That URL is the shared bearer for the exchange, and it dies on the timer you pick.</p>'
-    + needsBlock()
+    + trustBlock()
     + '<label for="ctx">1. Context the other side must read <span class="count" id="count">0 / 100000</span></label>'
     + '<textarea id="ctx" placeholder="Decisions, constraints, and the next step they need. Ordinary working context only."></textarea>'
     + '<p class="hint">This text is what they see when they open the link. Leave out secrets.</p>'
@@ -167,8 +217,8 @@ function landing() {
     + timeBtn("1d", "1 day", "For a handoff that can wait. Dissolves in 1 day.")
     + "</div>"
     + '<p class="hint" id="time-hint">Choose one. Nothing is selected until you do. There is no other duration.</p>'
-    + trustBlock()
-    + '<div class="actions"><button class="primary" id="create" type="button">Create the bridge</button><span class="status" id="status" role="status"></span></div>';
+    + '<div class="actions"><button class="primary" id="create" type="button">Create the bridge</button><span class="status" id="status" role="status"></span></div>'
+    + needsBlock();
   const ctx = document.getElementById("ctx");
   const count = document.getElementById("count");
   ctx.addEventListener("input", () => {
@@ -190,6 +240,8 @@ function selectTime(ttl) {
   document.getElementById("time-hint").textContent = "Selected: " + labels[ttl] + ". The server will dissolve this bridge on that timer.";
   const ctx = document.getElementById("ctx");
   setSteps(ctx && ctx.value.trim() ? 3 : 2);
+  const create = document.getElementById("create");
+  if (create) create.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 async function createBridge() {
   const ctx = document.getElementById("ctx");
@@ -228,17 +280,18 @@ function showCreated(d) {
     + '<p class="lede">Send this link to the other person or agent. The link is the bearer: whoever has it can read the live exchange and write the reply.</p>'
     + '<a class="box url" id="share" href="' + esc(d.url) + '">' + esc(d.url) + '</a>'
     + '<p class="meta">Bridge time: <b>' + esc(ttlLabel(d.ttl || picked)) + '</b> · dissolves ' + esc(when) + '</p>'
+    + trustBlock()
+    + '<div class="actions"><button class="ghost" id="copy" type="button">Copy link</button><button class="primary" id="check" type="button">Check for the reply</button><span class="status" id="status" role="status"></span></div>'
+    + '<div id="result"></div>'
     + '<div class="needs">'
     + '<div class="need"><b>You do this</b><span>Copy the URL and send it to the other side.</span></div>'
     + '<div class="need"><b>They do this</b><span>Open the link, read your context, and write a reply.</span></div>'
     + '<div class="need"><b>Then you</b><span>Stay on this page. It watches for the reply.</span></div>'
     + '<div class="need"><b>Then it ends</b><span>When the timer hits, the bridge dissolves.</span></div>'
-    + '</div>'
-    + trustBlock()
-    + '<div class="actions"><button class="ghost" id="copy" type="button">Copy link</button><button class="primary" id="check" type="button">Check for the reply</button><span class="status" id="status" role="status"></span></div>'
-    + '<div id="result"></div>';
+    + '</div>';
   document.getElementById("copy").onclick = copyLink;
   document.getElementById("check").onclick = () => checkResult(false);
+  revealTop();
   startWatch();
 }
 function ttlLabel(ttl) {
@@ -313,6 +366,7 @@ async function checkResult(quiet) {
 }
 function meldPage() {
   stopWatch();
+  revealTop();
   document.title = "meld — this bridge expires";
   code = decodeURIComponent(location.pathname.slice(3).split("/")[0]);
   setReceiverJob(1);
@@ -335,12 +389,13 @@ function remainingText(d) {
 }
 function receiver(d) {
   document.title = "meld — this bridge expires";
+  revealTop();
   setReceiverJob(2);
   root.innerHTML = "<h1>Reply on this bridge</h1>"
     + "<p class='lede'>Read what they sent, write the reply, and you are done. " + esc(remainingText(d)) + ".</p>"
     + "<label>What they sent</label><div class='box'>" + esc(d.context_a) + "</div>"
-    + "<label for='answer'>Your reply</label><textarea id='answer' placeholder='The answer they asked for. Ordinary working context only.'></textarea>"
     + trustBlock(true)
+    + "<label for='answer'>Your reply</label><textarea id='answer' placeholder='The answer they asked for. Ordinary working context only.'></textarea>"
     + "<div class='actions'><button class='primary' id='resolve' type='button'>Put the reply on this link</button><span class='status' id='status' role='status'></span></div>";
   document.getElementById("resolve").onclick = async () => {
     const answer = document.getElementById("answer");
@@ -367,6 +422,7 @@ function receiver(d) {
 }
 function resolved(d) {
   document.title = "meld — this bridge expires";
+  revealTop();
   setReceiverJob(4);
   root.innerHTML = "<h1>Both sides are on the link</h1>"
     + "<p class='lede'>The exchange stays readable by anyone with this link until the timer ends. Then it dissolves.</p>"
