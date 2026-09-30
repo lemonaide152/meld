@@ -315,14 +315,37 @@ def guids_from_comments(comments: list[dict]) -> list[str]:
     return found
 
 
+def production_wrangler_config() -> Path:
+    return (DEPLOY_DIR / "wrangler.toml").resolve()
+
+
+def is_production_wrangler_config(path: Path) -> bool:
+    """True only for the repo's production Worker config, not a staging copy."""
+    try:
+        candidate = path.expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        return candidate.resolve() == production_wrangler_config()
+    except OSError:
+        return False
+
+
 def deploy_command(config: Path, worker: str) -> list[str]:
+    """Pinned Wrangler deploy of a preview config named wrangler.toml.
+
+    ``pywrangler sync`` only looks for ``wrangler.toml`` or ``wrangler.jsonc``.
+    The file in the staging directory is generated preview config. It is not
+    ``deploy/wrangler.toml``.
+    """
     guard_preview_name(worker)
-    if config.name != "wrangler.preview.toml":
-        raise SystemExit("Wrangler config must be named wrangler.preview.toml")
+    if config.name != "wrangler.toml":
+        raise SystemExit(
+            "preview Wrangler config must be named wrangler.toml so pywrangler sync can find it"
+        )
     if not config.is_file():
         raise SystemExit("missing preview Wrangler config")
-    if (config.parent / "wrangler.toml").exists():
-        raise SystemExit("refusing to run Wrangler next to production wrangler.toml")
+    if is_production_wrangler_config(config):
+        raise SystemExit("refusing to deploy the production wrangler.toml")
     assert_config(config.read_text(encoding="utf-8"), worker=worker)
     args = [
         "npx",
@@ -353,7 +376,9 @@ def assert_wrangler_argv(args: list[str], worker: str) -> None:
         if arg in {PROD_WORKER, PROD_D1_NAME, PROD_D1_ID}:
             raise SystemExit("wrangler arguments reference production")
         lowered = arg.lower()
-        if "meld.mergeinc" in lowered or lowered.endswith("/wrangler.toml"):
+        if "meld.mergeinc" in lowered:
+            raise SystemExit("wrangler arguments reference production config")
+        if lowered.endswith("wrangler.toml") and is_production_wrangler_config(Path(arg)):
             raise SystemExit("wrangler arguments reference production config")
     if worker not in args:
         raise SystemExit("wrangler arguments missing the preview Worker name")
@@ -612,6 +637,51 @@ def workers_subdomain() -> str:
     return sub.strip().lower()
 
 
+def vendor_preview_deps(staging: Path) -> None:
+    """Run ``pywrangler sync`` in staging and keep only ``python_modules``.
+
+    Production deploys with ``uv run pywrangler deploy``, which vendors fastapi
+    into ``python_modules/`` before upload. Preview does the same sync, then
+    removes ``.venv`` and ``.venv-workers`` so those environments are not
+    uploaded. The staging ``wrangler.toml`` must already be the preview config.
+    """
+    staging = staging.resolve()
+    if staging == DEPLOY_DIR.resolve():
+        raise SystemExit("refusing to vendor dependencies in the production deploy directory")
+    config = staging / "wrangler.toml"
+    if not config.is_file() or is_production_wrangler_config(config):
+        raise SystemExit("preview wrangler.toml is missing")
+    assert_config(config.read_text(encoding="utf-8"))
+    if not (staging / "pyproject.toml").is_file() or not (staging / "pylock.toml").is_file():
+        raise SystemExit("staging is missing pyproject.toml or pylock.toml")
+    env = scrubbed_env()
+    for key in ("VIRTUAL_ENV", "CONDA_PREFIX", "UV_PROJECT_ENVIRONMENT", "UV_PYTHON", "PYTHONHOME"):
+        env.pop(key, None)
+    try:
+        proc = subprocess.run(
+            ["uv", "run", "--group", "dev", "pywrangler", "sync"],
+            cwd=staging,
+            env=env,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        raise SystemExit(
+            "uv is required to vendor preview dependencies. "
+            "The preview workflow installs it with astral-sh/setup-uv."
+        ) from None
+    if proc.returncode != 0:
+        raise SystemExit(f"pywrangler sync failed with exit {proc.returncode}")
+    for name in (".venv", ".venv-workers"):
+        path = staging / name
+        if path.exists():
+            shutil.rmtree(path)
+    fastapi = staging / "python_modules" / "fastapi"
+    if not fastapi.is_dir():
+        raise SystemExit("pywrangler sync did not vendor python_modules/fastapi")
+    assert_config(config.read_text(encoding="utf-8"))
+
+
 def run_wrangler(args: list[str], cwd: Path) -> str:
     proc = subprocess.run(
         args,
@@ -636,9 +706,10 @@ def deploy(guid: str) -> dict:
     database_id = ensure_d1(d1)
     staging = stage_sources()
     try:
-        config = staging / "wrangler.preview.toml"
+        config = staging / "wrangler.toml"
         config.write_text(render_config(guid, database_id), encoding="utf-8")
         apply_schema(database_id)
+        vendor_preview_deps(staging)
         log = run_wrangler(deploy_command(config, worker), staging)
         logged = urls_from_deploy_log(log, worker)
         try:

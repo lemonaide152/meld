@@ -77,7 +77,9 @@ class EnvAndCommandTest(unittest.TestCase):
         self.assertFalse((staging / "wrangler.toml").exists())
         self.assertFalse((staging / ".dev.vars").exists())
         self.assertTrue((staging / "worker.py").is_file())
-        config = staging / "wrangler.preview.toml"
+        self.assertTrue((staging / "pyproject.toml").is_file())
+        self.assertTrue((staging / "pylock.toml").is_file())
+        config = staging / "wrangler.toml"
         config.write_text(preview_ops.render_config(GUID, PREVIEW_D1), encoding="utf-8")
         worker, _d1 = preview_ops.resource_names(GUID)
         args = preview_ops.deploy_command(config, worker)
@@ -85,7 +87,11 @@ class EnvAndCommandTest(unittest.TestCase):
         self.assertNotIn("preview", args)
         self.assertNotIn("--preview", args)
         self.assertEqual(args[args.index("--name") + 1], worker)
-        self.assertTrue(str(args[args.index("--config") + 1]).endswith("wrangler.preview.toml"))
+        config_arg = Path(args[args.index("--config") + 1])
+        self.assertEqual(config_arg.name, "wrangler.toml")
+        self.assertFalse(preview_ops.is_production_wrangler_config(config_arg))
+        with self.assertRaises(SystemExit):
+            preview_ops.deploy_command(preview_ops.DEPLOY_DIR / "wrangler.toml", worker)
         self.assertIn("--no-experimental-provision", args)
         self.assertIn("--no-experimental-auto-create", args)
         self.assertIn("--no-autoconfig", args)
@@ -102,6 +108,25 @@ class EnvAndCommandTest(unittest.TestCase):
                 ["wrangler", "preview", "--name", worker],
                 worker,
             )
+
+
+class VendorSyncTest(unittest.TestCase):
+    def test_pywrangler_sync_vendors_fastapi_and_drops_venvs(self):
+        prod_config = (preview_ops.DEPLOY_DIR / "wrangler.toml").read_bytes()
+        staging = preview_ops.stage_sources()
+        self.addCleanup(lambda: __import__("shutil").rmtree(staging, ignore_errors=True))
+        config = staging / "wrangler.toml"
+        config.write_text(preview_ops.render_config(GUID, PREVIEW_D1), encoding="utf-8")
+        preview_ops.vendor_preview_deps(staging)
+        fastapi = staging / "python_modules" / "fastapi"
+        self.assertTrue(fastapi.is_dir(), "python_modules/fastapi missing after pywrangler sync")
+        self.assertTrue((fastapi / "__init__.py").is_file())
+        self.assertFalse((staging / ".venv").exists())
+        self.assertFalse((staging / ".venv-workers").exists())
+        preview_ops.assert_config(config.read_text(encoding="utf-8"))
+        self.assertNotIn("meld-prod", config.read_text(encoding="utf-8"))
+        self.assertEqual((preview_ops.DEPLOY_DIR / "wrangler.toml").read_bytes(), prod_config)
+        self.assertFalse(preview_ops.is_production_wrangler_config(config))
 
 
 class SchemaAndUrlTest(unittest.TestCase):
@@ -306,6 +331,7 @@ class WorkflowDocTest(unittest.TestCase):
         self.assertIn("synchronize", deploy)
         self.assertIn("reopened", deploy)
         self.assertIn("preview_ops.py deploy", deploy)
+        self.assertIn("astral-sh/setup-uv@", deploy)
         self.assertIn("head.repo.full_name == github.repository", deploy)
         self.assertIn("meld-preview-pr-", deploy)
 

@@ -35,7 +35,9 @@ One random UUID per pull request, stored in the CI comment and reused on later p
 
 Production is Worker `meld` and D1 `meld-prod` (`a550ad8f-9359-4666-ac10-c440ad461464`), served at `meld.mergeinc.workers.dev`. A preview on that account looks like `https://meld-prev-<guid>.mergeinc.workers.dev`. The GUID is in the Worker name, which is the first label of the hostname.
 
-The preview config is generated in CI and is not `deploy/wrangler.toml`. It binds only the preview D1.
+CI writes that preview config into a temporary directory as `wrangler.toml` so `pywrangler sync` can see it. That file is not `deploy/wrangler.toml`, and its contents are still the preview Worker and preview D1 only.
+
+Before upload, CI runs `uv run --group dev pywrangler sync` in that directory, which vendors fastapi into `python_modules/`. It then deletes `.venv` and `.venv-workers` and deploys with `npx wrangler@4.135.0 deploy`.
 
 ## Cleanup triggers
 
