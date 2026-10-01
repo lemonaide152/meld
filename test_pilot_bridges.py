@@ -1,4 +1,4 @@
-"""Pilot timed bridges: required 3m/1hr/1d, no payment wall, no body unfurl."""
+"""Pilot timed bridges: fixed 1 hour, mint-next is a new hop, no payment wall."""
 import asyncio
 import datetime
 import json
@@ -61,6 +61,8 @@ class Stmt:
     async def run(self):
         cur = self.d1.conn.execute(self.sql, self._b)
         return Res(max(cur.rowcount, 0))
+    async def all(self):
+        return list(self.d1.conn.execute(self.sql, self._b).fetchall())
 
 
 class D1:
@@ -125,38 +127,35 @@ async def create(d1, ip, body, headers=None):
 
 
 def test_ttl_required_and_enforced():
-    print("ttl choices")
+    print("ttl is one hour")
     d1 = fresh_db()
+    before = datetime.datetime.now(datetime.timezone.utc)
     missing = run(create(d1, "10.8.0.1", {"context": "hello"}))
-    ok("missing ttl is 400", missing[0] == "err" and missing[1] == 400, str(missing))
-    bad = run(create(d1, "10.8.0.1", {"context": "hello", "ttl": "1h"}))
-    ok("1h alias rejected", bad[0] == "err" and bad[1] == 400, str(bad))
-    other = run(create(d1, "10.8.0.1", {"context": "hello", "ttl": "7d"}))
-    ok("7d rejected", other[0] == "err" and other[1] == 400, str(other))
-    numeric = run(create(d1, "10.8.0.1", {"context": "hello", "ttl": 180}))
-    ok("numeric ttl rejected", numeric[0] == "err" and numeric[1] == 400, str(numeric))
-
-    expect = {"3m": 180, "1hr": 3600, "1d": 86400}
-    for i, (ttl, seconds) in enumerate(expect.items()):
-        before = datetime.datetime.now(datetime.timezone.utc)
-        got = run(create(d1, f"10.8.1.{i}", {"context": f"body-{ttl}", "ttl": ttl}))
-        ok(f"{ttl} admitted", got[0] == "ok" and got[1]["ttl"] == ttl, str(got)[:180])
-        if got[0] != "ok":
-            continue
+    ok("missing ttl defaults to 1hr", missing[0] == "ok" and missing[1]["ttl"] == "1hr", str(missing)[:180])
+    if missing[0] == "ok":
+        delta = (datetime.datetime.fromisoformat(missing[1]["expires_at"]) - before).total_seconds()
+        ok("missing ttl expires in about 1 hour", abs(delta - 3600) < 5, f"delta={delta}")
+    for label, value in (("1h alias", "1h"), ("7d", "7d"), ("numeric", 180), ("3m", "3m"), ("1d", "1d")):
+        bad = run(create(d1, "10.8.0.1", {"context": "hello", "ttl": value}))
+        ok(f"{label} rejected", bad[0] == "err" and bad[1] == 400 and "1 hour" in str(bad[2]), str(bad))
+    before = datetime.datetime.now(datetime.timezone.utc)
+    got = run(create(d1, "10.8.1.1", {"context": "body-1hr", "ttl": "1hr"}))
+    ok("1hr admitted", got[0] == "ok" and got[1]["ttl"] == "1hr", str(got)[:180])
+    if got[0] == "ok":
         exp = datetime.datetime.fromisoformat(got[1]["expires_at"])
         delta = (exp - before).total_seconds()
-        ok(f"{ttl} expiry within 5s of {seconds}", abs(delta - seconds) < 5, f"delta={delta}")
+        ok("1hr expiry within 5s of 3600", abs(delta - 3600) < 5, f"delta={delta}")
         token = got[1]["owner_token"]
-        ok(f"{ttl} owner token is 256-bit hex",
+        ok("owner token is 256-bit hex",
            isinstance(token, str) and len(token) == 64 and all(c in "0123456789abcdef" for c in token),
            token[:12])
-        ok(f"{ttl} capability code stays 12 chars", len(got[1]["code"]) == 12, got[1]["code"])
+        ok("capability code stays 12 chars", len(got[1]["code"]) == 12, got[1]["code"])
 
 
 def test_resolve_keeps_chosen_ttl():
     print("resolve keeps ttl")
     d1 = fresh_db()
-    got = run(create(d1, "10.8.2.1", {"context": "keep", "ttl": "1d"}))
+    got = run(create(d1, "10.8.2.1", {"context": "keep", "ttl": "1hr"}))
     code = got[1]["code"]
     before = d1.q("SELECT expires_at FROM melds WHERE code=?", code)[0]["expires_at"]
     req = FakeRequest(d1, {"context": "reply"}, {"x-forwarded-for": "10.8.2.2"})
@@ -166,35 +165,88 @@ def test_resolve_keeps_chosen_ttl():
     ok("resolve still records the reply", after["resolved"] == 1)
 
 
-def test_mcp_selector_has_no_default():
+def test_mint_next_is_a_new_hour():
+    print("mint-next")
+    d1 = fresh_db()
+    root = run(create(d1, "10.9.0.1", {"context": "root-body"}))
+    ok("root created", root[0] == "ok", str(root)[:160])
+    if root[0] != "ok":
+        return
+    root_code = root[1]["code"]
+    root_exp = root[1]["expires_at"]
+    before = datetime.datetime.now(datetime.timezone.utc)
+    hop = run(create(d1, "10.9.0.2", {"context": "hop-body", "ttl": "1hr", "prev_code": root_code}))
+    ok("mint-next creates a bearer", hop[0] == "ok" and hop[1]["code"] != root_code, str(hop)[:180])
+    if hop[0] != "ok":
+        return
+    delta = (datetime.datetime.fromisoformat(hop[1]["expires_at"]) - before).total_seconds()
+    ok("hop has its own hour", abs(delta - 3600) < 5, f"delta={delta}")
+    parent = d1.q("SELECT expires_at, thread_id FROM melds WHERE code=?", root_code)[0]
+    ok("parent expiry is unchanged", parent["expires_at"] == root_exp, parent["expires_at"])
+    ok("hop shares the root thread", hop[1]["thread_id"] == parent["thread_id"] == root_code, str(hop[1]["thread_id"]))
+    ok("hop records prev_code", hop[1]["prev_code"] == root_code)
+    req = FakeRequest(d1, None, {"x-forwarded-for": "10.9.0.3"})
+    chain = run(worker.get_chain(hop[1]["code"], req))
+    texts = " ".join((n["context_a"] or "") for n in chain["nodes"])
+    ok("live chain includes both hops", "root-body" in texts and "hop-body" in texts, texts)
+    ok("chain marks each hop 1hr", all(n["ttl"] == "1hr" for n in chain["nodes"]))
+    past = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=5)).isoformat()
+    d1.conn.execute("UPDATE melds SET expires_at=? WHERE code=?", (past, root_code))
+    chain2 = run(worker.get_chain(hop[1]["code"], req))
+    texts2 = " ".join((n["context_a"] or "") for n in chain2["nodes"])
+    ok("expired hop is not on the chain", "root-body" not in texts2 and "hop-body" in texts2, texts2)
+    ok("expired hop row is deleted", d1.q("SELECT code FROM melds WHERE code=?", root_code) == [])
+    dead = run(create(d1, "10.9.0.4", {"context": "should-not-store", "prev_code": root_code}))
+    ok("mint from a gone hop is 404", dead[0] == "err" and dead[1] == 404, str(dead))
+    missing = run(create(d1, "10.9.0.5", {"context": "should-not-store", "prev_code": "missingcode1"}))
+    ok("mint from a missing hop is 404", missing[0] == "err" and missing[1] == 404, str(missing))
+    ok("failed hops store no body", d1.q("SELECT code FROM melds WHERE context_a=?", "should-not-store") == [])
+    fresh = fresh_db()
+    live = run(create(fresh, "10.9.1.1", {"context": "still-live"}))
+    code = live[1]["code"]
+    past = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=5)).isoformat()
+    fresh.conn.execute("UPDATE melds SET expires_at=? WHERE code=?", (past, code))
+    try:
+        run(worker.get_chain(code, FakeRequest(fresh, None, {"x-forwarded-for": "10.9.1.3"})))
+        ok("expired current link is 410", False, "chain returned")
+    except worker.HTTPException as e:
+        ok("expired current link is 410", e.status_code == 410 and "still-live" not in str(e.detail), str(e.detail))
+    ok("expired chain read deletes the row", fresh.q("SELECT code FROM melds WHERE code=?", code) == [])
+    again = run(create(fresh, "10.9.1.4", {"context": "again-live"}))
+    again_code = again[1]["code"]
+    fresh.conn.execute("UPDATE melds SET expires_at=? WHERE code=?", (past, again_code))
+    expired = run(create(fresh, "10.9.1.2", {"context": "should-not-store", "prev_code": again_code}))
+    ok("mint from an expired hop is 410", expired[0] == "err" and expired[1] == 410, str(expired))
+    ok("410 does not keep the expired row", fresh.q("SELECT code FROM melds WHERE code=?", again_code) == [])
+    ok("410 does not create the next body", fresh.q("SELECT code FROM melds WHERE context_a=?", "should-not-store") == [])
+
+
+def test_mcp_selector_is_one_hour():
     print("mcp selector")
     tool = next(t for t in worker._MCP_TOOLS if t["name"] == "meld_create")
     schema = tool["inputSchema"]
-    ok("ttl is required", schema["required"] == ["context", "ttl"], str(schema["required"]))
-    ok("ttl enum is exactly 3m/1hr/1d",
-       schema["properties"]["ttl"]["enum"] == ["3m", "1hr", "1d"],
-       str(schema["properties"]["ttl"]))
-    ok("ttl schema has no default", "default" not in schema["properties"]["ttl"])
+    ok("ttl is optional", schema["required"] == ["context"], str(schema["required"]))
+    ok("ttl enum is exactly 1hr", schema["properties"]["ttl"]["enum"] == ["1hr"], str(schema["properties"]["ttl"]))
+    ok("ttl schema defaults to 1hr", schema["properties"]["ttl"].get("default") == "1hr")
+    ok("prev_code is the mint-next field", "prev_code" in schema["properties"])
     card = next(t for t in worker.MCP_SERVER_CARD["tools"] if t["name"] == "meld_create")
-    ok("server card requires ttl", card["inputSchema"]["required"] == ["context", "ttl"])
+    ok("server card requires context only", card["inputSchema"]["required"] == ["context"])
     d1 = fresh_db()
     req = FakeRequest(d1, {}, {"x-forwarded-for": "10.8.3.1"})
+    made = run(worker._mcp_call_tool("meld_create", {"context": "no time"}, req))
+    ok("mcp create without ttl is 1hr", made.get("ttl") == "1hr" and made.get("share_link"), str(made)[:180])
     try:
-        run(worker._mcp_call_tool("meld_create", {"context": "no time"}, req))
-        ok("mcp create without ttl fails", False, "returned a bridge")
+        run(worker._mcp_call_tool("meld_create", {"context": "bad time", "ttl": "3m"}, req))
+        ok("mcp create with another ttl fails", False, "returned a bridge")
     except RuntimeError as e:
-        ok("mcp create without ttl names the three choices",
-           "3m" in str(e) and "1hr" in str(e) and "1d" in str(e), str(e))
-    made = run(worker._mcp_call_tool(
-        "meld_create", {"context": "with time", "ttl": "3m"}, req))
-    ok("mcp create with 3m returns the ttl", made.get("ttl") == "3m" and made.get("share_link"), str(made)[:180])
+        ok("mcp create with another ttl says 1 hour", "1 hour" in str(e) and "3m" not in str(e), str(e))
 
 
 def test_share_preview_hides_body():
     print("share preview")
     secret = "SECRET-BODY-SHOULD-NOT-UNFURL"
     d1 = fresh_db()
-    got = run(create(d1, "10.8.4.1", {"context": secret, "ttl": "3m"}))
+    got = run(create(d1, "10.8.4.1", {"context": secret, "ttl": "1hr"}))
     req = FakeRequest(d1, None, {"accept": "text/html", "x-forwarded-for": "10.8.4.2"}, path=f"/m/{got[1]['code']}")
     resp = run(worker.serve_meld(req, got[1]["code"]))
     html = bytes(resp.body).decode()
@@ -209,10 +261,12 @@ def test_share_preview_hides_body():
        "A temporary resource to align context." in home
        and "Create the timed link" in home
        and "Create the bridge" in home
-       and "3 minutes" in home and "1 hour" in home and "1 day" in home)
+       and "This link lives 1 hour, then it dies." in home
+       and "3 minutes" not in home and "1 day" not in home)
     lowered = home.lower()
-    ok("home has no mint-next, email field, e2e, or pay upsell",
-       "mint-next" not in lowered and "type=\"email\"" not in lowered
+    ok("home offers mint-next as a new link and no pay upsell",
+       "mint next" in lowered and "not an extend" in lowered
+       and "type=\"email\"" not in lowered
        and "end-to-end" not in lowered and "e2e" not in lowered
        and "stripe" not in lowered and "$3.33" not in lowered and "hop-line" not in lowered)
 
@@ -224,19 +278,23 @@ def test_receiver_job_and_soft_poll():
        'id="receiver-rail"' in html and "Your job" in html
        and ">Read<" in html and ">Reply<" in html and ">Done<" in html)
     ok("creator rail stays a thin progress stepper",
-       'id="creator-rail"' in html and ">Write<" in html and ">Time<" in html
-       and ">Share<" in html and ">Reply<" in html)
+       'id="creator-rail"' in html and ">Write<" in html and ">Share<" in html
+       and ">Reply<" in html and ">Next<" in html and ">Time<" not in html)
     receiver = html.split("function receiver(", 1)[1].split("function resolved(", 1)[0]
-    landing = html.split("function landing(", 1)[1].split("function timeBtn(", 1)[0]
-    created = html.split("function showCreated(", 1)[1].split("function ttlLabel(", 1)[0]
+    landing = html.split("function landing(", 1)[1].split("async function createBridge(", 1)[0]
+    created = html.split("function showCreated(", 1)[1].split("async function copyLink(", 1)[0]
     ok("reply page does not render the needs grid", "needsBlock" not in receiver and 'class="needs"' not in receiver)
     ok("landing does not teach with needs cards", "needsBlock" not in landing and 'class="needs"' not in landing)
     ok("share step is the bearer url without needs cards",
        "Pass this bearer URL" in created and "Copy link" in created
        and "Check for the reply" in created and 'class="needs"' not in created)
-    ok("waiting page polls the existing view endpoint",
+    check = html.split("async function checkResult", 1)[1].split("function dissolved(", 1)[0]
+    paint = html.split("async function paintChain", 1)[1].split("async function mintNext", 1)[0]
+    ok("waiting page polls the live chain",
        "function startWatch(" in html and "scheduleWatch(10000)" in html
-       and "/api/melds/" in html.split("async function checkResult", 1)[1])
+       and "paintChain()" in check and "/api/melds/" in paint and "/chain" in paint)
+    ok("mint-next posts prev_code on a new create",
+       "Mint next" in html and "prev_code" in html and 'ttl: "1hr"' in html)
     ok("rate-limit backoff stays on the same read",
        "scheduleWatch(45000)" in html and "visibilitychange" in html and "document.hidden" in html)
     ok("receiver page does not start the watch",
@@ -270,9 +328,10 @@ def test_mobile_first_human_ui():
     flat_base = "".join(base.split())
     ok("phone base has no max-width breakpoint",
        "@media (max-width" not in css and "@media(max-width" not in css)
-    ok("phone base stacks the page and keeps three bridge times in one row",
+    ok("phone base stacks the page and has no three-up time picker",
        ".layout{display:grid;grid-template-columns:1fr" in flat_base
-       and ".times{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))" in flat_base)
+       and ".times{" not in flat_base and 'class="times"' not in html
+       and 'role="radiogroup"' not in html)
     ok("phone base hides the hero visual", ".hero-visual{display:none}" in flat_base)
     ok("wider screens may show the card beside the what-line",
        "min-width:50rem" in enhanced and 'url("/og.png")' in enhanced)
@@ -281,18 +340,19 @@ def test_mobile_first_human_ui():
     ok("waiting still pauses while the tab is hidden",
        "visibilitychange" in html and "document.hidden" in html
        and "clearTimeout(watchTimer)" in html and "scheduleWatch(10000)" in html)
-    ok("reply flow keeps the full trust bullets and create keeps the three times",
+    ok("reply flow keeps the full trust bullets and one fixed hour",
        "Read this before you put text on the bridge." in html
        and "Not for secrets, credentials, or regulated data." in html
        and "The host can read it while it is live." in html
-       and "3 minutes" in html and "1 hour" in html and "1 day" in html)
-    landing = html.split("function landing(", 1)[1].split("function timeBtn(", 1)[0]
+       and "This link lives 1 hour, then it dies." in html
+       and "3 minutes" not in html and "1 day" not in html)
+    landing = html.split("function landing(", 1)[1].split("async function createBridge(", 1)[0]
     ctx_at = landing.find('id="ctx"')
-    times_at = landing.find('class="times"')
+    life_at = landing.find('class="life"')
     create_at = landing.find('id="create"')
     trust_at = landing.find('class="trust-line"')
-    ok("pour order is textarea, bridge time, create, then one trust line",
-       0 < ctx_at < times_at < create_at < trust_at, f"{ctx_at, times_at, create_at, trust_at}")
+    ok("pour order is textarea, one-hour line, create, then one trust line",
+       0 < ctx_at < life_at < create_at < trust_at, f"{ctx_at, life_at, create_at, trust_at}")
     ok("landing does not open with the four-bullet trust wall", "trustBlock()" not in landing)
     ok("landing focuses the context textarea", "autofocus" in landing and "ctx.focus" in landing)
     ok("trust one-liner points at /trust",
@@ -328,18 +388,16 @@ def test_agent_install_surface():
 
     locked = (
         "Not for secrets",
-        "3m",
+        "1 hour",
         "1hr",
-        "1d",
+        "not an extend",
         "https://meld.mergeinc.workers.dev/mcp",
         "Human → agent",
         "Agent → agent",
-        "There is no default",
         "Pilot creates are free",
+        "mint-next",
     )
     banned = (
-        "mint-next",
-        "mint next",
         "human-to-human",
         "human→human",
         "human to human",
@@ -347,10 +405,13 @@ def test_agent_install_surface():
     )
     for label, text in (("agents.md", agents), ("skill.md", skill), ("AGENTS.md", root)):
         for phrase in locked:
-            ok(f"{label} has {phrase}", phrase in text, phrase)
+            found = phrase.lower() in text.lower() if phrase == "mint-next" else phrase in text
+            ok(f"{label} has {phrase}", found, phrase)
         low = text.lower()
         for bad in banned:
             ok(f"{label} omits {bad}", bad not in low, bad)
+        ok(f"{label} does not offer 3m", "3m" not in text)
+        ok(f"{label} does not offer 1d", "1d" not in text)
 
     for link in ("/recipes.md", "/openapi.json", "/trust.md", "/llms.txt", "/skill.md"):
         ok(f"agents.md links {link}", link in agents, link)
@@ -397,24 +458,31 @@ def test_card_homepage():
        "host" not in what.lower() and "The host can read it while it is live." in html)
 
 
-def test_shipped_docs_drop_mint_next():
+def test_shipped_docs_describe_mint_next():
     print("docs")
+    import re
     blob = "\n".join([
         worker.AGENTS_MD, worker.AGENTS_ROOT_MD, worker.LLMS_TXT, worker.SKILL_MD,
         worker.RECIPES_MD, worker.TRUST_MD, worker.UPGRADE_MD, worker.TRUST_HTML,
         worker.APP_HTML,
-    ]).lower()
-    ok("worker product surfaces have no mint-next", "mint-next" not in blob and "mint next" not in blob)
+    ])
+    lowered = blob.lower()
+    readable = re.sub(r"data:image/png;base64,[A-Za-z0-9+/=]+", "", lowered)
+    ok("product surfaces describe mint-next", "mint-next" in lowered or "mint next" in lowered)
+    ok("product surfaces say a hop is not an extend", "not an extend" in lowered)
+    ok("product copy does not offer 3m", "3m" not in readable)
+    ok("product copy does not offer 1d", "1d" not in readable)
     ok("upgrade doc does not sell a bridge", "$3.33" not in worker.UPGRADE_MD and "checkout" not in worker.UPGRADE_MD.lower())
     ok("pricing header is pilot-free", worker.PRICING_HEADER == "pilot-free")
 
 
 for t in (test_ttl_required_and_enforced, test_resolve_keeps_chosen_ttl,
-          test_mcp_selector_has_no_default, test_share_preview_hides_body,
+          test_mint_next_is_a_new_hour,
+          test_mcp_selector_is_one_hour, test_share_preview_hides_body,
           test_receiver_job_and_soft_poll, test_mobile_first_human_ui,
           test_card_homepage, test_legacy_template_paths_404,
           test_agent_install_surface,
-          test_shipped_docs_drop_mint_next):
+          test_shipped_docs_describe_mint_next):
     t()
 
 print(f"\n{passed}/{total} passed")

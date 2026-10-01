@@ -42,19 +42,24 @@ const TOOLS = [
   {
     name: "meld_create",
     description:
-      "Create a timed bridge. Returns a capability URL for the other party. ttl is required: 3m, 1hr, or 1d. There is no default. Pilot bridges are free. The host can read the exchange while it is live; anyone with the link can too. Not for secrets. Dissolves when that TTL ends.",
+      "Create a timed bridge. Returns a capability URL for the other party. Every meld lives 1 hour. Omit ttl or send 1hr. prev_code mints a new link with its own hour (not an extend). Pilot bridges are free. The host can read the exchange while it is live; anyone with the link can too. Not for secrets.",
     inputSchema: {
       type: "object",
       properties: {
         context: { type: "string", description: "Working context the other party should read. Not for secrets, credentials, or regulated data." },
         ttl: {
           type: "string",
-          enum: ["3m", "1hr", "1d"],
-          description: "Required bridge time. 3m = 3 minutes, 1hr = 1 hour, 1d = 1 day. The server enforces this TTL. There is no default.",
+          enum: ["1hr"],
+          default: "1hr",
+          description: "Lifetime is 1 hour. Omit this or send 1hr. Any other value is rejected.",
+        },
+        prev_code: {
+          type: "string",
+          description: "Optional live meld code. Creates a new bearer with its own 1 hour. Does not extend the previous link.",
         },
         pin: { type: "string", description: "Optional PIN the other party must supply to answer." },
       },
-      required: ["context", "ttl"],
+      required: ["context"],
     },
   },
   {
@@ -88,11 +93,12 @@ const TOOLS = [
 
 async function callTool(name, args) {
   if (name === "meld_create") {
-    const allowed = new Set(["3m", "1hr", "1d"]);
-    if (!allowed.has(args.ttl)) {
-      throw new Error("Bridge time is required. Choose 3m, 1hr, or 1d. There is no default.");
+    const ttl = args.ttl == null || args.ttl === "" ? "1hr" : args.ttl;
+    if (ttl !== "1hr") {
+      throw new Error("This link lives 1 hour. Send ttl 1hr or omit it.");
     }
-    const body = { context: args.context, ttl: args.ttl };
+    const body = { context: args.context, ttl };
+    if (args.prev_code) body.prev_code = args.prev_code;
     if (args.pin) body.pin = args.pin;
     const d = await api("POST", "/api/melds", body);
     return {

@@ -90,14 +90,13 @@ textarea{
 }
 textarea:focus,button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .hint{color:var(--muted);font-size:.85rem;line-height:1.4;margin:.35rem 0 .75rem}
-.times{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.4rem;margin-top:.55rem}
-.time{
-  text-align:center;width:100%;min-height:44px;
-  padding:.55rem .3rem;border-radius:12px;border:1px solid var(--line);
-  background:#07060e;color:var(--ink);cursor:pointer;
-  font-weight:650;font-size:.92rem;line-height:1.2;
-}
-.time[aria-checked="true"]{background:var(--accent);color:#fff;border-color:var(--accent)}
+.life{color:var(--muted);font-size:.9rem;line-height:1.4;margin:.45rem 0 0}
+.chain{max-height:18rem;overflow:auto;display:flex;flex-direction:column;gap:.55rem;margin-top:.55rem}
+.node{border:1px solid var(--line);border-radius:12px;padding:.7rem .75rem;background:var(--panel-2);min-width:0}
+.node.here{border-color:var(--accent)}
+.node .box{margin:.45rem 0 0}
+.mint{margin-top:.85rem}
+.mint[hidden]{display:none}
 .trust{margin:.7rem 0;padding:.75rem .85rem;border-radius:12px;background:var(--warn-bg);color:var(--warn);overflow:visible}
 .trust strong{color:#ffe7ad}
 .trust ul{margin:.35rem 0 0;padding-left:1.1rem}
@@ -151,7 +150,6 @@ a.url{display:block;font-size:1rem;line-height:1.4;color:var(--ok);text-decorati
   h1{font-size:1.7rem;line-height:1.15}
   .needs{grid-template-columns:1fr 1fr;gap:.6rem}
   textarea{min-height:180px}
-  .times{gap:.55rem}
   .actions{flex-direction:row;flex-wrap:wrap;align-items:center;gap:.7rem}
   button.primary,button.ghost{width:auto}
 }
@@ -171,15 +169,15 @@ a.url{display:block;font-size:1rem;line-height:1.4;color:var(--ok);text-decorati
     <aside class="rail" id="creator-rail" aria-label="Progress">
       <h2>Progress</h2>
       <div class="step on" id="s1"><div class="n">1</div><div>Write</div></div>
-      <div class="step" id="s2"><div class="n">2</div><div>Time</div></div>
-      <div class="step" id="s3"><div class="n">3</div><div>Share</div></div>
-      <div class="step" id="s4"><div class="n">4</div><div>Reply</div></div>
+      <div class="step" id="s2"><div class="n">2</div><div>Share</div></div>
+      <div class="step" id="s3"><div class="n">3</div><div>Reply</div></div>
+      <div class="step" id="s4"><div class="n">4</div><div>Next</div></div>
     </aside>
     <aside class="rail off" id="receiver-rail" aria-label="Your job">
       <h2>Your job</h2>
       <div class="step on" id="r1"><div class="n">1</div><div>Read<small>What was sent on this link</small></div></div>
       <div class="step" id="r2"><div class="n">2</div><div>Reply<small>Put your answer on this link</small></div></div>
-      <div class="step" id="r3"><div class="n">3</div><div>Done<small>Both sides stay until the timer ends</small></div></div>
+      <div class="step" id="r3"><div class="n">3</div><div>Done<small>This hop dissolves after 1 hour</small></div></div>
     </aside>
     <main class="panel" id="root"></main>
   </div>
@@ -191,9 +189,9 @@ a.url{display:block;font-size:1rem;line-height:1.4;color:var(--ok);text-decorati
 <script>
 const API = location.origin;
 let code = null;
-let picked = "";
 let watching = false;
 let watchTimer = null;
+let nextTouched = false;
 // One read every 10s is 6/min, under the 60/min view limit. No new auth.
 const esc = s => { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; };
 async function api(method, path, body, headers = {}) {
@@ -230,15 +228,12 @@ function setReceiverJob(active) {
     el.classList.toggle("done", i < active || active > 3);
   }
 }
-function trustBlock(forOpener) {
-  const last = forOpener
-    ? "The bridge dissolves when its timer runs out. Then the link is gone."
-    : "The bridge dissolves when the timer you choose runs out. Then the link is gone.";
+function trustBlock() {
   return '<div class="trust"><strong>Read this before you put text on the bridge.</strong><ul>'
     + "<li>The link is the bearer. Anyone who has it can read the exchange while it is live.</li>"
     + "<li>The host can read it while it is live.</li>"
     + "<li>Not for secrets, credentials, or regulated data.</li>"
-    + "<li>" + last + "</li>"
+    + "<li>This link lives 1 hour, then it is gone. Mint next starts a new link with its own hour. That is not an extend.</li>"
     + "</ul></div>";
 }
 function landing() {
@@ -250,38 +245,17 @@ function landing() {
   root.innerHTML = '<p class="task-head"><span>Create the timed link</span><span class="count" id="count">0 / 100000</span></p>'
     + '<label class="sr" for="ctx">Context the agent must read</label>'
     + '<textarea id="ctx" autofocus placeholder="Decisions, constraints, and the next step the agent needs. Ordinary working context only."></textarea>'
-    + '<div class="times" role="radiogroup" aria-label="How long this bridge stays live">'
-    + timeBtn("3m", "3 minutes")
-    + timeBtn("1hr", "1 hour")
-    + timeBtn("1d", "1 day")
-    + "</div>"
-    + '<p class="sr" id="time-hint">Choose 3 minutes, 1 hour, or 1 day.</p>'
+    + '<p class="life">This link lives 1 hour, then it dies.</p>'
     + '<div class="actions"><button class="primary" id="create" type="button">Create the bridge</button><span class="status" id="status" role="status"></span></div>'
     + '<p class="trust-line">Anyone with the link can read it while live · Not for secrets · <a href="/trust">Trust</a></p>';
   const ctx = document.getElementById("ctx");
   const count = document.getElementById("count");
   ctx.addEventListener("input", () => {
     count.textContent = ctx.value.length + " / 100000";
-    setSteps(ctx.value.trim() && picked ? 3 : ctx.value.trim() ? 2 : 1);
-  });
-  document.querySelectorAll(".time").forEach(btn => {
-    btn.addEventListener("click", () => selectTime(btn.dataset.ttl));
+    setSteps(1);
   });
   document.getElementById("create").addEventListener("click", createBridge);
   ctx.focus({ preventScroll: true });
-}
-function timeBtn(ttl, title) {
-  return '<button type="button" class="time" role="radio" data-ttl="' + ttl + '" aria-checked="false">' + title + '</button>';
-}
-function selectTime(ttl) {
-  picked = ttl;
-  document.querySelectorAll(".time").forEach(btn => btn.setAttribute("aria-checked", btn.dataset.ttl === ttl ? "true" : "false"));
-  const labels = { "3m": "3 minutes", "1hr": "1 hour", "1d": "1 day" };
-  document.getElementById("time-hint").textContent = "Selected: " + labels[ttl] + ". The server will dissolve this bridge on that timer.";
-  const ctx = document.getElementById("ctx");
-  setSteps(ctx && ctx.value.trim() ? 3 : 2);
-  const create = document.getElementById("create");
-  if (create) create.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 async function createBridge() {
   const ctx = document.getElementById("ctx");
@@ -295,15 +269,10 @@ async function createBridge() {
     ctx.focus();
     return;
   }
-  if (!picked) {
-    status.classList.add("bad");
-    status.textContent = "Choose a bridge time: 3 minutes, 1 hour, or 1 day.";
-    return;
-  }
   button.disabled = true;
   status.textContent = "Creating the bridge…";
   try {
-    const d = await api("POST", "/api/melds", { context: text, ttl: picked });
+    const d = await api("POST", "/api/melds", { context: text, ttl: "1hr" });
     code = d.code;
     showCreated(d);
   } catch (e) {
@@ -315,21 +284,20 @@ async function createBridge() {
 function showCreated(d) {
   document.title = "meld — bridge is live";
   showHero(false);
-  setSteps(3);
-  const when = d.expires_at ? new Date(d.expires_at).toLocaleString() : "the timer you chose";
+  nextTouched = false;
+  setSteps(2);
+  const when = d.expires_at ? new Date(d.expires_at).toLocaleString() : "in 1 hour";
   root.innerHTML = '<h1>Pass this bearer URL</h1>'
-    + '<p class="lede">This URL is the channel. Pass it to an agent — from you, or from another agent. Whoever holds it can read the live exchange and write the reply.</p>'
+    + '<p class="lede">This URL is the channel. It lives 1 hour, then it dies. Pass it to an agent — from you, or from another agent. Mint next is a new link, not an extend.</p>'
     + '<a class="box url" id="share" href="' + esc(d.url) + '">' + esc(d.url) + '</a>'
-    + '<p class="meta">Bridge time: <b>' + esc(ttlLabel(d.ttl || picked)) + '</b> · dissolves ' + esc(when) + '</p>'
+    + '<p class="meta">1 hour · dissolves ' + esc(when) + '</p>'
     + '<div class="actions"><button class="ghost" id="copy" type="button">Copy link</button><button class="primary" id="check" type="button">Check for the reply</button><span class="status" id="status" role="status"></span></div>'
-    + '<div id="result"></div>';
+    + chainAndMint();
   document.getElementById("copy").onclick = copyLink;
   document.getElementById("check").onclick = () => checkResult(false);
+  wireMint();
   revealTop();
   startWatch();
-}
-function ttlLabel(ttl) {
-  return { "3m": "3 minutes", "1hr": "1 hour", "1d": "1 day" }[ttl] || ttl;
 }
 async function copyLink() {
   const url = document.getElementById("share").textContent;
@@ -361,25 +329,24 @@ function scheduleWatch(delay) {
 }
 async function checkResult(quiet) {
   const status = document.getElementById("status");
-  const result = document.getElementById("result");
-  if (!status || !result) {
+  if (!status || !document.getElementById("chain")) {
     stopWatch();
     return;
   }
   if (!quiet) status.textContent = "Checking this bridge…";
   try {
-    const d = await api("GET", "/api/melds/" + code);
-    const waiting = !d.context_b;
-    result.innerHTML = '<div class="box"><b>Your context</b>\n' + esc(d.context_a)
-      + '\n\n<b>Reply</b>\n' + esc(d.context_b || "No reply yet. The bridge is still live.") + "</div>";
+    const nodes = await paintChain();
+    const current = nodes.find(n => n.code === code);
+    const waiting = !current || !current.context_b;
     if (waiting) {
-      setSteps(4);
+      setSteps(3);
       status.classList.remove("bad");
       status.textContent = "Watching for a reply.";
       scheduleWatch(10000);
     } else {
-      setSteps(5);
-      status.textContent = "Reply is on the link. The bridge still dissolves on the timer.";
+      setSteps(4);
+      status.classList.remove("bad");
+      status.textContent = "Reply is on the link. This hop still dissolves after 1 hour. Mint next starts a new link.";
       stopWatch();
     }
   } catch (e) {
@@ -392,10 +359,105 @@ async function checkResult(quiet) {
       scheduleWatch(45000);
       return;
     }
+    if (gone) {
+      dissolved();
+      return;
+    }
     status.classList.add("bad");
     status.textContent = msg;
     if (watching && !gone) scheduleWatch(20000);
     else stopWatch();
+  }
+}
+function dissolved() {
+  stopWatch();
+  clearLiveText();
+  root.innerHTML = "<h1>This bridge is unavailable</h1><p>This link dissolved. Its text is gone.</p><p class='lede'>An expired hop is not kept on the chain.</p><p><a href='/'>Open a new bridge</a></p>";
+}
+function clearLiveText() {
+  const chain = document.getElementById("chain");
+  if (chain) chain.replaceChildren();
+  const next = document.getElementById("next-ctx");
+  if (next) next.value = "";
+  const mint = document.getElementById("mint");
+  if (mint) mint.hidden = true;
+}
+function renderChain(nodes) {
+  const box = document.getElementById("chain");
+  if (!box) return;
+  const live = (nodes || []).filter(n => n && n.context_a);
+  box.innerHTML = live.map(n => {
+    const here = n.code === code ? " here" : "";
+    const reply = n.context_b ? esc(n.context_b) : "No reply yet. This hop is still live.";
+    return '<article class="node' + here + '" data-code="' + esc(n.code) + '">'
+      + '<a class="url" href="' + esc(n.url) + '">' + esc(n.url) + '</a>'
+      + '<p class="meta">1 hour · ' + esc(remainingText(n)) + '</p>'
+      + '<div class="box"><b>Context</b>\n' + esc(n.context_a) + '\n\n<b>Reply</b>\n' + reply + '</div>'
+      + '</article>';
+  }).join("");
+}
+function syncMint(nodes) {
+  const mint = document.getElementById("mint");
+  const next = document.getElementById("next-ctx");
+  if (!mint || !next) return;
+  const current = (nodes || []).find(n => n.code === code);
+  if (current && current.context_b) {
+    mint.hidden = false;
+    if (!nextTouched && !next.value) next.value = current.context_b;
+  } else {
+    mint.hidden = true;
+  }
+}
+function chainAndMint() {
+  return '<p class="hint">Live hops only. Each one dies on its own hour.</p>'
+    + '<div id="chain" class="chain" aria-label="Live hops"></div>'
+    + '<div id="mint" class="mint" hidden>'
+    + '<label for="next-ctx">Mint next<span class="count">A new 1 hour link</span></label>'
+    + '<textarea id="next-ctx" placeholder="Context for the next hop. This does not extend this link."></textarea>'
+    + '<div class="actions"><button class="primary" id="mint-go" type="button">Mint next</button><span class="status" id="mint-status" role="status"></span></div>'
+    + '</div>';
+}
+function wireMint() {
+  const next = document.getElementById("next-ctx");
+  const go = document.getElementById("mint-go");
+  if (next) next.addEventListener("input", () => { nextTouched = true; });
+  if (go) go.addEventListener("click", mintNext);
+}
+async function paintChain() {
+  const d = await api("GET", "/api/melds/" + code + "/chain");
+  const nodes = (d.nodes || []).filter(n => n && n.context_a);
+  renderChain(nodes);
+  syncMint(nodes);
+  return nodes;
+}
+async function mintNext() {
+  const next = document.getElementById("next-ctx");
+  const status = document.getElementById("mint-status");
+  const button = document.getElementById("mint-go");
+  const text = next ? next.value : "";
+  if (!text.trim()) {
+    if (status) {
+      status.classList.add("bad");
+      status.textContent = "Add the context for the next link.";
+    }
+    if (next) next.focus();
+    return;
+  }
+  if (button) button.disabled = true;
+  if (status) {
+    status.classList.remove("bad");
+    status.textContent = "Minting the next link…";
+  }
+  try {
+    const d = await api("POST", "/api/melds", { context: text, ttl: "1hr", prev_code: code });
+    code = d.code;
+    showCreated(d);
+  } catch (e) {
+    if (button) button.disabled = false;
+    if (status) {
+      status.classList.add("bad");
+      status.textContent = e.message;
+    }
   }
 }
 function meldPage() {
@@ -410,9 +472,7 @@ function meldPage() {
   api("GET", "/api/melds/" + code).then(d => {
     if (d.resolved && d.context_b) resolved(d);
     else receiver(d);
-  }).catch(e => {
-    root.innerHTML = "<h1>This bridge is unavailable</h1><p>" + esc(e.message) + "</p><p class='lede'>It may have dissolved on its timer. This preview never included the exchange.</p><p><a href='/'>Open a new bridge</a></p>";
-  });
+  }).catch(() => dissolved());
 }
 function remainingText(d) {
   if (typeof d.seconds_remaining === "number") {
@@ -421,18 +481,23 @@ function remainingText(d) {
     if (s < 7200) return Math.round(s / 60) + " minutes left";
     return Math.round(s / 3600) + " hours left";
   }
-  return d.expires_at ? ("dissolves " + new Date(d.expires_at).toLocaleString()) : "dissolves on its timer";
+  return d.expires_at ? ("dissolves " + new Date(d.expires_at).toLocaleString()) : "dissolves after 1 hour";
 }
 function receiver(d) {
   document.title = "meld — this bridge expires";
   revealTop();
   setReceiverJob(2);
   root.innerHTML = "<h1>Reply on this bridge</h1>"
-    + "<p class='lede'>Read what was sent, write the reply, and you are done. " + esc(remainingText(d)) + ".</p>"
+    + "<p class='lede'>Read what was sent, write the reply, and you are done. " + esc(remainingText(d)) + ". This hop is 1 hour.</p>"
     + "<label>What was sent</label><div class='box'>" + esc(d.context_a) + "</div>"
-    + trustBlock(true)
+    + trustBlock()
     + "<label for='answer'>Your reply</label><textarea id='answer' placeholder='The reply for this context. Ordinary working context only.'></textarea>"
-    + "<div class='actions'><button class='primary' id='resolve' type='button'>Put the reply on this link</button><span class='status' id='status' role='status'></span></div>";
+    + "<div class='actions'><button class='primary' id='resolve' type='button'>Put the reply on this link</button><span class='status' id='status' role='status'></span></div>"
+    + chainAndMint();
+  wireMint();
+  paintChain().catch(e => {
+    if (/expired|410|not found|404|unavailable/i.test(e.message || "")) dissolved();
+  });
   document.getElementById("resolve").onclick = async () => {
     const answer = document.getElementById("answer");
     const status = document.getElementById("status");
@@ -460,11 +525,17 @@ function resolved(d) {
   document.title = "meld — this bridge expires";
   revealTop();
   setReceiverJob(4);
+  nextTouched = false;
   root.innerHTML = "<h1>Both sides are on the link</h1>"
-    + "<p class='lede'>The exchange stays readable by anyone with this link until the timer ends. Then it dissolves.</p>"
+    + "<p class='lede'>Anyone with this link can read it while this hop is live. It dissolves after 1 hour. Mint next is a new link, not an extend.</p>"
     + "<div class='box'><b>Context</b>\n" + esc(d.context_a) + "\n\n<b>Reply</b>\n" + esc(d.context_b) + "</div>"
     + trustBlock()
+    + chainAndMint()
     + "<p><a href='/'>Open another bridge</a></p>";
+  wireMint();
+  paintChain().catch(e => {
+    if (/expired|410|not found|404|unavailable/i.test(e.message || "")) dissolved();
+  });
 }
 document.addEventListener("visibilitychange", () => {
   if (!watching) return;

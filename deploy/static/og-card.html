@@ -9,57 +9,89 @@
     width: 1200px;
     height: 630px;
     overflow: hidden;
-    background: #ece3cf;
-    color: #2e4a7d;
+    background: #05050a;
   }
-  .frame {
-    box-sizing: border-box;
+  .card {
+    position: relative;
     width: 1200px;
     height: 630px;
-    padding: 36px;
+    overflow: hidden;
+    background: radial-gradient(ellipse at 78% 48%, #3b1d78 0%, #120a22 40%, #05050a 70%);
+    color: #f7f7fb;
+    font-family: "Segoe UI", ui-sans-serif, system-ui, sans-serif;
   }
-  .inner {
-    box-sizing: border-box;
-    height: 100%;
-    border: 2px solid #2e4a7d;
-    padding: 52px 60px 48px;
+  .copy {
+    position: absolute;
+    left: 72px;
+    top: 0;
+    bottom: 0;
+    width: 680px;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
+    justify-content: center;
   }
   .mark {
-    font-family: "JetBrains Mono", ui-monospace, monospace;
+    margin: 0 0 28px;
     font-size: 22px;
     letter-spacing: 0.22em;
     text-transform: uppercase;
-    color: #2e4a7d;
+    color: #c4b5fd;
   }
   h1 {
-    margin: 0;
-    font-family: "Noto Serif", Georgia, serif;
-    font-weight: 500;
-    font-size: 68px;
+    margin: 0 0 22px;
+    max-width: 640px;
+    font-size: 54px;
     line-height: 1.12;
+    font-weight: 650;
     letter-spacing: -0.02em;
-    color: #2e4a7d;
-    max-width: 980px;
   }
-  .sub {
-    font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: 22px;
-    line-height: 1.45;
-    color: #5c5a53;
-    max-width: 920px;
+  p {
+    margin: 0;
+    max-width: 560px;
+    font-size: 28px;
+    line-height: 1.4;
+    color: #d4d0e6;
+  }
+  .bridge {
+    position: absolute;
+    right: 168px;
+    top: 308px;
+    width: 210px;
+    height: 8px;
+    border-radius: 99px;
+    background: linear-gradient(90deg, transparent, #ddd6fe, transparent);
+    transform: rotate(-16deg);
+  }
+  .orb {
+    position: absolute;
+    border-radius: 50%;
+  }
+  .a {
+    width: 230px;
+    height: 230px;
+    right: 210px;
+    top: 145px;
+    background: radial-gradient(circle at 35% 35%, #efe9ff, #8b5cf6 46%, #4c1d95 72%, transparent 74%);
+  }
+  .b {
+    width: 168px;
+    height: 168px;
+    right: 78px;
+    top: 292px;
+    background: radial-gradient(circle at 35% 35%, #f5f3ff, #a78bfa 42%, #6d28d9 70%, transparent 72%);
   }
 </style>
 </head>
 <body>
-  <div class="frame">
-    <div class="inner">
+  <div class="card">
+    <div class="copy">
       <div class="mark">meld</div>
       <h1>A temporary resource to align context.</h1>
-      <div class="sub">Pick 3 minutes, 1 hour, or 1 day.<br>When the clock ends, the link dies.<br>Not for secrets.</div>
+      <p>Each link lives 1 hour, then it dies. Not for secrets.</p>
     </div>
+    <div class="bridge"></div>
+    <div class="orb a"></div>
+    <div class="orb b"></div>
   </div>
 </body>
 </html>

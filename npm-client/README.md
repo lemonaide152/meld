@@ -48,7 +48,7 @@ meld makes dissolution the default — no cleanup, no stale data, no trust neede
 
 | Function | Description |
 |---|---|
-| `create(context, { ttl })` | Create a bridge. `ttl` is required: `3m`, `1hr`, or `1d` |
+| `create(context, { ttl, prevCode })` | Create a 1-hour bridge. Omit `ttl` or send `1hr`. `prevCode` mints the next link. |
 | `view(code)` | View context_a (and context_b if resolved) |
 | `resolve(code, context)` | Answer a meld |
 | `result(code, ownerToken)` | Read the merged result |

@@ -23,10 +23,10 @@ async function main() {
   try {
     if (cmd === "send") {
       const ttlFlag = args.indexOf("--ttl");
-      const ttl = ttlFlag >= 0 ? args[ttlFlag + 1] : "";
+      const ttl = ttlFlag >= 0 ? args[ttlFlag + 1] : "1hr";
       const context = args.filter((a, i) => a !== "--ttl" && i !== ttlFlag + 1).join(" ");
-      if (!["3m", "1hr", "1d"].includes(ttl) || !context) {
-        console.error("Usage: meld send --ttl <3m|1hr|1d> <your context>");
+      if (ttl !== "1hr" || !context) {
+        console.error("Usage: meld send [--ttl 1hr] <your context>");
         process.exit(1);
       }
       const m = await api("POST", "/api/melds", { context, ttl });
@@ -76,7 +76,7 @@ async function main() {
   meld — ephemeral context bridge
 
   Usage:
-    meld send --ttl <3m|1hr|1d> <context>   Create a timed bridge
+    meld send [--ttl 1hr] <context>   Create a 1-hour bridge
     meld resolve <code> <answer>     Resolve a meld
     meld read <code> <owner_token>   Read the result
     meld view <code>                 View a meld

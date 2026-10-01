@@ -1,12 +1,11 @@
 """Open Graph and Twitter card copy.
 
 Marketing pages (/, /agents, /trust) share one card. Title and description
-state four unfused meanings: a temporary resource to align context; pick
-3 minutes, 1 hour, or 1 day; when the clock ends, the link dies; not for
-secrets. Host-readable stays on the human trust warning and the TRUST page.
-It is not part of this X description.
+state the product: a temporary resource to align context; each link lives
+1 hour, then it dies; not for secrets. Host-readable stays on the human
+trust line and the TRUST page. It is not part of this X description.
 
-No mint-next. No claim that a conversation hard-stops.
+No claim that a conversation hard-stops.
 No end-to-end, server-blind, or private-room wording.
 
 Capability URLs (/m/{code}) use a generic expires-only card. The meld
@@ -23,8 +22,7 @@ OG_IMAGE_W = "1200"
 OG_IMAGE_H = "630"
 OG_IMAGE_ALT = (
     "A temporary resource to align context. "
-    "Pick 3 minutes, 1 hour, or 1 day. "
-    "When the clock ends, the link dies. "
+    "Each link lives 1 hour, then it dies. "
     "Not for secrets."
 )
 
@@ -33,8 +31,7 @@ META_SLOT = "<!--MELD_PREVIEW-->"
 MARKETING_TITLE = "A temporary resource to align context."
 MARKETING_DESCRIPTION = (
     "A temporary resource to align context. "
-    "Pick 3 minutes, 1 hour, or 1 day. "
-    "When the clock ends, the link dies. "
+    "Each link lives 1 hour, then it dies. "
     "Not for secrets."
 )
 

@@ -82,8 +82,7 @@ ok(
 )
 for phrase in (
     "A temporary resource to align context.",
-    "Pick 3 minutes, 1 hour, or 1 day.",
-    "When the clock ends, the link dies.",
+    "Each link lives 1 hour, then it dies.",
     "Not for secrets.",
 ):
     ok(f"marketing description has {phrase}", phrase in preview_meta.MARKETING_DESCRIPTION)

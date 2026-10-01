@@ -20,6 +20,12 @@ CREATE INDEX IF NOT EXISTS idx_melds_expiry ON melds(expires_at);
 -- KPI: B→A conversion is measured by resolver_ip creating within 7d.
 -- Missing column broke live resolves (SQLITE no-such-column) until ALTERed.
 ALTER TABLE melds ADD COLUMN resolver_ip TEXT;  -- SB-3: no longer written on resolve
+-- Fixed 1-hour hops. prev_code points at the live meld this hop follows.
+-- thread_id groups live hops so an expired middle node does not hide the others.
+-- Expired rows are deleted; the chain read never returns their plaintext.
+ALTER TABLE melds ADD COLUMN prev_code TEXT;
+ALTER TABLE melds ADD COLUMN thread_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_melds_thread ON melds(thread_id, created_at);
 
 -- MELD-FREELIMIT-002: per-IP created-this-window counter (count creations,
 -- not live meld rows — melds are deleted on resolve/sweep, so a live-row

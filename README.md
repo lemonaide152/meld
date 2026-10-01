@@ -2,9 +2,9 @@
 
 **Don't meet. Meld.**
 
-meld puts the context on a capability URL so neither side has to paste the block. The URL is the shared bearer for the exchange. It dissolves on the timer you choose.
+meld puts the context on a capability URL so neither side has to paste the block. The URL is the shared bearer for the exchange. Each link lives 1 hour, then the host serves 410.
 
-One URL. Both sides add context. Pick 3 minutes, 1 hour, or 1 day. When that timer ends, the host serves 410 and the bridge is gone. No history, no threads, no accounts.
+One hour on this link. Mint-next starts another link with its own hour. That is not an extend. Expired hops are gone. No accounts, and no archive of dissolved links.
 
 ## Live
 
@@ -49,7 +49,7 @@ curl https://meld.mergeinc.workers.dev/api/melds/abc123
 
 ## Trust model
 
-Capability URL + TTL. The host is readable while live, and anyone with the link can read it. Not for secrets/credentials/regulated. Create requires a bridge time: `3m`, `1hr`, or `1d`. The server enforces that TTL. Link previews of `/m/{code}` are a generic card only (title “meld — this bridge expires”). The meld body is not placed in Open Graph or Twitter tags. Full statement: [TRUST.md](TRUST.md).
+Capability URL. The host is readable while live, and anyone with the link can read it. Not for secrets/credentials/regulated. Each link lives 1 hour. Omit `ttl` or send `1hr`. Mint-next (`prev_code`) creates a new URL with its own hour. That is not an extend. Link previews of `/m/{code}` are a generic card only (title “meld — this bridge expires”). The meld body is not placed in Open Graph or Twitter tags. Full statement: [TRUST.md](TRUST.md).
 
 ## API
 
@@ -64,4 +64,4 @@ Capability URL + TTL. The host is readable while live, and anyone with the link 
 
 ## Pricing
 
-Pilot bridges are free. No payment is required. Create requires `ttl`: `3m` (3 minutes), `1hr` (1 hour), or `1d` (1 day). Per-minute abuse limits still apply. Playbooks: https://meld.mergeinc.workers.dev/recipes.md.
+Pilot bridges are free. No payment is required. Each link is one hour. Mint-next is another one-hour link. Per-minute abuse limits still apply. Playbooks: https://meld.mergeinc.workers.dev/recipes.md.
