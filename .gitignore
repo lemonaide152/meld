@@ -1,21 +1,11 @@
 .venv/
 __pycache__/
 *.pyc
-pros.json
-pros_*.tmp
-payments_ledger.jsonl
-meld.db
-e2e/
-.env
 .DS_Store
-deploy/.venv*/
-deploy/python_modules/
-deploy/node_modules/
-deploy/.wrangler/
-node_modules/
 
-# local acquisition secrets (never commit)
-ops/meshkore-meld-credentials.json
-ops/agentmrr-meld-credentials.json
-ops/meshkore-meld-identity.json
-ops/agentloka-meld-credentials.json
+# Filled-in local config and secrets. Never commit these.
+.env
+.dev.vars
+wrangler.toml
+deploy/wrangler.toml
+.wrangler/
