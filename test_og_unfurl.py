@@ -75,18 +75,20 @@ ok("png 1200x630", (width, height) == (1200, 630), f"{width}x{height}")
 
 print("card copy")
 ok(
-    "marketing title is the locked line",
-    preview_meta.MARKETING_TITLE == "Context for your agent. One link. Then it’s gone.",
+    "marketing title is the card job",
+    preview_meta.MARKETING_TITLE == "A temporary resource to align context.",
 )
 for phrase in (
-    "timed bridge",
-    "time on this link",
-    "Host-readable while live",
-    "Anyone with the link",
-    "Not for secrets",
-    "dissolves on TTL",
+    "A temporary resource to align context.",
+    "Pick 3 minutes, 1 hour, or 1 day.",
+    "When the clock ends, the link dies.",
+    "Not for secrets.",
 ):
     ok(f"marketing description has {phrase}", phrase in preview_meta.MARKETING_DESCRIPTION)
+low_desc = preview_meta.MARKETING_DESCRIPTION.lower()
+ok("marketing description omits host-readable", "host-readable" not in low_desc and "host can read" not in low_desc)
+ok("marketing title omits host-readable", "host" not in preview_meta.MARKETING_TITLE.lower())
+ok("image alt matches the four lines", preview_meta.OG_IMAGE_ALT == preview_meta.MARKETING_DESCRIPTION)
 ok("capability title", preview_meta.CAPABILITY_TITLE == "meld — this bridge expires")
 ok(
     "capability description",
