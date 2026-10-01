@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 passed = total = 0
 SECRET = "UNFURL-SECRET-context-a-plaintext-9f3c2a"
 CODE = "zzcanarycode99"
+CACHEBUST_OG_IMAGE = "https://meld.mergeinc.workers.dev/og.png?v=13"
 
 
 def ok(name, cond, detail=""):
@@ -150,8 +151,9 @@ ok(
     content_of(home_meta, "name", "twitter:description") == preview_meta.MARKETING_DESCRIPTION,
 )
 ok("home twitter card", content_of(home_meta, "name", "twitter:card") == "summary_large_image")
-ok("home og:image", content_of(home_meta, "property", "og:image") == preview_meta.OG_IMAGE_URL)
-ok("home twitter:image", content_of(home_meta, "name", "twitter:image") == preview_meta.OG_IMAGE_URL)
+ok("og image url is cache-busted", preview_meta.OG_IMAGE_URL == CACHEBUST_OG_IMAGE)
+ok("home og:image", content_of(home_meta, "property", "og:image") == CACHEBUST_OG_IMAGE)
+ok("home twitter:image", content_of(home_meta, "name", "twitter:image") == CACHEBUST_OG_IMAGE)
 ok("home title is the locked line", f"<title>{preview_meta.MARKETING_TITLE}</title>" in home.text)
 assert_clean("home meta", home_meta)
 ok("home meta slot filled", preview_meta.META_SLOT not in home.text)
@@ -166,8 +168,8 @@ for path in ("/agents", "/trust"):
         f"{path} og:description",
         content_of(blob, "property", "og:description") == preview_meta.MARKETING_DESCRIPTION,
     )
-    ok(f"{path} og:image", content_of(blob, "property", "og:image") == preview_meta.OG_IMAGE_URL)
-    ok(f"{path} twitter:image", content_of(blob, "name", "twitter:image") == preview_meta.OG_IMAGE_URL)
+    ok(f"{path} og:image", content_of(blob, "property", "og:image") == CACHEBUST_OG_IMAGE)
+    ok(f"{path} twitter:image", content_of(blob, "name", "twitter:image") == CACHEBUST_OG_IMAGE)
     assert_clean(f"{path} meta", blob)
 
 image = client.get("/og.png")
@@ -196,6 +198,34 @@ ok(
 ok("og.png HEAD empty body", image_head.content == b"", str(len(image_head.content)))
 ok("og.png HEAD nosniff", image_head.headers.get("x-content-type-options") == "nosniff", image_head.headers.get("x-content-type-options"))
 
+versioned = client.get("/og.png?v=13")
+ok("og.png?v=13 200", versioned.status_code == 200, str(versioned.status_code))
+ok(
+    "og.png?v=13 content-type",
+    versioned.headers.get("content-type", "").startswith("image/png"),
+    versioned.headers.get("content-type"),
+)
+ok(
+    "og.png?v=13 content-length",
+    versioned.headers.get("content-length") == str(len(OG_PNG)),
+    versioned.headers.get("content-length"),
+)
+ok("og.png?v=13 body", versioned.content == OG_PNG, str(len(versioned.content)))
+
+versioned_head = client.head("/og.png?v=13")
+ok("og.png?v=13 HEAD 200", versioned_head.status_code == 200, str(versioned_head.status_code))
+ok(
+    "og.png?v=13 HEAD content-type",
+    versioned_head.headers.get("content-type", "").startswith("image/png"),
+    versioned_head.headers.get("content-type"),
+)
+ok(
+    "og.png?v=13 HEAD content-length",
+    versioned_head.headers.get("content-length") == str(len(OG_PNG)),
+    versioned_head.headers.get("content-length"),
+)
+ok("og.png?v=13 HEAD empty body", versioned_head.content == b"", str(len(versioned_head.content)))
+
 home_head = client.head("/")
 ok("home HEAD 200", home_head.status_code == 200, str(home_head.status_code))
 ok(
@@ -211,7 +241,7 @@ ok(
 ok("home HEAD empty body", home_head.content == b"", str(len(home_head.content)))
 
 
-async def _asgi_messages(method, path):
+async def _asgi_messages(method, path, query_string=b""):
     messages = []
     scope = {
         "type": "http",
@@ -221,7 +251,7 @@ async def _asgi_messages(method, path):
         "scheme": "https",
         "path": path,
         "raw_path": path.encode(),
-        "query_string": b"",
+        "query_string": query_string,
         "headers": [],
         "client": ("127.0.0.1", 1234),
         "server": ("test", 443),
@@ -243,19 +273,20 @@ def _header_map(message):
 
 
 for method in ("GET", "HEAD"):
-    frames = asyncio.run(_asgi_messages(method, "/og.png"))
-    starts = [m for m in frames if m["type"] == "http.response.start"]
-    bodies = [m for m in frames if m["type"] == "http.response.body"]
-    ok(f"og.png {method} buffered start", len(starts) == 1 and starts[0]["status"] == 200, str(starts))
-    ok(f"og.png {method} one body frame", len(bodies) == 1, str([(len(m.get("body") or b""), m.get("more_body")) for m in bodies]))
-    ok(f"og.png {method} not streamed", not bodies[0].get("more_body", False) if bodies else False)
-    hdrs = _header_map(starts[0]) if starts else {}
-    ok(f"og.png {method} asgi content-type", hdrs.get("content-type", "").startswith("image/png"), hdrs.get("content-type"))
-    ok(f"og.png {method} asgi content-length", hdrs.get("content-length") == str(len(OG_PNG)), hdrs.get("content-length"))
-    if method == "HEAD":
-        ok("og.png HEAD asgi empty body", bodies and bodies[0].get("body", b"") == b"")
-    else:
-        ok("og.png GET asgi body", bodies and bodies[0].get("body", b"") == OG_PNG)
+    for label, query in (("og.png", b""), ("og.png?v=13", b"v=13")):
+        frames = asyncio.run(_asgi_messages(method, "/og.png", query))
+        starts = [m for m in frames if m["type"] == "http.response.start"]
+        bodies = [m for m in frames if m["type"] == "http.response.body"]
+        ok(f"{label} {method} buffered start", len(starts) == 1 and starts[0]["status"] == 200, str(starts))
+        ok(f"{label} {method} one body frame", len(bodies) == 1, str([(len(m.get("body") or b""), m.get("more_body")) for m in bodies]))
+        ok(f"{label} {method} not streamed", not bodies[0].get("more_body", False) if bodies else False)
+        hdrs = _header_map(starts[0]) if starts else {}
+        ok(f"{label} {method} asgi content-type", hdrs.get("content-type", "").startswith("image/png"), hdrs.get("content-type"))
+        ok(f"{label} {method} asgi content-length", hdrs.get("content-length") == str(len(OG_PNG)), hdrs.get("content-length"))
+        if method == "HEAD":
+            ok(f"{label} HEAD asgi empty body", bodies and bodies[0].get("body", b"") == b"")
+        else:
+            ok(f"{label} GET asgi body", bodies and bodies[0].get("body", b"") == OG_PNG)
 
 human = client.get(f"/m/{CODE}", headers={"Accept": "text/html", "User-Agent": "Mozilla/5.0"})
 ok("human meld 200", human.status_code == 200, str(human.status_code))

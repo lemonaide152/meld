@@ -16,7 +16,9 @@ capability_preview_document(), which has no script and no body.
 
 SITE = "https://meld.mergeinc.workers.dev"
 OG_IMAGE_PATH = "/og.png"
-OG_IMAGE_URL = SITE + OG_IMAGE_PATH
+# X cached a failed fetch of the bare path. The query is a new image URL;
+# GET/HEAD still match /og.png and ignore it.
+OG_IMAGE_URL = f"{SITE}{OG_IMAGE_PATH}?v=13"
 OG_IMAGE_W = "1200"
 OG_IMAGE_H = "630"
 OG_IMAGE_ALT = (
