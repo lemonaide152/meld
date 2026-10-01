@@ -3,6 +3,4 @@
 __pycache__
 *.pyc
 .env
-.dev.vars
-wrangler.toml
-deploy/wrangler.toml
+test_server.py

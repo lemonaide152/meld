@@ -314,7 +314,15 @@ def main() -> None:
 
     host = os.getenv("MELD_HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8080"))
-    uvicorn.run(app, host=host, port=port)
+    # Trust X-Forwarded-* only from FORWARDED_ALLOW_IPS. Compose sets "*"
+    # because Caddy is the only client that can reach this port.
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        proxy_headers=True,
+        forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1"),
+    )
 
 
 if __name__ == "__main__":

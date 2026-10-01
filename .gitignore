@@ -3,9 +3,5 @@ __pycache__/
 *.pyc
 .DS_Store
 
-# Filled-in local config and secrets. Never commit these.
+# Local site name and public URL. Copy from .env.example.
 .env
-.dev.vars
-wrangler.toml
-deploy/wrangler.toml
-.wrangler/

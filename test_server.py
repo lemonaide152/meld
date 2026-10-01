@@ -14,7 +14,6 @@ import server
 ROOT = Path(__file__).resolve().parent
 T0 = datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
 
-PLACEHOLDER_ID = "00000000-0000-0000-0000-000000000000"
 # Assembled so this file does not contain prod ids or secret-shaped literals.
 BANNED = (
     "zero" + "-knowledge",
@@ -173,16 +172,34 @@ def test_surface() -> None:
 
 
 def test_public_tree() -> None:
-    check("real wrangler absent", not (ROOT / "deploy" / "wrangler.toml").exists())
-    check("worker absent", not (ROOT / "deploy" / "worker.py").exists())
-    example = (ROOT / "deploy" / "wrangler.toml.example").read_text()
-    check("example has placeholder", f'database_id = "{PLACEHOLDER_ID}"' in example)
-    check("example says never commit", "do not commit wrangler.toml" in example)
-    check("example worker name is a placeholder", 'name = "your-worker-name"' in example)
+    allowed = {
+        ".dockerignore",
+        ".env.example",
+        ".gitignore",
+        "Caddyfile",
+        "Dockerfile",
+        "LICENSE",
+        "README.md",
+        "TRUST.md",
+        "docker-compose.yml",
+        "requirements.txt",
+        "server.py",
+        "test_server.py",
+    }
+    skip = {".git", "__pycache__", ".venv"}
+    present = {path.name for path in ROOT.iterdir() if path.name not in skip}
+    check("root is the self-host set", present == allowed, str(sorted(present ^ allowed)))
+    check("no deploy directory", not (ROOT / "deploy").exists())
+    caddy = (ROOT / "Caddyfile").read_text()
+    compose = (ROOT / "docker-compose.yml").read_text()
+    check("caddy proxies the server", "reverse_proxy meld:8080" in caddy)
+    check("compose image name", "ghcr.io/lemonaide152/meld:latest" in compose)
+    check("compose runs caddy", "caddy:2" in compose)
     readme = (ROOT / "README.md").read_text()
     trust = (ROOT / "TRUST.md").read_text()
-    check("readme live url", "https://meld.mergeinc.workers.dev" in readme)
-    check("readme self-host", "python server.py" in readme)
+    check("readme hosted pointer", readme.count("https://meld.mergeinc.workers.dev") == 1)
+    check("readme self-host", "python server.py" in readme and "docker compose up" in readme)
+    check("readme publish", "ghcr.io/lemonaide152/meld:latest" in readme and "docker push" in readme)
     check("readme host-readable", "Host-readable while live." in readme)
     check("readme not for secrets", "Not for secrets" in readme)
     check("trust host-readable", "Host-readable while live." in trust)
@@ -203,8 +220,7 @@ def test_public_tree() -> None:
             r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
             text,
         ):
-            if found.lower() != PLACEHOLDER_ID:
-                fail(f"{path.relative_to(ROOT)} contains unexpected id {found}")
+            fail(f"{path.relative_to(ROOT)} contains unexpected id {found}")
     print("ok public tree")
 
 
