@@ -284,6 +284,71 @@ def test_mobile_first_human_ui():
        0 < trust_at < times_at < create_at < needs_at, f"{trust_at, times_at, create_at, needs_at}")
 
 
+def test_agent_install_surface():
+    print("agent install docs")
+    import hashlib
+    import agents_content
+
+    agents_res = run(worker.agents_md())
+    skill_res = run(worker.skill_md_route())
+    root_res = run(worker.agents_root_md())
+    page_res = run(worker.agents_page())
+    agents = bytes(agents_res.body).decode()
+    skill = bytes(skill_res.body).decode()
+    root = bytes(root_res.body).decode()
+    page = bytes(page_res.body).decode()
+    ok("agents.md 200", agents_res.status_code == 200, str(agents_res.status_code))
+    ok("skill.md 200", skill_res.status_code == 200, str(skill_res.status_code))
+    ok("AGENTS.md 200", root_res.status_code == 200, str(root_res.status_code))
+    ok("/agents html 200", page_res.status_code == 200, str(page_res.status_code))
+
+    skill_file = (ROOT / "recipes" / "SKILL.md").read_text()
+    root_file = (DEPLOY / "AGENTS-root.md").read_text()
+    ok("skill.md matches recipes/SKILL.md", skill == skill_file == worker.SKILL_MD)
+    ok("AGENTS.md matches deploy/AGENTS-root.md", root == root_file == worker.AGENTS_ROOT_MD)
+    ok("agents.md is agents_content.AGENTS_MD", agents == agents_content.AGENTS_MD == worker.AGENTS_MD)
+    paste = "fetch https://meld.mergeinc.workers.dev/agents.md and set me up for meld"
+    ok("/agents html shows the same install guide", paste in page and "Not for secrets" in page)
+
+    locked = (
+        "Not for secrets",
+        "3m",
+        "1hr",
+        "1d",
+        "https://meld.mergeinc.workers.dev/mcp",
+        "Human → agent",
+        "Agent → agent",
+        "There is no default",
+        "Pilot creates are free",
+    )
+    banned = (
+        "mint-next",
+        "mint next",
+        "human-to-human",
+        "human→human",
+        "human to human",
+        "x402",
+    )
+    for label, text in (("agents.md", agents), ("skill.md", skill), ("AGENTS.md", root)):
+        for phrase in locked:
+            ok(f"{label} has {phrase}", phrase in text, phrase)
+        low = text.lower()
+        for bad in banned:
+            ok(f"{label} omits {bad}", bad not in low, bad)
+
+    for link in ("/recipes.md", "/openapi.json", "/trust.md", "/llms.txt", "/skill.md"):
+        ok(f"agents.md links {link}", link in agents, link)
+    for client in ("Cursor", "Claude Code", "Codex", "streamable-http"):
+        ok(f"agents.md has {client}", client in agents, client)
+    ok("agents.md paste prompt", paste in agents)
+
+    desc = skill.split("description:", 1)[1].split("\n", 1)[0].strip()
+    entry = worker.SKILLS_INDEX["skills"][0]
+    ok("skill index description", entry["description"] == desc, entry["description"])
+    digest = "sha256:" + hashlib.sha256(skill.encode()).hexdigest()
+    ok("skill index digest", entry["digest"] == digest, entry["digest"])
+
+
 def test_shipped_docs_drop_mint_next():
     print("docs")
     blob = "\n".join([
@@ -299,7 +364,8 @@ def test_shipped_docs_drop_mint_next():
 for t in (test_ttl_required_and_enforced, test_resolve_keeps_chosen_ttl,
           test_mcp_selector_has_no_default, test_share_preview_hides_body,
           test_receiver_job_and_soft_poll, test_mobile_first_human_ui,
-          test_legacy_template_paths_404, test_shipped_docs_drop_mint_next):
+          test_legacy_template_paths_404, test_agent_install_surface,
+          test_shipped_docs_drop_mint_next):
     t()
 
 print(f"\n{passed}/{total} passed")

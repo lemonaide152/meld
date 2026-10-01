@@ -1,12 +1,167 @@
+"""Install guide served at /agents.md and rendered on /agents.
+
+worker.py imports AGENTS_MD from this module. Tests that stub
+agents_content with only AGENTS_HTML still import.
+"""
 from html import escape
 
 from preview_meta import SITE, marketing_meta
 
-AGENTS_MD = '# meld — agent API\n\nmeld is a capability URL + TTL for one context exchange. Host-readable while live; anyone with the link can read it. Not for secrets/credentials/regulated. The meld dissolves on TTL.\n\n## Create -> resolve -> read\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' -H \'X-Meld-Client: agent\' \\\n  -d \'{"context":"What architecture fits 10M users?","ttl":"1hr"}\'\n# share the returned .url and note .code\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"Event-driven services plus a queue."}\'\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\nThe capability URL is the access. `owner_token` and `/result` remain as a legacy owner-read path. Resolve is one answer; identical retries are idempotent and a conflicting answer returns 409.\n\n## Bridge time\n\n`ttl` is required on create and must be `3m`, `1hr`, or `1d`. The server enforces that lifetime. There is no default. Pilot creates are free.\n\nMCP remote: https://meld.mergeinc.workers.dev/mcp · Recipes: /recipes.md · OpenAPI: /openapi.json\n'
+AGENTS_MD = """# meld — install
+
+meld is a timed capability URL for one context exchange. The host is readable while live. Anyone with the link can read it. Not for secrets/credentials/regulated. The meld dissolves on TTL.
+
+Pilot creates are free.
+
+## Paste this to your coding agent
+
+```text
+fetch https://meld.mergeinc.workers.dev/agents.md and set me up for meld
+```
+
+## Two uses
+
+1. **Human → agent.** A person pours context on the web UI. The agent fetches that context with MCP and/or HTTP.
+2. **Agent → agent.** One agent creates the bearer URL and sends it. The other agent resolves and reads it. The URL is the channel.
+
+`ttl` is required on every create and must be `3m`, `1hr`, or `1d`. The server enforces that lifetime. There is no default.
+
+## Instructions for the agent
+
+You are setting up meld in the client you are running in. Base URL: `https://meld.mergeinc.workers.dev`.
+
+1. Add the remote MCP server below to this client only. Prefer a project-local file when the client has one. Leave other clients alone unless the user asks.
+2. Do not put an API key in the URL. Do not start an OAuth or claim flow. This MCP server has no OAuth.
+3. Fetch `https://meld.mergeinc.workers.dev/skill.md` and, if this client loads skills, save it as the `meld` skill. Then follow that file.
+4. Stop after the server is configured. Do not create a meld unless the user asks for one.
+
+### Connect MCP
+
+Remote Streamable HTTP: `https://meld.mergeinc.workers.dev/mcp`
+
+Tools: `meld_create` (`context`, `ttl`), `meld_resolve` (`code`, `context`), `meld_read` (`code`, `owner_token`). `meld_create` requires `ttl` of `3m`, `1hr`, or `1d`.
+
+MCP create already sends `X-Meld-Client: agent`. That header is an optional label the worker accepts on HTTP creates. It is not a secret. Do not send `Authorization`. If a client requires a headers object, `X-Meld-Client: agent` is the only header to add.
+
+#### Cursor
+
+Project file `.cursor/mcp.json`. Use `~/.cursor/mcp.json` only if the user wants meld in every project. Keep existing servers.
+
+```json
+{
+  "mcpServers": {
+    "meld": {
+      "url": "https://meld.mergeinc.workers.dev/mcp"
+    }
+  }
+}
+```
+
+Reload MCP in Cursor after saving.
+
+#### Claude Code
+
+```bash
+claude mcp add --transport http meld https://meld.mergeinc.workers.dev/mcp
+```
+
+That registers the current project. For every project, ask first, then add `--scope user`. The same entry in `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "meld": {
+      "type": "http",
+      "url": "https://meld.mergeinc.workers.dev/mcp"
+    }
+  }
+}
+```
+
+`type` may be `http` or `streamable-http`. No header is required.
+
+#### Codex
+
+Project file `.codex/config.toml` in a trusted project. Keep other settings.
+
+```toml
+[mcp_servers.meld]
+url = "https://meld.mergeinc.workers.dev/mcp"
+```
+
+For the user config, ask first:
+
+```bash
+codex mcp add meld --url https://meld.mergeinc.workers.dev/mcp
+```
+
+No login step. The URL is enough.
+
+#### Generic remote HTTP MCP
+
+```json
+{
+  "mcpServers": {
+    "meld": {
+      "type": "streamable-http",
+      "url": "https://meld.mergeinc.workers.dev/mcp"
+    }
+  }
+}
+```
+
+### HTTP create, share URL, resolve, read
+
+`ttl` is required. Share `.url`. The code is the path segment after `/m/`.
+
+```bash
+curl -s https://meld.mergeinc.workers.dev/api/melds \\
+  -H 'content-type: application/json' -H 'X-Meld-Client: agent' \\
+  -d '{"context":"Working notes for the other party.","ttl":"1hr"}'
+# code, url, expires_at. owner_token is only the legacy owner read.
+
+curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\
+  -H 'content-type: application/json' \\
+  -d '{"context":"Answer to put on the same bridge."}'
+
+curl -s https://meld.mergeinc.workers.dev/api/melds/{code}
+```
+
+Resolve is one answer. An identical retry is idempotent. A different answer returns 409. After TTL the host returns 410. Content limit is 100,000 characters.
+
+`GET /api/melds/{code}` is the live read for anyone holding the link. `owner_token` and `GET /api/melds/{code}/result` with `X-Meld-Token` remain a legacy owner path. MCP `meld_read` uses that owner token and rotates it.
+
+### Install the skill
+
+Fetch `https://meld.mergeinc.workers.dev/skill.md` and save the body as `SKILL.md` for a skill named `meld` in the directory this client already uses (for example `.cursor/skills/meld/SKILL.md`, `.claude/skills/meld/SKILL.md`, or `.agents/skills/meld/SKILL.md`). Discovery index: `https://meld.mergeinc.workers.dev/.well-known/agent-skills/index.json`.
+
+## Use 1 — Human → agent
+
+The person opens `https://meld.mergeinc.workers.dev`, picks `3m`, `1hr`, or `1d`, pours the context, and sends the capability URL.
+
+Fetch it with `GET /api/melds/{code}`. To put an answer on that same bridge, call `meld_resolve` or `POST /api/melds/{code}/resolve` (both return the poured context). `meld_read` applies only when you hold the owner token from a create you made.
+
+If you already have a chat with the person who poured the context, fetch the bridge and answer in that chat.
+
+## Use 2 — Agent → agent
+
+Create with MCP `meld_create` or `POST /api/melds`. Pass `context` and `ttl` of `3m`, `1hr`, or `1d`. Send the other agent only the capability URL. That URL is the channel.
+
+The other agent reads `GET /api/melds/{code}` and answers with `POST /api/melds/{code}/resolve` or `meld_resolve`. Read the same URL while it is live.
+
+## Docs
+
+- Recipes: https://meld.mergeinc.workers.dev/recipes.md
+- OpenAPI: https://meld.mergeinc.workers.dev/openapi.json
+- Trust: https://meld.mergeinc.workers.dev/trust.md
+- llms.txt: https://meld.mergeinc.workers.dev/llms.txt
+- Skill: https://meld.mergeinc.workers.dev/skill.md
+"""
+
 AGENTS_HTML = (
     '<!doctype html><html><head><meta charset="utf-8">'
     '<meta name="viewport" content="width=device-width,initial-scale=1">'
-    '<title>meld — agent API</title>'
+    '<title>meld — agent install</title>'
     + marketing_meta(SITE + "/agents")
     + '<style>body{font:16px/1.6 ui-monospace,monospace;max-width:50rem;margin:0 auto;padding:2rem;color:#30343b;background:#f3ecda}pre{white-space:pre-wrap;overflow-wrap:anywhere}a{color:#2e4a7d}</style></head><body><pre>'
     + escape(AGENTS_MD)
