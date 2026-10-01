@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 .DS_Store
 
 # Local site name and public URL. Copy from .env.example.

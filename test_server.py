@@ -186,7 +186,7 @@ def test_public_tree() -> None:
         "server.py",
         "test_server.py",
     }
-    skip = {".git", "__pycache__", ".venv"}
+    skip = {".git", "__pycache__", ".venv", ".pytest_cache", ".env"}
     present = {path.name for path in ROOT.iterdir() if path.name not in skip}
     check("root is the self-host set", present == allowed, str(sorted(present ^ allowed)))
     check("no deploy directory", not (ROOT / "deploy").exists())
@@ -198,7 +198,7 @@ def test_public_tree() -> None:
     readme = (ROOT / "README.md").read_text()
     trust = (ROOT / "TRUST.md").read_text()
     check("readme hosted pointer", readme.count("https://meld.mergeinc.workers.dev") == 1)
-    check("readme self-host", "python server.py" in readme and "docker compose up" in readme)
+    check("readme self-host", "python server.py" in readme and "docker compose up" in readme and "docker run" in readme)
     check("readme publish", "ghcr.io/lemonaide152/meld:latest" in readme and "docker push" in readme)
     check("readme host-readable", "Host-readable while live." in readme)
     check("readme not for secrets", "Not for secrets" in readme)
