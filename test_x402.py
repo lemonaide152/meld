@@ -490,26 +490,27 @@ def test_x402_endpoint_paid_create():
     except HTTPException as e:
         ok("empty context is 400 and did not settle", e.status_code == 400 and fac.calls == [],
            str(e.status_code))
-    bare = FakeRequest(
-        d1, {"context": "omit ttl defaults to 1hr"},
+    bad = FakeRequest(
+        d1, {"context": "bad ttl", "ttl": "3m"},
         {"payment-signature": payment(resource="https://meld.mergeinc.workers.dev/api/x402", nonce=NONCE2),
          "x-forwarded-for": "10.9.0.5"},
         path="/api/x402")
-    bare_resp = run(worker.x402_resource(bare))
-    bare_data = _body(bare_resp)
-    ok("omitted ttl on x402 URL create defaults to 1hr",
-       bare_resp.status_code == 200 and bare_data.get("ttl") == "1hr",
-       str(bare_data.get("ttl")))
+    try:
+        run(worker.x402_resource(bad))
+        ok("ttl 3m rejected before settle", False, "no exception")
+    except HTTPException as e:
+        ok("ttl 3m is 400 and did not settle", e.status_code == 400 and fac.calls == [],
+           str(e.status_code))
     req = FakeRequest(
-        d1, {"context": "via x402 url", "ttl": "1hr"},
+        d1, {"context": "via x402 url"},  # omit ttl -> 1hr
         {"payment-signature": payment(
-            resource="https://meld.mergeinc.workers.dev/api/x402", nonce="n-x402-1hr"),
+            resource="https://meld.mergeinc.workers.dev/api/x402", nonce=NONCE2),
          "x-forwarded-for": "10.9.0.5"},
         path="/api/x402")
     resp = run(worker.x402_resource(req))
     data = _body(resp)
     ok("x402 URL create 200", resp.status_code == 200 and data.get("code"), str(resp.status_code))
-    ok("x402 URL create ttl is 1hr", data.get("ttl") == "1hr", str(data.get("ttl")))
+    ok("omitted ttl on x402 URL create defaults to 1hr", data.get("ttl") == "1hr", str(data.get("ttl")))
     exp = datetime.datetime.fromisoformat(data["expires_at"])
     delta = (exp - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
     ok("x402 URL expiry is about 1 hour", abs(delta - 3600) < 5, f"delta={delta}")
@@ -609,7 +610,7 @@ def test_docs_and_source_keep_secrets_out():
     ok("payee not hardcoded in x402 module", PAY_TO not in pay and PAYER not in pay)
     for label, text in (
         ("llms", worker.LLMS_TXT),
-        ("agents", worker.AGENTS_MD),
+        ("agents", worker.AGENTS_MD or agents),
         ("upgrade", worker.UPGRADE_MD),
         ("agents page", agents),
     ):

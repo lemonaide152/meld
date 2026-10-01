@@ -318,7 +318,8 @@ def test_legacy_template_paths_404():
     upgrade = run(worker.upgrade_md())
     text = bytes(upgrade.body).decode()
     ok("upgrade.md still served",
-       "402" in text and "3m" in text and "X402_PAY_TO" in text and "not for secrets" in text.lower(),
+       "402" in text and "X402_PAY_TO" in text and "1hr" in text
+       and "3m" not in text and "not for secrets" in text.lower(),
        text[:180])
 
 
@@ -403,7 +404,6 @@ def test_agent_install_surface():
         "human-to-human",
         "human→human",
         "human to human",
-        "x402",
     )
     for label, text in (("agents.md", agents), ("skill.md", skill), ("AGENTS.md", root)):
         for phrase in locked:
@@ -412,6 +412,11 @@ def test_agent_install_surface():
         low = text.lower()
         for bad in banned:
             ok(f"{label} omits {bad}", bad not in low, bad)
+        # install surfaces stay free of payment jargon except agents.md Paying section
+        if label != "agents.md":
+            ok(f"{label} omits x402", "x402" not in low, "x402")
+        else:
+            ok(f"{label} documents x402 wall", "402" in text and "x402" in low, text[-80:])
         ok(f"{label} does not offer 3m", "3m" not in text)
         ok(f"{label} does not offer 1d", "1d" not in text)
 
