@@ -75,7 +75,7 @@ Omit `ttl` or send `1hr`. Any other lifetime is rejected.
 
 ## Publish an image
 
-Suggested name: `ghcr.io/lemonaide152/meld`. No registry credentials belong in this repo. `docker login` uses your own GitHub username and a token with `write:packages`.
+Suggested name: `ghcr.io/lemonaide152/meld`.
 
 ```bash
 docker build -t ghcr.io/lemonaide152/meld:latest .
