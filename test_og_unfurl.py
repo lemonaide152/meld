@@ -29,7 +29,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 passed = total = 0
 SECRET = "UNFURL-SECRET-context-a-plaintext-9f3c2a"
 CODE = "zzcanarycode99"
-CACHEBUST_OG_IMAGE = "https://meld.mergeinc.workers.dev/og.png?v=13"
+CACHEBUST_OG_IMAGE = "https://meld.mergeinc.workers.dev/og.png?v=14"
 
 
 def ok(name, cond, detail=""):
@@ -78,11 +78,12 @@ ok("png 1200x630", (width, height) == (1200, 630), f"{width}x{height}")
 print("card copy")
 ok(
     "marketing title is the card job",
-    preview_meta.MARKETING_TITLE == "A temporary resource to align context.",
+    preview_meta.MARKETING_TITLE == "Stop being the copy-paste proxy.",
 )
 for phrase in (
-    "A temporary resource to align context.",
-    "Each link lives 1 hour, then it dies.",
+    "Stop being the copy-paste proxy.",
+    "One timed link · one hour · then gone.",
+    "Pass it to an agent — or agent↔agent.",
     "Not for secrets.",
 ):
     ok(f"marketing description has {phrase}", phrase in preview_meta.MARKETING_DESCRIPTION)
@@ -197,33 +198,33 @@ ok(
 ok("og.png HEAD empty body", image_head.content == b"", str(len(image_head.content)))
 ok("og.png HEAD nosniff", image_head.headers.get("x-content-type-options") == "nosniff", image_head.headers.get("x-content-type-options"))
 
-versioned = client.get("/og.png?v=13")
-ok("og.png?v=13 200", versioned.status_code == 200, str(versioned.status_code))
+versioned = client.get("/og.png?v=14")
+ok("og.png?v=14 200", versioned.status_code == 200, str(versioned.status_code))
 ok(
-    "og.png?v=13 content-type",
+    "og.png?v=14 content-type",
     versioned.headers.get("content-type", "").startswith("image/png"),
     versioned.headers.get("content-type"),
 )
 ok(
-    "og.png?v=13 content-length",
+    "og.png?v=14 content-length",
     versioned.headers.get("content-length") == str(len(OG_PNG)),
     versioned.headers.get("content-length"),
 )
-ok("og.png?v=13 body", versioned.content == OG_PNG, str(len(versioned.content)))
+ok("og.png?v=14 body", versioned.content == OG_PNG, str(len(versioned.content)))
 
-versioned_head = client.head("/og.png?v=13")
-ok("og.png?v=13 HEAD 200", versioned_head.status_code == 200, str(versioned_head.status_code))
+versioned_head = client.head("/og.png?v=14")
+ok("og.png?v=14 HEAD 200", versioned_head.status_code == 200, str(versioned_head.status_code))
 ok(
-    "og.png?v=13 HEAD content-type",
+    "og.png?v=14 HEAD content-type",
     versioned_head.headers.get("content-type", "").startswith("image/png"),
     versioned_head.headers.get("content-type"),
 )
 ok(
-    "og.png?v=13 HEAD content-length",
+    "og.png?v=14 HEAD content-length",
     versioned_head.headers.get("content-length") == str(len(OG_PNG)),
     versioned_head.headers.get("content-length"),
 )
-ok("og.png?v=13 HEAD empty body", versioned_head.content == b"", str(len(versioned_head.content)))
+ok("og.png?v=14 HEAD empty body", versioned_head.content == b"", str(len(versioned_head.content)))
 
 home_head = client.head("/")
 ok("home HEAD 200", home_head.status_code == 200, str(home_head.status_code))
@@ -272,7 +273,7 @@ def _header_map(message):
 
 
 for method in ("GET", "HEAD"):
-    for label, query in (("og.png", b""), ("og.png?v=13", b"v=13")):
+    for label, query in (("og.png", b""), ("og.png?v=14", b"v=14")):
         frames = asyncio.run(_asgi_messages(method, "/og.png", query))
         starts = [m for m in frames if m["type"] == "http.response.start"]
         bodies = [m for m in frames if m["type"] == "http.response.body"]

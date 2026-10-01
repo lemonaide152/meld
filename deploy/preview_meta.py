@@ -1,9 +1,10 @@
 """Open Graph and Twitter card copy.
 
 Marketing pages (/, /agents, /trust) share one card. Title and description
-state the product: a temporary resource to align context; each link lives
-1 hour, then it dies; not for secrets. Host-readable stays on the human
-trust line and the TRUST page. It is not part of this X description.
+state the product: stop being the copy-paste proxy; one timed link, one
+hour, then gone; pass it to an agent or agent to agent; not for secrets.
+Host-readable stays on the human trust line and the TRUST page. It is not
+part of this X description.
 
 No claim that a conversation hard-stops.
 No end-to-end, server-blind, or private-room wording.
@@ -17,21 +18,21 @@ SITE = "https://meld.mergeinc.workers.dev"
 OG_IMAGE_PATH = "/og.png"
 # X cached a failed fetch of the bare path. The query is a new image URL;
 # GET/HEAD still match /og.png and ignore it.
-OG_IMAGE_URL = f"{SITE}{OG_IMAGE_PATH}?v=13"
+OG_IMAGE_URL = f"{SITE}{OG_IMAGE_PATH}?v=14"
 OG_IMAGE_W = "1200"
 OG_IMAGE_H = "630"
 OG_IMAGE_ALT = (
-    "A temporary resource to align context. "
-    "Each link lives 1 hour, then it dies. "
+    "Stop being the copy-paste proxy. "
+    "One timed link · one hour · then gone. Pass it to an agent — or agent↔agent. "
     "Not for secrets."
 )
 
 META_SLOT = "<!--MELD_PREVIEW-->"
 
-MARKETING_TITLE = "A temporary resource to align context."
+MARKETING_TITLE = "Stop being the copy-paste proxy."
 MARKETING_DESCRIPTION = (
-    "A temporary resource to align context. "
-    "Each link lives 1 hour, then it dies. "
+    "Stop being the copy-paste proxy. "
+    "One timed link · one hour · then gone. Pass it to an agent — or agent↔agent. "
     "Not for secrets."
 )
 
