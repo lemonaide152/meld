@@ -4,7 +4,7 @@ import { create, view, resolve, result } from "./index.js";
 const BASE = process.env.MELD_URL || "http://127.0.0.1:8080";
 
 async function main() {
-  const m = await create("SDK test: what is 2+2?", { ttl: "3m", baseUrl: BASE });
+  const m = await create("SDK test: what is 2+2?", { ttl: "1hr", baseUrl: BASE });
   console.log("create OK:", m.code);
   const v = await view(m.code);
   console.log("view OK:", v.context_a === "SDK test: what is 2+2?");

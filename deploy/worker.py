@@ -1,7 +1,8 @@
 """
 meld — timed context bridge. Cloudflare Workers port (D1-backed).
 - capability URL is the shared bearer for one exchange
-- bridge time is exactly 3m, 1hr, or 1d; the server enforces that TTL
+- every meld lives 1 hour; other ttl values are rejected; omit ttl to get 1hr
+- mint-next creates a new meld with its own 1 hour clock (not an extend)
 - pilot creates are free (no payment wall); per-minute abuse limits remain
 - host-readable while live; anyone with the link can read it; dissolves on TTL
 State lives in D1 (survives restarts — an upgrade over the RAM dict).
@@ -71,16 +72,15 @@ def _require_context(context) -> str:
 
 
 def _require_ttl(value) -> tuple:
-    """Accept only the three pilot bridge times. Missing or other values are rejected."""
-    if not isinstance(value, str) or not value.strip():
-        raise HTTPException(
-            400,
-            "Bridge time is required. Choose 3m (3 minutes), 1hr (1 hour), or 1d (1 day).",
-        )
-    key = value.strip().lower()
-    if key not in BRIDGE_TTLS:
-        raise HTTPException(400, "Bridge time must be one of: 3m, 1hr, 1d.")
-    return key, BRIDGE_TTLS[key]
+    """Every meld lives 1 hour. Omit ttl or send 1hr. Any other value is rejected."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return TTL_KEY, HOUR_SECONDS
+    if isinstance(value, str) and value.strip().lower() == TTL_KEY:
+        return TTL_KEY, HOUR_SECONDS
+    raise HTTPException(
+        400,
+        'This link lives 1 hour. Send ttl "1hr" or omit it. There is no other lifetime.',
+    )
 
 
 def _meld_meta(code, row, remaining):
@@ -123,6 +123,73 @@ def _token() -> str:
     return secrets.token_hex(32)
 
 
+def _rows_of(got):
+    """Normalize D1 .all() ({results}) and the sqlite test double (a list)."""
+    if got is None:
+        return []
+    if isinstance(got, dict):
+        return got.get("results") or []
+    results = getattr(got, "results", None)
+    if results is not None:
+        return results
+    return list(got)
+
+
+async def _hop_parent(conn, prev):
+    """Return (prev_code, thread_id). A new root is (None, None).
+
+    The previous meld must still be live. This does not change its expires_at.
+    """
+    if prev is None or prev == "":
+        return None, None
+    if not isinstance(prev, str):
+        raise HTTPException(400, "prev_code must be a string")
+    prev = prev.strip()
+    if not prev:
+        return None, None
+    row = await conn.prepare(
+        "SELECT code, thread_id, expires_at FROM melds WHERE code = ?"
+    ).bind(prev).first()
+    if not row:
+        raise HTTPException(404, "Previous meld not found")
+    if row["expires_at"] <= _now():
+        await conn.prepare("DELETE FROM melds WHERE code = ?").bind(prev).run()
+        raise HTTPException(410, "Previous meld has expired")
+    thread_id = row["thread_id"] or row["code"]
+    if not row["thread_id"]:
+        await conn.prepare(
+            "UPDATE melds SET thread_id = ? WHERE code = ? AND thread_id IS NULL"
+        ).bind(thread_id, row["code"]).run()
+    return prev, thread_id
+
+
+async def _insert_meld(conn, context, ttl_value, prev_value, email, pin_hash):
+    """Insert one meld. Lifetime is always 1 hour, including a mint-next hop."""
+    ttl_key, ttl_seconds = _require_ttl(ttl_value)
+    prev_code, thread_id = await _hop_parent(conn, prev_value)
+    code = _code()
+    token = _token()
+    now = _now()
+    expiry = (datetime.datetime.now(datetime.timezone.utc)
+              + datetime.timedelta(seconds=ttl_seconds)).isoformat()
+    if not thread_id:
+        thread_id = code
+    await conn.prepare(
+        "INSERT INTO melds (code, context_a, context_b, resolved, owner_token,"
+        " owner_email, creator_ip, created_at, expires_at, pin, prev_code, thread_id)"
+        " VALUES (?, ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).bind(
+        code, context, token, email, "", now, expiry, pin_hash, prev_code, thread_id
+    ).run()
+    return {
+        "code": code,
+        "token": token,
+        "ttl": ttl_key,
+        "expires_at": expiry,
+        "prev_code": prev_code,
+        "thread_id": thread_id,
+    }
+
 
 # ── human vs agent create classifier (retained; pilot creates do not use it) ─
 # Pilot timed bridges are free for humans and agents. Per-minute abuse limits
@@ -147,8 +214,9 @@ _BROWSER_UA_HINTS = (
     "fxios/",
 )
 PRICING_HEADER = "pilot-free"
-# Pilot bridge lifetimes. Clients must send one of these keys. No default.
-BRIDGE_TTLS = {"3m": 3 * 60, "1hr": 60 * 60, "1d": 24 * 60 * 60}
+# SKU is one hour on this link. Mint-next is another link with its own hour.
+TTL_KEY = "1hr"
+HOUR_SECONDS = 60 * 60
 
 
 def _is_human_client(request: Request) -> bool:
@@ -479,40 +547,32 @@ async def create_meld(request: Request):
     ip = _client_ip(request)
     body = await request.json()
     context = _require_context(body.get("context", ""))
-    ttl_key, ttl_seconds = _require_ttl(body.get("ttl"))
 
     if not await _rate_limit(conn, "create", ip):
         raise HTTPException(429, "Too many requests. Please slow down.",
                             headers={"Retry-After": "60"})
     email = body.get("email")
+    pin = body.get("pin")
+    # Check a mint-next parent before the sweeper. Sweeping first would delete
+    # an expired parent and turn a 410 into a plain miss. The parent's clock
+    # is not moved.
+    made = await _insert_meld(
+        conn,
+        context,
+        body.get("ttl"),
+        body.get("prev_code"),
+        email if isinstance(email, str) and len(email) <= 254 else None,
+        hashlib.sha256(pin.encode()).hexdigest() if isinstance(pin, str) and 0 < len(pin) <= 128 else None,
+    )
     # Amortized sweeper: piggyback cleanup of expired melds + throttle/counter
-    # prune on create traffic
+    # prune on create traffic. Pilot creates stay free. Per-minute limits apply.
     try:
         await conn.prepare("DELETE FROM melds WHERE expires_at <= ?").bind(_now()).run()
         await _throttle_prune(conn)
     except Exception:
         pass  # never block create on sweep failure
-    # Pilot: timed bridges are free for humans and agents. No hourly free wall
-    # and no payment unlock. Per-minute abuse limits above still apply.
-
-    code = _code()
-    token = _token()
-    now = _now()
-    expiry = (datetime.datetime.now(datetime.timezone.utc)
-              + datetime.timedelta(seconds=ttl_seconds)).isoformat()
-    email = body.get("email")
-    pin = body.get("pin")
-    # SB-3: do not persist creator_ip on the meld row. Rate limits use
-    # edge IP against rate/free_counts/ip_throttle only.
-    await conn.prepare(
-        "INSERT INTO melds (code, context_a, context_b, resolved, owner_token,"
-        " owner_email, creator_ip, created_at, expires_at, pin)"
-        " VALUES (?, ?, NULL, 0, ?, ?, ?, ?, ?, ?)").bind(
-        code, context, token,
-        email if isinstance(email, str) and len(email) <= 254 else None,
-        "", now, expiry,  # creator_ip left empty (column retained for compat)
-        hashlib.sha256(pin.encode()).hexdigest() if isinstance(pin, str) and 0 < len(pin) <= 128 else None,
-    ).run()
+    code = made["code"]
+    token = made["token"]
     await _funnel(conn, "created")
     return JSONResponse(
         {
@@ -522,8 +582,10 @@ async def create_meld(request: Request):
             "owner_token": token,
             "context_a": context,
             "resolved": False,
-            "ttl": ttl_key,
-            "expires_at": expiry,
+            "ttl": made["ttl"],
+            "expires_at": made["expires_at"],
+            "prev_code": made["prev_code"],
+            "thread_id": made["thread_id"],
         },
         headers={"X-Meld-Pricing": PRICING_HEADER},
     )
@@ -552,6 +614,60 @@ async def get_meld(code: str, request: Request, token: str = ""):
     has_token = bool(supplied) and secrets.compare_digest(row["owner_token"], supplied)
     out = _meld_meta(code, row, remaining)
     return _attach_bodies(out, row, has_token=has_token)
+
+
+@app.get("/api/melds/{code}/chain")
+async def get_chain(code: str, request: Request):
+    """Live hops that share this link's thread. Expired plaintext is not returned."""
+    conn = db(request)
+    ip = _client_ip(request)
+    if not await _rate_limit(conn, "view", ip):
+        raise HTTPException(429, "Too many requests", headers={"Retry-After": "60"})
+    row = await conn.prepare(
+        "SELECT * FROM melds WHERE code = ?").bind(code).first()
+    if not row:
+        raise HTTPException(404, "Meld not found")
+    if row["expires_at"] <= _now():
+        await conn.prepare("DELETE FROM melds WHERE code = ?").bind(code).run()
+        raise HTTPException(410, "This meld has expired")
+    thread_id = row["thread_id"] or code
+    if not row["thread_id"]:
+        await conn.prepare(
+            "UPDATE melds SET thread_id = ? WHERE code = ?"
+        ).bind(thread_id, code).run()
+    now = _now()
+    await conn.prepare(
+        "DELETE FROM melds WHERE thread_id = ? AND expires_at <= ?"
+    ).bind(thread_id, now).run()
+    got = await conn.prepare(
+        "SELECT code, context_a, context_b, resolved, expires_at, prev_code "
+        "FROM melds WHERE thread_id = ? AND expires_at > ? ORDER BY created_at"
+    ).bind(thread_id, now).all()
+    host = request.headers.get("host", "localhost")
+    scheme = request.url.scheme
+    nodes = []
+    for item in _rows_of(got):
+        exp = item["expires_at"]
+        if exp <= now:
+            continue
+        try:
+            delta = datetime.datetime.fromisoformat(exp) - datetime.datetime.now(datetime.timezone.utc)
+            remaining = max(0, int(delta.total_seconds()))
+        except Exception:
+            remaining = None
+        hop = item["code"]
+        nodes.append({
+            "code": hop,
+            "url": f"{scheme}://{host}/m/{hop}",
+            "context_a": item["context_a"],
+            "context_b": item["context_b"],
+            "resolved": bool(item["resolved"]),
+            "expires_at": exp,
+            "seconds_remaining": remaining,
+            "ttl": TTL_KEY,
+            "prev_code": item["prev_code"],
+        })
+    return {"thread_id": thread_id, "nodes": nodes}
 
 
 @app.post("/api/melds/{code}/resolve")
@@ -970,20 +1086,12 @@ async def v1_create_meld(request: Request):
 
     body = await request.json()
     context = _require_context(body.get("context", ""))
-
-    ttl_key, ttl_seconds = _require_ttl(body.get("ttl"))
-    code = _code()
-    token = _token()
-    now = _now()
-    expiry = (datetime.datetime.now(datetime.timezone.utc)
-              + datetime.timedelta(seconds=ttl_seconds)).isoformat()
     # SB-3: no IP (or key-hash stand-in) on the meld row.
-    await conn.prepare(
-        "INSERT INTO melds (code, context_a, context_b, resolved, owner_token,"
-        " owner_email, creator_ip, created_at, expires_at, pin)"
-        " VALUES (?, ?, NULL, 0, ?, ?, ?, ?, ?, NULL)").bind(
-        code, context, token, key_row["label"], "", now, expiry
-    ).run()
+    made = await _insert_meld(
+        conn, context, body.get("ttl"), body.get("prev_code"), key_row["label"], None
+    )
+    code = made["code"]
+    token = made["token"]
     await _meter_meld(conn, key_row["key_hash"], code)
 
     host = request.headers.get("host", "localhost")
@@ -995,8 +1103,10 @@ async def v1_create_meld(request: Request):
         "owner_token": token,
         "context_a": context,
         "resolved": False,
-        "ttl": ttl_key,
-        "expires_at": expiry,
+        "ttl": made["ttl"],
+        "expires_at": made["expires_at"],
+        "prev_code": made["prev_code"],
+        "thread_id": made["thread_id"],
     }
 
 
@@ -1274,10 +1384,10 @@ _MCP_TOOLS = [
         "name": "meld_create",
         "description": (
             "Create a timed bridge. Returns a capability URL (the shared bearer) for the "
-            "other party. You must set ttl to exactly one of 3m, 1hr, or 1d. There is no "
-            "default lifetime. Pilot bridges are free. The host can read the exchange "
-            "while it is live; anyone with the link can too. Not for secrets. Dissolves "
-            "when that TTL ends."
+            "other party. Every meld lives 1 hour. Omit ttl or send 1hr. Pilot bridges "
+            "are free. The host can read the exchange while it is live; anyone with the "
+            "link can too. Not for secrets. Dissolves when that hour ends. prev_code "
+            "mints the next link with its own 1 hour. That is not an extend."
         ),
         "inputSchema": {
             "type": "object",
@@ -1291,10 +1401,18 @@ _MCP_TOOLS = [
                 },
                 "ttl": {
                     "type": "string",
-                    "enum": ["3m", "1hr", "1d"],
+                    "enum": ["1hr"],
+                    "default": "1hr",
                     "description": (
-                        "Required bridge time. 3m = 3 minutes, 1hr = 1 hour, 1d = 1 day. "
-                        "The server enforces this TTL. There is no default."
+                        "Lifetime is 1 hour. Omit this or send 1hr. The server rejects "
+                        "any other value."
+                    ),
+                },
+                "prev_code": {
+                    "type": "string",
+                    "description": (
+                        "Optional code of a live meld. Starts a new bearer URL with its "
+                        "own 1 hour clock. Does not change the previous meld's expiry."
                     ),
                 },
                 "pin": {
@@ -1302,7 +1420,7 @@ _MCP_TOOLS = [
                     "description": "Optional PIN the other party must supply to answer.",
                 },
             },
-            "required": ["context", "ttl"],
+            "required": ["context"],
         },
     },
     {
@@ -1398,8 +1516,10 @@ async def _mcp_call_tool(name: str, args: dict, request: Request):
     args = args or {}
     try:
         if name == "meld_create":
-            # Pass ttl through unchanged. Do not invent a default.
+            # Missing ttl becomes 1hr inside create. Other values are rejected.
             body = {"context": args.get("context", ""), "ttl": args.get("ttl", "")}
+            if args.get("prev_code"):
+                body["prev_code"] = args.get("prev_code")
             if args.get("pin"):
                 body["pin"] = args["pin"]
             req = _asgi_json_request(
@@ -1473,10 +1593,11 @@ async def _mcp_handle_message(msg: dict, request: Request):
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "meld", "version": "1.0.0"},
                 "instructions": (
-                    "meld: timed context bridge. meld_create requires ttl: 3m, 1hr, or 1d "
-                    "(no default). The returned URL is the capability. Host-readable while "
-                    "live; anyone with the link can read it; not for secrets; dissolves on "
-                    "that TTL. Pilot creates are free. Base: https://meld.mergeinc.workers.dev"
+                    "meld: timed context bridge. Every meld lives 1 hour. Omit ttl or send "
+                    "1hr. prev_code mints a new link with its own hour (not an extend). "
+                    "The returned URL is the capability. Host-readable while live; anyone "
+                    "with the link can read it; not for secrets; dissolves after that hour. "
+                    "Pilot creates are free. Base: https://meld.mergeinc.workers.dev"
                 ),
             },
         }
@@ -1638,9 +1759,9 @@ fetch https://meld.mergeinc.workers.dev/agents.md and set me up for meld
 
 ## What this is
 
-A capability URL plus a required TTL for one context exchange. Host-readable while live. Anyone with the link can read it. Not for secrets/credentials/regulated. Dissolves on TTL. After TTL the host serves 410.
+A capability URL for one context exchange. Each link lives 1 hour. Host-readable while live. Anyone with the link can read it. Not for secrets/credentials/regulated. After that hour the host serves 410. Mint-next creates a new URL with its own hour. That is not an extend.
 
-Pilot creates are free. `ttl` is required and must be `3m`, `1hr`, or `1d`. There is no default.
+Pilot creates are free. Omit `ttl` or send `1hr`. The server rejects any other lifetime.
 
 ## Two uses
 
@@ -1656,7 +1777,7 @@ Skill: https://meld.mergeinc.workers.dev/skill.md
 Docs: /llms.txt · /agents.md · /recipes.md · /openapi.json · /trust.md
 """
 
-LLMS_TXT = '# meld\n> Capability URL + TTL for a one-time context handoff.\n\nBase URL: https://meld.mergeinc.workers.dev\n\nInstall guide: https://meld.mergeinc.workers.dev/agents.md — fetch that URL and set the coding agent up for meld. Two uses only: a human pours context on the web UI and an agent fetches it, or one agent creates the bearer URL and another agent resolves and reads it.\n\nLocked claims: host-readable while live; anyone with the link can read it; not for secrets/credentials/regulated; dissolves on TTL. Bridge time is required: 3m, 1hr, or 1d. The server enforces that TTL. There is no default.\n\n## Flow\n\n1. `POST /api/melds` with `{"context":"...","ttl":"1hr"}` -> `code`, `url`, `owner_token`, `expires_at`.\n2. Share `url` with the other party. The URL is the capability.\n3. `POST /api/melds/{code}/resolve` with `{"context":"..."}` to answer.\n4. `GET /api/melds/{code}` -> the live context for anyone holding the link.\n\nTTL: required on create, one of 3m (3 minutes), 1hr (1 hour), or 1d (1 day). The server enforces it. Then 410 Gone.\nContent limit: 100,000 characters. Not for secrets, credentials, or regulated data.\n\n## Agent quick start\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' -H \'X-Meld-Client: agent\' \\\n  -d \'{"context":"...","ttl":"1hr"}\'\n# share .url; resolve with the returned code\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' -d \'{"context":"..."}\'\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\n## Docs and integrations\n\n- Agent docs: https://meld.mergeinc.workers.dev/agents.md\n- Recipes: https://meld.mergeinc.workers.dev/recipes.md\n- Trust: https://meld.mergeinc.workers.dev/trust.md\n- OpenAPI: https://meld.mergeinc.workers.dev/openapi.json\n- MCP remote: https://meld.mergeinc.workers.dev/mcp\n- MCP manifest: https://meld.mergeinc.workers.dev/.well-known/mcp.json\n- Agent card: https://meld.mergeinc.workers.dev/.well-known/agent.json\n\nPilot bridges are free. Create requires `ttl`: `3m`, `1hr`, or `1d`. Per-minute limits apply to everyone.\n'
+LLMS_TXT = '# meld\n> Capability URL for a one-hour context handoff.\n\nBase URL: https://meld.mergeinc.workers.dev\n\nInstall guide: https://meld.mergeinc.workers.dev/agents.md — fetch that URL and set the coding agent up for meld. Two uses only: a human pours context on the web UI and an agent fetches it, or one agent creates the bearer URL and another agent resolves and reads it.\n\nLocked claims: host-readable while live; anyone with the link can read it; not for secrets/credentials/regulated; each link lives 1 hour. Omit ttl or send 1hr. Any other lifetime is rejected. Mint-next creates a new meld URL with its own hour. That is not an extend. Expired hops are deleted and are not returned on the chain.\n\n## Flow\n\n1. `POST /api/melds` with `{"context":"..."}` or `{"context":"...","ttl":"1hr"}` -> `code`, `url`, `owner_token`, `expires_at`.\n2. Share `url` with the other party. The URL is the capability.\n3. `POST /api/melds/{code}/resolve` with `{"context":"..."}` to answer.\n4. `GET /api/melds/{code}` -> the live context for anyone holding the link.\n5. `POST /api/melds` with `prev_code` set to a live code -> a new URL with its own hour (mint-next).\n6. `GET /api/melds/{code}/chain` -> live hops only. Dissolved plaintext is omitted.\n\nLifetime: 1 hour. Then 410 Gone.\nContent limit: 100,000 characters. Not for secrets, credentials, or regulated data.\n\n## Agent quick start\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' -H \'X-Meld-Client: agent\' \\\n  -d \'{"context":"..."}\'\n# share .url; resolve with the returned code\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' -d \'{"context":"..."}\'\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\n## Docs and integrations\n\n- Agent docs: https://meld.mergeinc.workers.dev/agents.md\n- Recipes: https://meld.mergeinc.workers.dev/recipes.md\n- Trust: https://meld.mergeinc.workers.dev/trust.md\n- OpenAPI: https://meld.mergeinc.workers.dev/openapi.json\n- MCP remote: https://meld.mergeinc.workers.dev/mcp\n- MCP manifest: https://meld.mergeinc.workers.dev/.well-known/mcp.json\n- Agent card: https://meld.mergeinc.workers.dev/.well-known/agent.json\n\nPilot bridges are free. Each link is one hour. Per-minute limits apply to everyone.\n'
 
 ROBOTS_TXT = """User-agent: GPTBot
 Allow: /
@@ -1680,20 +1801,20 @@ Sitemap: https://meld.mergeinc.workers.dev/sitemap.xml
 
 
 
-TRUST_MD = '# meld — trust model\n\n- Capability URL + TTL: the URL grants access while the meld is live.\n- Host-readable while live.\n- Anyone with the link can read it.\n- Not for secrets/credentials/regulated.\n- Dissolves on the TTL chosen at create: 3 minutes (`3m`), 1 hour (`1hr`), or 1 day (`1d`).\n- Bridge time is required: 3m, 1hr, or 1d. The server enforces that TTL. There is no default.\n\nThe host stores ordinary context for the live TTL and deletes the meld after expiry. There are no accounts or long-term content archives. Rate-limit identity is IP-based. Use meld for ordinary, disposable handoffs only.\n\n## Link previews\n\n`/`, `/agents`, and `/trust` use a product card: a temporary resource to align context. Pick 3 minutes, 1 hour, or 1 day. When the clock ends, the link dies. Not for secrets.\n\n`/m/{code}` unfurls as a generic card only: title "meld — this bridge expires", description "This link expires. The exchange is not included in this preview." Slack, X, and Discord GET the URL. The meld body is not copied into `og:title`, `og:description`, `twitter:*`, or that preview HTML. The crawler response has no script and does not read the meld.\n'
+TRUST_MD = '# meld — trust model\n\n- Capability URL + 1 hour: the URL grants access while that meld is live.\n- Host-readable while live.\n- Anyone with the link can read it.\n- Not for secrets/credentials/regulated.\n- Each link lives 1 hour, then it dissolves. The server enforces that clock.\n- Mint-next creates a new bearer URL with its own hour. That is not an extend. It is not a forever thread.\n- Expired hops are deleted. A chain read returns only hops that are still live. Dissolved plaintext is not kept on the chain.\n- This is not a private room and not a vault.\n\nThe host stores ordinary context for the live hour and deletes the meld after expiry. There are no accounts or long-term content archives. Rate-limit identity is IP-based. Use meld for ordinary, disposable handoffs only.\n\n## Link previews\n\n`/`, `/agents`, and `/trust` use a product card: a temporary resource to align context. Each link lives 1 hour, then it dies. Not for secrets.\n\n`/m/{code}` unfurls as a generic card only: title “meld — this bridge expires”, description “This link expires. The exchange is not included in this preview.” Slack, X, and Discord GET the URL. The meld body is not copied into `og:title`, `og:description`, `twitter:*`, or that preview HTML. The crawler response has no script and does not read the meld.\n'
 
 UPGRADE_MD = """# meld — pilot
 
 Timed bridges are free for pilot users. No payment is required to create one.
 
-Choose a bridge time on create: `3m` (3 minutes), `1hr` (1 hour), or `1d` (1 day). The server enforces that TTL. There is no other duration and no default.
+Each link lives 1 hour. Omit ttl or send `1hr`. The server rejects any other lifetime. Mint-next is another link with its own hour. That is not an extend.
 
-The link is the capability. The host can read the exchange while it is live. Anyone with the link can read it. Not for secrets, credentials, or regulated data. The bridge dissolves when the timer ends.
+The link is the capability. The host can read the exchange while it is live. Anyone with the link can read it. Not for secrets, credentials, or regulated data. When the hour ends, the bridge dissolves.
 
 Abuse limits still apply: 20 creates/min, 10 resolves/min, 60 views/min per IP.
 """
 
-RECIPES_MD = '# meld recipes\n\nEvery recipe uses the same locked bar: capability URL + TTL; host-readable while live; anyone with the link can read it; not for secrets/credentials/regulated; dissolves on TTL.\n\n## 1. FDE institutional-knowledge gather\n\nCreate with the question and repo paths, send the URL to the human/on-call, then read the same URL after they resolve.\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds -H \'content-type: application/json\' -H \'X-Meld-Client: agent\' -d \'{"context":"Question + repo paths + known constraints","ttl":"1hr"}\'\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve -H \'content-type: application/json\' -d \'{"context":"The institutional answer"}\'\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\n## 2. Provider-switch context handoff\n\nPut goals, constraints, files, and next step in one meld URL. The new provider opens the URL, adds its answer, and the old provider reads the result.\n\n## 3. Provider-switch request-meld\n\nThe new provider creates a URL containing the request. The old provider opens it, adds its working context, and the new provider reads the resolved URL.\n\n## 4. Create, share, resolve, read\n\n`POST /api/melds` requires `context` and `ttl` (`3m`, `1hr`, or `1d`). There is no default. Send the returned `.url`. The recipient resolves on that URL. Read `GET /api/melds/{code}` while the bridge is live. MCP: https://meld.mergeinc.workers.dev/mcp\n\n```text\nchoose ttl -> create -> share URL -> resolve -> read URL\n```\n\nPilot bridges are free. Create requires `ttl`: `3m`, `1hr`, or `1d`. Per-minute limits apply to everyone.\n'
+RECIPES_MD = '# meld recipes\n\nEvery recipe uses the same locked bar: capability URL; host-readable while live; anyone with the link can read it; not for secrets/credentials/regulated; each link lives 1 hour. Mint-next is a new link with its own hour, not an extend.\n\n## 1. FDE institutional-knowledge gather\n\nCreate with the question and repo paths, send the URL to the human/on-call, then read the same URL after they resolve.\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds -H \'content-type: application/json\' -H \'X-Meld-Client: agent\' -d \'{"context":"Question + repo paths + known constraints"}\'\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve -H \'content-type: application/json\' -d \'{"context":"The institutional answer"}\'\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\n## 2. Provider-switch context handoff\n\nPut goals, constraints, files, and next step in one meld URL. The new provider opens the URL, adds its answer, and the old provider reads the result.\n\n## 3. Provider-switch request-meld\n\nThe new provider creates a URL containing the request. The old provider opens it, adds its working context, and the new provider reads the resolved URL.\n\n## 4. Create, share, resolve, read, mint-next\n\n`POST /api/melds` requires `context`. `ttl` may be omitted or `1hr`. Send the returned `.url`. The recipient resolves on that URL. Read `GET /api/melds/{code}` while the bridge is live. To hop, `POST /api/melds` with `prev_code` set to a live code. That new URL has its own hour. MCP: https://meld.mergeinc.workers.dev/mcp\n\n```text\ncreate -> share URL -> resolve -> read URL -> mint-next (new URL, own hour)\n```\n\nPilot bridges are free. Each link is one hour. Per-minute limits apply to everyone.\n'
 
 MCP_SERVER_CARD = {
     'serverInfo': {'name': 'meld', 'version': '1.0.0'},
@@ -1710,18 +1831,19 @@ MCP_SERVER_CARD = {
         {
             'name': 'meld_create',
             'description': (
-                'Create a timed bridge. ttl is required: 3m, 1hr, or 1d. There is no '
-                'default. Returns the capability URL. Pilot creates are free. '
-                'Dissolves on that TTL.'
+                'Create a timed bridge. Lifetime is 1 hour. Omit ttl or send 1hr. '
+                'prev_code mints a new link with its own hour (not an extend). '
+                'Returns the capability URL. Pilot creates are free.'
             ),
             'inputSchema': {
                 'type': 'object',
                 'properties': {
                     'context': {'type': 'string'},
-                    'ttl': {'type': 'string', 'enum': ['3m', '1hr', '1d']},
+                    'ttl': {'type': 'string', 'enum': ['1hr'], 'default': '1hr'},
+                    'prev_code': {'type': 'string'},
                     'pin': {'type': 'string'},
                 },
-                'required': ['context', 'ttl'],
+                'required': ['context'],
             },
         },
         {
@@ -1765,7 +1887,7 @@ AGENT_CARD = {
     'version': '1.0.0',
     'protocolVersion': '0.2.9',
     'protocols': ['http', 'a2a', 'mcp'],
-    'pricing': {'unit': 'request', 'amount': 0, 'currency': 'free', 'note': 'Pilot bridges are free. ttl required: 3m, 1hr, or 1d'},
+    'pricing': {'unit': 'request', 'amount': 0, 'currency': 'free', 'note': 'Pilot bridges are free. Each link is 1 hour. Mint-next is another 1 hour link.'},
     'availability': {'now': True, 'window_hours': 168, 'sla': 'best-effort'},
     'contact': {
         'http': 'https://meld.mergeinc.workers.dev/api/melds',
@@ -1778,7 +1900,7 @@ AGENT_CARD = {
     'provider': {'organization': 'meld', 'url': 'https://meld.mergeinc.workers.dev'},
     'documentationUrl': 'https://meld.mergeinc.workers.dev/agents.md',
     'skills': [
-        {'id': 'meld-create', 'name': 'meld_create', 'description': 'Create a timed bridge. ttl is required: 3m, 1hr, or 1d. No default. Returns the capability URL. Pilot creates are free. Dissolves on that TTL.', 'tags': ['context-sharing', 'ephemeral', 'handoff', 'rendezvous', 'agent-to-agent'], 'examples': ['Create a meld with context and ttl 1hr.']},
+        {'id': 'meld-create', 'name': 'meld_create', 'description': 'Create a timed bridge. Lifetime is 1 hour. Omit ttl or send 1hr. prev_code mints a new link with its own hour, not an extend. Returns the capability URL. Pilot creates are free.', 'tags': ['context-sharing', 'ephemeral', 'handoff', 'rendezvous', 'agent-to-agent'], 'examples': ['Create a meld with context. The link lives 1 hour.']},
         {'id': 'meld-resolve', 'name': 'meld_resolve', 'description': "Answer a meld link you were given. Submit your context and receive the original party's context. Idempotent for identical answers; conflicting answers rejected with 409.", 'tags': ['context-sharing', 'answer', 'handoff'], 'examples': ['Resolve meld code abc123 with context: Event-driven services plus a queue.']},
         {'id': 'meld-read', 'name': 'meld_read', 'description': "Read the counterpart's answer using the owner token. Token rotates on every read; persist the new token.", 'tags': ['context-sharing', 'read', 'result'], 'examples': ['Read result for meld code abc123 with the owner token from create.']},
     ],
@@ -1788,36 +1910,37 @@ AGENT_CARD = {
 # Served at /skill.md. Source: recipes/SKILL.md
 SKILL_MD = """---
 name: meld
-description: Timed capability URL for two handoffs. A human pours context on the web UI and an agent fetches it, or one agent creates a bearer URL another agent resolves. Host-readable while live. Anyone with the link can read it. Not for secrets. Dissolves on TTL. ttl is required and is 3m, 1hr, or 1d.
+description: Timed capability URL for two handoffs. A human pours context on the web UI and an agent fetches it, or one agent creates a bearer URL another agent resolves. Each link lives 1 hour. Mint-next starts a new link with its own hour, not an extend. Host-readable while live. Anyone with the link can read it. Not for secrets.
 ---
 
 # meld
 
 Base: https://meld.mergeinc.workers.dev
 
-Not for secrets/credentials/regulated. Host-readable while live. Anyone with the link can read it. Dissolves on TTL. Pilot creates are free.
+Not for secrets/credentials/regulated. Host-readable while live. Anyone with the link can read it. Each link lives 1 hour, then it is gone. Pilot creates are free.
 
-`ttl` is required: `3m`, `1hr`, or `1d`. There is no default.
+Omit `ttl` or send `1hr`. The server rejects any other lifetime. Mint-next passes `prev_code` and creates a new bearer URL with its own hour. That is not an extend. `GET /api/melds/{code}/chain` returns only hops that are still live.
 
 ## Uses
 
 1. Human → agent. The person pours context on the web UI and sends the capability URL. Fetch it with `GET /api/melds/{code}`. To put an answer on that bridge, `POST /api/melds/{code}/resolve` or MCP `meld_resolve`. If you already have a chat with that person, answer in the chat after you fetch.
-2. Agent → agent. Create with `context` and `ttl`, send the returned URL, and the other agent resolves and reads it. The URL is the channel.
+2. Agent → agent. Create with `context`, send the returned URL, and the other agent resolves and reads it. The URL is the channel. Mint-next from a live reply starts the next link. It does not keep the previous hour running.
 
 ## MCP
 
 Streamable HTTP, no API key in the URL, no OAuth: https://meld.mergeinc.workers.dev/mcp
 
-- `meld_create` — `context` and `ttl` (`3m`, `1hr`, or `1d`)
+- `meld_create` — `context`. Optional `ttl` (`1hr` only). Optional `prev_code` for mint-next.
 - `meld_resolve` — `code` and `context`
 - `meld_read` — `code` and `owner_token` (legacy owner path; the token rotates)
 
 ## HTTP
 
 ```bash
-curl -s https://meld.mergeinc.workers.dev/api/melds -H 'content-type: application/json' -H 'X-Meld-Client: agent' -d '{"context":"...","ttl":"1hr"}'
+curl -s https://meld.mergeinc.workers.dev/api/melds -H 'content-type: application/json' -H 'X-Meld-Client: agent' -d '{"context":"..."}'
 curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve -H 'content-type: application/json' -d '{"context":"..."}'
 curl -s https://meld.mergeinc.workers.dev/api/melds/{code}
+curl -s https://meld.mergeinc.workers.dev/api/melds -H 'content-type: application/json' -d '{"context":"...","prev_code":"{code}"}'
 ```
 
 `X-Meld-Client: agent` is an optional label the worker already accepts. It is not a credential.
@@ -1826,7 +1949,7 @@ Install guide: https://meld.mergeinc.workers.dev/agents.md
 Recipes: https://meld.mergeinc.workers.dev/recipes.md
 """
 
-SKILLS_INDEX = {'$schema': 'https://schemas.agentskills.io/discovery/0.2.0/schema.json', 'skills': [{'name': 'meld', 'description': 'Timed capability URL for two handoffs. A human pours context on the web UI and an agent fetches it, or one agent creates a bearer URL another agent resolves. Host-readable while live. Anyone with the link can read it. Not for secrets. Dissolves on TTL. ttl is required and is 3m, 1hr, or 1d.', 'type': 'skill-md', 'url': 'https://meld.mergeinc.workers.dev/skill.md', 'digest': 'sha256:402d158e8044660f0a27802ad3530820b2b24928f8ce6c358669e71216735540'}]}
+SKILLS_INDEX = {'$schema': 'https://schemas.agentskills.io/discovery/0.2.0/schema.json', 'skills': [{'name': 'meld', 'description': 'Timed capability URL for two handoffs. A human pours context on the web UI and an agent fetches it, or one agent creates a bearer URL another agent resolves. Each link lives 1 hour. Mint-next starts a new link with its own hour, not an extend. Host-readable while live. Anyone with the link can read it. Not for secrets.', 'type': 'skill-md', 'url': 'https://meld.mergeinc.workers.dev/skill.md', 'digest': 'sha256:bbd90e8d3188bf590243b73f9088814de83cc2f85c0fe3ac132eff2a1c22a039'}]}
 
 
 MCP_MANIFEST = {
@@ -1868,7 +1991,7 @@ AI_PLUGIN = {
     "name_for_human": "meld",
     "name_for_model": "meld",
     "description_for_human": "Capability URL + TTL for a one-time context handoff. Host-readable while live; anyone with the link can read it; dissolves on TTL.",
-    "description_for_model": "Create a capability URL + TTL for a one-time context handoff. POST /api/melds with {context, ttl} where ttl is 3m, 1hr, or 1d (required, no default). The URL is the capability. Counterpart POST /api/melds/{code}/resolve; GET /api/melds/{code} returns the live context to anyone with the link. Host-readable while live, not for secrets/credentials/regulated, dissolves on that TTL. Pilot creates are free.",
+    "description_for_model": "Create a capability URL that lives 1 hour. POST /api/melds with {context} or {context, ttl:\"1hr\"}. Other ttl values are rejected. Optional prev_code mints a new link with its own hour (not an extend). The URL is the capability. Counterpart POST /api/melds/{code}/resolve; GET /api/melds/{code} returns the live context to anyone with the link. GET /api/melds/{code}/chain returns only hops that are still live. Host-readable while live, not for secrets/credentials/regulated, dissolves after that hour. Pilot creates are free.",
     "auth": {"type": "none"},
     "api": {
         "type": "openapi",
@@ -1893,11 +2016,11 @@ TRUST_HTML = (
     "<li><strong>Host-readable while live.</strong></li>\n"
     "<li><strong>Anyone with the link can read it.</strong></li>\n"
     "<li><strong>Not for secrets/credentials/regulated.</strong></li>\n"
-    "<li><strong>Dissolves on TTL.</strong> Choose 3 minutes, 1 hour, or 1 day at create. The server enforces that timer.</li>\n"
+    "<li><strong>Dissolves after 1 hour.</strong> The server enforces that clock. Mint-next is a new link with its own hour, not an extend.</li>\n"
     "</ul>\n"
     "<p>meld is an ephemeral context handoff, not a vault. The host stores ordinary context only for the live TTL, then deletes the meld. There are no accounts or long-term content archives.</p>\n"
     "<h2>Link previews</h2>\n"
-    "<p><code>/</code>, <code>/agents</code>, and <code>/trust</code> use a product card: a temporary resource to align context. Pick 3 minutes, 1 hour, or 1 day. When the clock ends, the link dies. Not for secrets.</p>\n"
+    "<p><code>/</code>, <code>/agents</code>, and <code>/trust</code> use a product card: a temporary resource to align context. Each link lives 1 hour, then it dies. Not for secrets.</p>\n"
     "<p><code>/m/{code}</code> unfurls as a generic card only: title “meld — this bridge expires”, description “This link expires. The exchange is not included in this preview.” Slack, X, and Discord GET the URL. The meld body is not copied into <code>og:title</code>, <code>og:description</code>, <code>twitter:*</code>, or that preview HTML. That crawler response has no script and does not read the meld.</p>\n"
     '<p><a href="/llms.txt">Agent docs</a> · <a href="/agents">Agents</a> · <a href="/">Create a meld</a></p>\n'
     "</body></html>"

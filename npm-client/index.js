@@ -4,18 +4,19 @@ function getBase(opts) {
   return (opts && opts.baseUrl) || process.env.MELD_URL || DEFAULT_BASE;
 }
 
-const BRIDGE_TTLS = new Set(["3m", "1hr", "1d"]);
-
 export async function create(context, opts = {}) {
-  if (!BRIDGE_TTLS.has(opts.ttl)) {
-    throw new Error("ttl is required: 3m, 1hr, or 1d. There is no default.");
+  const ttl = opts.ttl == null || opts.ttl === "" ? "1hr" : opts.ttl;
+  if (ttl !== "1hr") {
+    throw new Error("This link lives 1 hour. ttl must be 1hr or omitted.");
   }
   const base = getBase(opts);
   const headers = { "Content-Type": "application/json" };
   if (opts.apiKey) headers["Authorization"] = `Bearer ${opts.apiKey}`;
+  const payload = { context, ttl };
+  if (opts.prevCode) payload.prev_code = opts.prevCode;
   const res = await fetch(`${base}/api/melds`, {
     method: "POST", headers,
-    body: JSON.stringify({ context, ttl: opts.ttl })
+    body: JSON.stringify(payload)
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

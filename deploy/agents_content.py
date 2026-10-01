@@ -9,7 +9,7 @@ from preview_meta import SITE, marketing_meta
 
 AGENTS_MD = """# meld — install
 
-meld is a timed capability URL for one context exchange. The host is readable while live. Anyone with the link can read it. Not for secrets/credentials/regulated. The meld dissolves on TTL.
+meld is a timed capability URL for one context exchange. The host is readable while live. Anyone with the link can read it. Not for secrets/credentials/regulated. Each link lives 1 hour, then the host serves 410.
 
 Pilot creates are free.
 
@@ -24,7 +24,7 @@ fetch https://meld.mergeinc.workers.dev/agents.md and set me up for meld
 1. **Human → agent.** A person pours context on the web UI. The agent fetches that context with MCP and/or HTTP.
 2. **Agent → agent.** One agent creates the bearer URL and sends it. The other agent resolves and reads it. The URL is the channel.
 
-`ttl` is required on every create and must be `3m`, `1hr`, or `1d`. The server enforces that lifetime. There is no default.
+Every meld lives 1 hour. Omit `ttl` or send `1hr`. The server rejects any other lifetime. Mint-next (`prev_code` on create) starts a new bearer URL with its own hour. That is not an extend. `GET /api/melds/{code}/chain` lists only hops that are still live. Expired hops are deleted and their plaintext is not on the chain.
 
 ## Instructions for the agent
 
@@ -39,7 +39,7 @@ You are setting up meld in the client you are running in. Base URL: `https://mel
 
 Remote Streamable HTTP: `https://meld.mergeinc.workers.dev/mcp`
 
-Tools: `meld_create` (`context`, `ttl`), `meld_resolve` (`code`, `context`), `meld_read` (`code`, `owner_token`). `meld_create` requires `ttl` of `3m`, `1hr`, or `1d`.
+Tools: `meld_create` (`context`, optional `ttl` of `1hr`, optional `prev_code`), `meld_resolve` (`code`, `context`), `meld_read` (`code`, `owner_token`). `meld_create` lives 1 hour. `prev_code` is mint-next: a new link, not an extend.
 
 MCP create already sends `X-Meld-Client: agent`. That header is an optional label the worker accepts on HTTP creates. It is not a secret. Do not send `Authorization`. If a client requires a headers object, `X-Meld-Client: agent` is the only header to add.
 
@@ -112,7 +112,7 @@ No login step. The URL is enough.
 
 ### HTTP create, share URL, resolve, read
 
-`ttl` is required. Share `.url`. The code is the path segment after `/m/`.
+Share `.url`. The code is the path segment after `/m/`. Lifetime is 1 hour.
 
 ```bash
 curl -s https://meld.mergeinc.workers.dev/api/melds \\
@@ -137,7 +137,7 @@ Fetch `https://meld.mergeinc.workers.dev/skill.md` and save the body as `SKILL.m
 
 ## Use 1 — Human → agent
 
-The person opens `https://meld.mergeinc.workers.dev`, picks `3m`, `1hr`, or `1d`, pours the context, and sends the capability URL.
+The person opens `https://meld.mergeinc.workers.dev`, pours the context, and sends the capability URL. The link lives 1 hour.
 
 Fetch it with `GET /api/melds/{code}`. To put an answer on that same bridge, call `meld_resolve` or `POST /api/melds/{code}/resolve` (both return the poured context). `meld_read` applies only when you hold the owner token from a create you made.
 
@@ -145,7 +145,7 @@ If you already have a chat with the person who poured the context, fetch the bri
 
 ## Use 2 — Agent → agent
 
-Create with MCP `meld_create` or `POST /api/melds`. Pass `context` and `ttl` of `3m`, `1hr`, or `1d`. Send the other agent only the capability URL. That URL is the channel.
+Create with MCP `meld_create` or `POST /api/melds`. Pass `context`. `ttl` may be omitted or `1hr`. Send the other agent only the capability URL. That URL is the channel. To continue after a reply, mint-next with `prev_code` set to the live code. That creates a new URL with its own hour. It is not an extend.
 
 The other agent reads `GET /api/melds/{code}` and answers with `POST /api/melds/{code}/resolve` or `meld_resolve`. Read the same URL while it is live.
 

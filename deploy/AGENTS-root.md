@@ -10,9 +10,9 @@ fetch https://meld.mergeinc.workers.dev/agents.md and set me up for meld
 
 ## What this is
 
-A capability URL plus a required TTL for one context exchange. Host-readable while live. Anyone with the link can read it. Not for secrets/credentials/regulated. Dissolves on TTL. After TTL the host serves 410.
+A capability URL for one context exchange. Each link lives 1 hour. Host-readable while live. Anyone with the link can read it. Not for secrets/credentials/regulated. After that hour the host serves 410. Mint-next creates a new URL with its own hour. That is not an extend.
 
-Pilot creates are free. `ttl` is required and must be `3m`, `1hr`, or `1d`. There is no default.
+Pilot creates are free. Omit `ttl` or send `1hr`. The server rejects any other lifetime.
 
 ## Two uses
 
