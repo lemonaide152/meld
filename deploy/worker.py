@@ -19,6 +19,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 
 from workers import asgi
 from agents_content import AGENTS_HTML
+try:
+    from agents_content import AGENTS_MD
+except ImportError:  # unit tests stub agents_content with AGENTS_HTML only
+    AGENTS_MD = ""
 from app_content import APP_HTML
 from og_png import PNG as OG_PNG
 from preview_meta import (
@@ -1621,9 +1625,38 @@ async def root(request: Request):
     )
 
 
-AGENTS_ROOT_MD = '# AGENTS.md — working with meld\n\nmeld puts context on a capability URL with a TTL. The host is readable while live, and anyone with the link can read it. After TTL, the meld dissolves and the host serves 410. Not for secrets, credentials, or regulated data.\n\n## Quick start\n\n```bash\n# Create; share url. Keep owner_token only for the legacy /result read.\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' -H \'X-Meld-Client: agent\' \\\n  -d \'{"context":"...","ttl":"1hr"}\'\n# -> {code, url, owner_url, owner_token, expires_at}\n\n# Resolve from the link.\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' -d \'{"context":"..."}\'\n\n# Anyone holding the capability URL can read the live contexts.\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\n## Locked claims\n\n- Capability URL + TTL.\n- Host-readable while live.\n- Anyone with the link can read it.\n- Not for secrets/credentials/regulated.\n- Dissolves on TTL.\n- Bridge time is required: 3m, 1hr, or 1d. The server enforces that TTL. There is no default.\n\n## Agent-to-agent\n\nCreate, send the share URL, resolve once, then read the URL. Pass `ttl` as `3m`, `1hr`, or `1d`. There is no default. MCP: https://meld.mergeinc.workers.dev/mcp\n\n## Limits and docs\n\nPilot bridges are free. Create requires `ttl`: `3m`, `1hr`, or `1d`. Per-minute limits apply to everyone. Errors: 400, 403 PIN, 404, 409, 410, 429.\n\nMachine-readable docs: /llms.txt · /agents.md · /recipes.md · /openapi.json · /trust.md\n'
+# Served at /AGENTS.md. Source: deploy/AGENTS-root.md
+AGENTS_ROOT_MD = """# AGENTS.md — working with meld
 
-LLMS_TXT = '# meld\n> Capability URL + TTL for a one-time context handoff.\n\nBase URL: https://meld.mergeinc.workers.dev\n\nLocked claims: host-readable while live; anyone with the link can read it; not for secrets/credentials/regulated; dissolves on TTL. Bridge time is required: 3m, 1hr, or 1d. The server enforces that TTL. There is no default.\n\n## Flow\n\n1. `POST /api/melds` with `{"context":"...","ttl":"1hr"}` -> `code`, `url`, `owner_token`, `expires_at`.\n2. Share `url` with the other party. The URL is the capability.\n3. `POST /api/melds/{code}/resolve` with `{"context":"..."}` to answer.\n4. `GET /api/melds/{code}` -> the live context for anyone holding the link.\n\nTTL: required on create, one of 3m (3 minutes), 1hr (1 hour), or 1d (1 day). The server enforces it. Then 410 Gone.\nContent limit: 100,000 characters. Not for secrets, credentials, or regulated data.\n\n## Agent quick start\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' -H \'X-Meld-Client: agent\' \\\n  -d \'{"context":"...","ttl":"1hr"}\'\n# share .url; resolve with the returned code\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' -d \'{"context":"..."}\'\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\n## Docs and integrations\n\n- Agent docs: https://meld.mergeinc.workers.dev/agents.md\n- Recipes: https://meld.mergeinc.workers.dev/recipes.md\n- Trust: https://meld.mergeinc.workers.dev/trust.md\n- OpenAPI: https://meld.mergeinc.workers.dev/openapi.json\n- MCP remote: https://meld.mergeinc.workers.dev/mcp\n- MCP manifest: https://meld.mergeinc.workers.dev/.well-known/mcp.json\n- Agent card: https://meld.mergeinc.workers.dev/.well-known/agent.json\n\nPilot bridges are free. Create requires `ttl`: `3m`, `1hr`, or `1d`. Per-minute limits apply to everyone.\n'
+Fetch and follow the install guide: https://meld.mergeinc.workers.dev/agents.md
+
+Paste prompt for a coding agent:
+
+```text
+fetch https://meld.mergeinc.workers.dev/agents.md and set me up for meld
+```
+
+## What this is
+
+A capability URL plus a required TTL for one context exchange. Host-readable while live. Anyone with the link can read it. Not for secrets/credentials/regulated. Dissolves on TTL. After TTL the host serves 410.
+
+Pilot creates are free. `ttl` is required and must be `3m`, `1hr`, or `1d`. There is no default.
+
+## Two uses
+
+1. Human → agent. A person pours context on the web UI. The agent fetches it with MCP and/or HTTP.
+2. Agent → agent. The bearer URL is the channel. One agent creates it; the other resolves and reads it.
+
+## Where to connect
+
+MCP Streamable HTTP (no API key in the URL, no OAuth): https://meld.mergeinc.workers.dev/mcp
+
+Skill: https://meld.mergeinc.workers.dev/skill.md
+
+Docs: /llms.txt · /agents.md · /recipes.md · /openapi.json · /trust.md
+"""
+
+LLMS_TXT = '# meld\n> Capability URL + TTL for a one-time context handoff.\n\nBase URL: https://meld.mergeinc.workers.dev\n\nInstall guide: https://meld.mergeinc.workers.dev/agents.md — fetch that URL and set the coding agent up for meld. Two uses only: a human pours context on the web UI and an agent fetches it, or one agent creates the bearer URL and another agent resolves and reads it.\n\nLocked claims: host-readable while live; anyone with the link can read it; not for secrets/credentials/regulated; dissolves on TTL. Bridge time is required: 3m, 1hr, or 1d. The server enforces that TTL. There is no default.\n\n## Flow\n\n1. `POST /api/melds` with `{"context":"...","ttl":"1hr"}` -> `code`, `url`, `owner_token`, `expires_at`.\n2. Share `url` with the other party. The URL is the capability.\n3. `POST /api/melds/{code}/resolve` with `{"context":"..."}` to answer.\n4. `GET /api/melds/{code}` -> the live context for anyone holding the link.\n\nTTL: required on create, one of 3m (3 minutes), 1hr (1 hour), or 1d (1 day). The server enforces it. Then 410 Gone.\nContent limit: 100,000 characters. Not for secrets, credentials, or regulated data.\n\n## Agent quick start\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' -H \'X-Meld-Client: agent\' \\\n  -d \'{"context":"...","ttl":"1hr"}\'\n# share .url; resolve with the returned code\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' -d \'{"context":"..."}\'\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\n## Docs and integrations\n\n- Agent docs: https://meld.mergeinc.workers.dev/agents.md\n- Recipes: https://meld.mergeinc.workers.dev/recipes.md\n- Trust: https://meld.mergeinc.workers.dev/trust.md\n- OpenAPI: https://meld.mergeinc.workers.dev/openapi.json\n- MCP remote: https://meld.mergeinc.workers.dev/mcp\n- MCP manifest: https://meld.mergeinc.workers.dev/.well-known/mcp.json\n- Agent card: https://meld.mergeinc.workers.dev/.well-known/agent.json\n\nPilot bridges are free. Create requires `ttl`: `3m`, `1hr`, or `1d`. Per-minute limits apply to everyone.\n'
 
 ROBOTS_TXT = """User-agent: GPTBot
 Allow: /
@@ -1646,7 +1679,6 @@ Sitemap: https://meld.mergeinc.workers.dev/sitemap.xml
 """
 
 
-AGENTS_MD = '# meld — agent API\n\nmeld is a capability URL + TTL for one context exchange. Host-readable while live; anyone with the link can read it. Not for secrets/credentials/regulated. The meld dissolves on TTL.\n\n## Create -> resolve -> read\n\n```bash\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' -H \'X-Meld-Client: agent\' \\\n  -d \'{"context":"What architecture fits 10M users?","ttl":"1hr"}\'\n# share the returned .url and note .code\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' \\\n  -d \'{"context":"Event-driven services plus a queue."}\'\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\nThe capability URL is the access. `owner_token` and `/result` remain as a legacy owner-read path. Resolve is one answer; identical retries are idempotent and a conflicting answer returns 409.\n\n## Bridge time\n\n`ttl` is required on create and must be `3m`, `1hr`, or `1d`. The server enforces that lifetime. There is no default. Pilot creates are free.\n\nMCP remote: https://meld.mergeinc.workers.dev/mcp · Recipes: /recipes.md · OpenAPI: /openapi.json\n'
 
 TRUST_MD = '# meld — trust model\n\n- Capability URL + TTL: the URL grants access while the meld is live.\n- Host-readable while live.\n- Anyone with the link can read it.\n- Not for secrets/credentials/regulated.\n- Dissolves on the TTL chosen at create: 3 minutes (`3m`), 1 hour (`1hr`), or 1 day (`1d`).\n- Bridge time is required: 3m, 1hr, or 1d. The server enforces that TTL. There is no default.\n\nThe host stores ordinary context for the live TTL and deletes the meld after expiry. There are no accounts or long-term content archives. Rate-limit identity is IP-based. Use meld for ordinary, disposable handoffs only.\n\n## Link previews\n\n`/`, `/agents`, and `/trust` use a product card: a temporary resource to align context. Pick 3 minutes, 1 hour, or 1 day. When the clock ends, the link dies. Not for secrets.\n\n`/m/{code}` unfurls as a generic card only: title "meld — this bridge expires", description "This link expires. The exchange is not included in this preview." Slack, X, and Discord GET the URL. The meld body is not copied into `og:title`, `og:description`, `twitter:*`, or that preview HTML. The crawler response has no script and does not read the meld.\n'
 
@@ -1753,9 +1785,48 @@ AGENT_CARD = {
 }
 
 
-SKILL_MD = '---\nname: meld\ndescription: Capability URL + TTL for a one-time context handoff. Host-readable while live; anyone with the link can read it; dissolves on TTL.\n---\n\n# meld\n\nUse meld for one-time context exchange. It is not for secrets/credentials/regulated data.\n\n1. Create with `POST /api/melds` and share the returned URL.\n2. Resolve with `POST /api/melds/{code}/resolve`.\n3. Read the live context with `GET /api/melds/{code}`.\n4. Bridge time is required: 3m, 1hr, or 1d. The server enforces that TTL. There is no default.\n\nMCP: https://meld.mergeinc.workers.dev/mcp\nRecipes: https://meld.mergeinc.workers.dev/recipes.md\n'
+# Served at /skill.md. Source: recipes/SKILL.md
+SKILL_MD = """---
+name: meld
+description: Timed capability URL for two handoffs. A human pours context on the web UI and an agent fetches it, or one agent creates a bearer URL another agent resolves. Host-readable while live. Anyone with the link can read it. Not for secrets. Dissolves on TTL. ttl is required and is 3m, 1hr, or 1d.
+---
 
-SKILLS_INDEX = {'$schema': 'https://schemas.agentskills.io/discovery/0.2.0/schema.json', 'skills': [{'name': 'meld', 'description': 'Capability URL + TTL for a one-time context handoff. Host-readable while live; anyone with the link can read it; dissolves on TTL.', 'type': 'skill-md', 'url': 'https://meld.mergeinc.workers.dev/skill.md', 'digest': 'sha256:3229ba12e547e9503f98c03cba1e0829396aad521e8c8675a5f27bbb739352ec'}]}
+# meld
+
+Base: https://meld.mergeinc.workers.dev
+
+Not for secrets/credentials/regulated. Host-readable while live. Anyone with the link can read it. Dissolves on TTL. Pilot creates are free.
+
+`ttl` is required: `3m`, `1hr`, or `1d`. There is no default.
+
+## Uses
+
+1. Human → agent. The person pours context on the web UI and sends the capability URL. Fetch it with `GET /api/melds/{code}`. To put an answer on that bridge, `POST /api/melds/{code}/resolve` or MCP `meld_resolve`. If you already have a chat with that person, answer in the chat after you fetch.
+2. Agent → agent. Create with `context` and `ttl`, send the returned URL, and the other agent resolves and reads it. The URL is the channel.
+
+## MCP
+
+Streamable HTTP, no API key in the URL, no OAuth: https://meld.mergeinc.workers.dev/mcp
+
+- `meld_create` — `context` and `ttl` (`3m`, `1hr`, or `1d`)
+- `meld_resolve` — `code` and `context`
+- `meld_read` — `code` and `owner_token` (legacy owner path; the token rotates)
+
+## HTTP
+
+```bash
+curl -s https://meld.mergeinc.workers.dev/api/melds -H 'content-type: application/json' -H 'X-Meld-Client: agent' -d '{"context":"...","ttl":"1hr"}'
+curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve -H 'content-type: application/json' -d '{"context":"..."}'
+curl -s https://meld.mergeinc.workers.dev/api/melds/{code}
+```
+
+`X-Meld-Client: agent` is an optional label the worker already accepts. It is not a credential.
+
+Install guide: https://meld.mergeinc.workers.dev/agents.md
+Recipes: https://meld.mergeinc.workers.dev/recipes.md
+"""
+
+SKILLS_INDEX = {'$schema': 'https://schemas.agentskills.io/discovery/0.2.0/schema.json', 'skills': [{'name': 'meld', 'description': 'Timed capability URL for two handoffs. A human pours context on the web UI and an agent fetches it, or one agent creates a bearer URL another agent resolves. Host-readable while live. Anyone with the link can read it. Not for secrets. Dissolves on TTL. ttl is required and is 3m, 1hr, or 1d.', 'type': 'skill-md', 'url': 'https://meld.mergeinc.workers.dev/skill.md', 'digest': 'sha256:402d158e8044660f0a27802ad3530820b2b24928f8ce6c358669e71216735540'}]}
 
 
 MCP_MANIFEST = {

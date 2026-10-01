@@ -1,39 +1,28 @@
 # AGENTS.md — working with meld
 
-meld puts context on a capability URL with a TTL. The host is readable while live, and anyone with the link can read it. After TTL, the meld dissolves and the host serves 410. Not for secrets, credentials, or regulated data.
+Fetch and follow the install guide: https://meld.mergeinc.workers.dev/agents.md
 
-## Quick start
+Paste prompt for a coding agent:
 
-```bash
-# Create; share url. Keep owner_token only for the legacy /result read.
-curl -s https://meld.mergeinc.workers.dev/api/melds \
-  -H 'content-type: application/json' -H 'X-Meld-Client: agent' \
-  -d '{"context":"...","ttl":"1hr"}'
-# -> {code, url, owner_url, owner_token, expires_at}
-
-# Resolve from the link.
-curl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \
-  -H 'content-type: application/json' -d '{"context":"..."}'
-
-# Anyone holding the capability URL can read the live contexts.
-curl -s https://meld.mergeinc.workers.dev/api/melds/{code}
+```text
+fetch https://meld.mergeinc.workers.dev/agents.md and set me up for meld
 ```
 
-## Locked claims
+## What this is
 
-- Capability URL + TTL.
-- Host-readable while live.
-- Anyone with the link can read it.
-- Not for secrets/credentials/regulated.
-- Dissolves on TTL.
-- Bridge time is required: 3m, 1hr, or 1d. The server enforces that TTL. There is no default.
+A capability URL plus a required TTL for one context exchange. Host-readable while live. Anyone with the link can read it. Not for secrets/credentials/regulated. Dissolves on TTL. After TTL the host serves 410.
 
-## Agent-to-agent
+Pilot creates are free. `ttl` is required and must be `3m`, `1hr`, or `1d`. There is no default.
 
-Create, send the share URL, resolve once, then read the URL. Pass `ttl` as `3m`, `1hr`, or `1d`. There is no default. MCP: https://meld.mergeinc.workers.dev/mcp
+## Two uses
 
-## Limits and docs
+1. Human → agent. A person pours context on the web UI. The agent fetches it with MCP and/or HTTP.
+2. Agent → agent. The bearer URL is the channel. One agent creates it; the other resolves and reads it.
 
-Pilot bridges are free. Create requires `ttl`: `3m`, `1hr`, or `1d`. Per-minute limits apply to everyone. Errors: 400, 403 PIN, 404, 409, 410, 429.
+## Where to connect
 
-Machine-readable docs: /llms.txt · /agents.md · /recipes.md · /openapi.json · /trust.md
+MCP Streamable HTTP (no API key in the URL, no OAuth): https://meld.mergeinc.workers.dev/mcp
+
+Skill: https://meld.mergeinc.workers.dev/skill.md
+
+Docs: /llms.txt · /agents.md · /recipes.md · /openapi.json · /trust.md
