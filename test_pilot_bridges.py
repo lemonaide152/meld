@@ -205,7 +205,11 @@ def test_share_preview_hides_body():
     ok("og:description is generic",
        'property="og:description" content="This link expires. The exchange is not included in this preview."' in html)
     home = worker._render_page(share=False)
-    ok("home is the task workspace", "Open a timed bridge" in home and "3 minutes" in home and "1 hour" in home and "1 day" in home)
+    ok("home is the task workspace",
+       "A temporary resource to align context." in home
+       and "Create the timed link" in home
+       and "Create the bridge" in home
+       and "3 minutes" in home and "1 hour" in home and "1 day" in home)
     lowered = home.lower()
     ok("home has no mint-next, email field, e2e, or pay upsell",
        "mint-next" not in lowered and "type=\"email\"" not in lowered
@@ -246,7 +250,8 @@ def test_legacy_template_paths_404():
             ok(f"{path} is not served", e.status_code == 404, str(e.status_code))
     home = run(worker.serve_page("anything-else"))
     body = bytes(home.body).decode()
-    ok("unknown product paths still get the workspace", "Open a timed bridge" in body)
+    ok("unknown product paths still get the workspace",
+       "A temporary resource to align context." in body and "Create the bridge" in body)
     upgrade = run(worker.upgrade_md())
     text = bytes(upgrade.body).decode()
     ok("upgrade.md still served", "pilot" in text.lower() and "$3.33" not in text)
@@ -349,6 +354,33 @@ def test_agent_install_surface():
     ok("skill index digest", entry["digest"] == digest, entry["digest"])
 
 
+def test_card_homepage():
+    print("card homepage")
+    html = worker.APP_HTML
+    what = (
+        "meld is a temporary resource that aligns context between you and an agent, "
+        "or between two agents — timed link, then it dies. Not for secrets."
+    )
+    ok("what-it-is is the locked line", what in html)
+    for phrase in (
+        "A temporary resource to align context.",
+        "Pick 3 minutes, 1 hour, or 1 day.",
+        "When the clock ends, the link dies.",
+        "Not for secrets.",
+    ):
+        ok(f"hero keeps {phrase}", phrase in html)
+    css = html.split("<style>", 1)[1].split("</style>", 1)[0].lower()
+    ok("accent is card purple", "#8b5cf6" in css)
+    ok("background is near-black", "#05050a" in css)
+    ok("mint accent is gone", "#7ee0c6" not in css)
+    ok("hero reuses the og card", 'url("/og.png")' in html)
+    lowered = html.lower()
+    ok("homepage does not pitch another person", "another person" not in lowered)
+    ok("what-it-is does not use they open the link", "they open the link" not in lowered)
+    ok("host-readable warning stays off the one-liner",
+       "host" not in what.lower() and "The host can read it while it is live." in html)
+
+
 def test_shipped_docs_drop_mint_next():
     print("docs")
     blob = "\n".join([
@@ -364,7 +396,8 @@ def test_shipped_docs_drop_mint_next():
 for t in (test_ttl_required_and_enforced, test_resolve_keeps_chosen_ttl,
           test_mcp_selector_has_no_default, test_share_preview_hides_body,
           test_receiver_job_and_soft_poll, test_mobile_first_human_ui,
-          test_legacy_template_paths_404, test_agent_install_surface,
+          test_card_homepage, test_legacy_template_paths_404,
+          test_agent_install_surface,
           test_shipped_docs_drop_mint_next):
     t()
 
