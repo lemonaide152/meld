@@ -258,7 +258,7 @@ def test_share_preview_hides_body():
        'property="og:description" content="This link expires. The exchange is not included in this preview."' in html)
     home = worker._render_page(share=False)
     ok("home is the task workspace",
-       "A temporary resource to align context." in home
+       "Stop being the copy-paste proxy." in home
        and "Create the timed link" in home
        and "Create the bridge" in home
        and "This link lives 1 hour, then it dies." in home
@@ -314,7 +314,7 @@ def test_legacy_template_paths_404():
     home = run(worker.serve_page("anything-else"))
     body = bytes(home.body).decode()
     ok("unknown product paths still get the workspace",
-       "A temporary resource to align context." in body and "Create the bridge" in body)
+       "Stop being the copy-paste proxy." in body and "Create the bridge" in body)
     upgrade = run(worker.upgrade_md())
     text = bytes(upgrade.body).decode()
     ok("upgrade.md still served", "pilot" in text.lower() and "$3.33" not in text)
@@ -438,7 +438,7 @@ def test_card_homepage():
        'class="sub"' not in html and 'class="secret"' not in html
        and "<h1>A temporary resource to align context.</h1>" not in html)
     ok("document title stays the card claim",
-       'document.title = "A temporary resource to align context."' in html)
+       'document.title = "Stop being the copy-paste proxy."' in html)
     css = html.split("<style>", 1)[1].split("</style>", 1)[0].lower()
     ok("accent is card purple", "#8b5cf6" in css)
     ok("background is near-black", "#05050a" in css)
