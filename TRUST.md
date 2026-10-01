@@ -11,6 +11,6 @@ The host stores ordinary context for the live TTL and deletes the meld after exp
 
 ## Link previews
 
-`/`, `/agents`, and `/trust` use a product card: “Context for your agent. One link. Then it’s gone.” It is a timed bridge (time on this link). Host-readable while live. Anyone with the link can read it. Not for secrets. It dissolves on TTL.
+`/`, `/agents`, and `/trust` use a product card: a temporary resource to align context. Pick 3 minutes, 1 hour, or 1 day. When the clock ends, the link dies. Not for secrets.
 
 `/m/{code}` unfurls as a generic card only: title “meld — this bridge expires”, description “This link expires. The exchange is not included in this preview.” Slack, X, and Discord GET the URL. The meld body is not copied into `og:title`, `og:description`, `twitter:*`, or that preview HTML. The crawler response has no script and does not read the meld.
