@@ -223,12 +223,17 @@ def test_receiver_job_and_soft_poll():
     ok("opener has their own job rail",
        'id="receiver-rail"' in html and "Your job" in html
        and ">Read<" in html and ">Reply<" in html and ">Done<" in html)
-    ok("creator rail stays for the person opening a bridge",
-       'id="creator-rail"' in html and "Write the handoff" in html)
+    ok("creator rail stays a thin progress stepper",
+       'id="creator-rail"' in html and ">Write<" in html and ">Time<" in html
+       and ">Share<" in html and ">Reply<" in html)
     receiver = html.split("function receiver(", 1)[1].split("function resolved(", 1)[0]
     landing = html.split("function landing(", 1)[1].split("function timeBtn(", 1)[0]
-    ok("reply page does not render the needs grid", "needsBlock" not in receiver)
-    ok("create page still explains the handoff", "needsBlock()" in landing)
+    created = html.split("function showCreated(", 1)[1].split("function ttlLabel(", 1)[0]
+    ok("reply page does not render the needs grid", "needsBlock" not in receiver and 'class="needs"' not in receiver)
+    ok("landing does not teach with needs cards", "needsBlock" not in landing and 'class="needs"' not in landing)
+    ok("share step is the bearer url without needs cards",
+       "Pass this bearer URL" in created and "Copy link" in created
+       and "Check for the reply" in created and 'class="needs"' not in created)
     ok("waiting page polls the existing view endpoint",
        "function startWatch(" in html and "scheduleWatch(10000)" in html
        and "/api/melds/" in html.split("async function checkResult", 1)[1])
@@ -265,28 +270,34 @@ def test_mobile_first_human_ui():
     flat_base = "".join(base.split())
     ok("phone base has no max-width breakpoint",
        "@media (max-width" not in css and "@media(max-width" not in css)
-    ok("phone base stacks the page and the time picker",
+    ok("phone base stacks the page and keeps three bridge times in one row",
        ".layout{display:grid;grid-template-columns:1fr" in flat_base
-       and ".times{display:grid;grid-template-columns:1fr" in flat_base)
-    ok("wider screens enhance the time picker to three columns",
-       "min-width:50rem" in enhanced and "repeat(3,minmax(0,1fr))" in "".join(enhanced.split()))
+       and ".times{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))" in flat_base)
+    ok("phone base hides the hero visual", ".hero-visual{display:none}" in flat_base)
+    ok("wider screens may show the card beside the what-line",
+       "min-width:50rem" in enhanced and 'url("/og.png")' in enhanced)
     ok("primary controls declare a 44px tap target",
        "min-height:44px" in css)
     ok("waiting still pauses while the tab is hidden",
        "visibilitychange" in html and "document.hidden" in html
        and "clearTimeout(watchTimer)" in html and "scheduleWatch(10000)" in html)
-    ok("trust warn and ttl disclosure stay on the create flow",
+    ok("reply flow keeps the full trust bullets and create keeps the three times",
        "Read this before you put text on the bridge." in html
        and "Not for secrets, credentials, or regulated data." in html
        and "The host can read it while it is live." in html
        and "3 minutes" in html and "1 hour" in html and "1 day" in html)
     landing = html.split("function landing(", 1)[1].split("function timeBtn(", 1)[0]
-    trust_at = landing.find("trustBlock()")
+    ctx_at = landing.find('id="ctx"')
     times_at = landing.find('class="times"')
     create_at = landing.find('id="create"')
-    needs_at = landing.find("needsBlock()")
-    ok("trust sits above the time picker and the create button follows it",
-       0 < trust_at < times_at < create_at < needs_at, f"{trust_at, times_at, create_at, needs_at}")
+    trust_at = landing.find('class="trust-line"')
+    ok("pour order is textarea, bridge time, create, then one trust line",
+       0 < ctx_at < times_at < create_at < trust_at, f"{ctx_at, times_at, create_at, trust_at}")
+    ok("landing does not open with the four-bullet trust wall", "trustBlock()" not in landing)
+    ok("landing focuses the context textarea", "autofocus" in landing and "ctx.focus" in landing)
+    ok("trust one-liner points at /trust",
+       "Anyone with the link can read it while live · Not for secrets · " in landing
+       and 'href="/trust"' in landing)
 
 
 def test_agent_install_surface():
@@ -362,18 +373,23 @@ def test_card_homepage():
         "or between two agents — timed link, then it dies. Not for secrets."
     )
     ok("what-it-is is the locked line", what in html)
-    for phrase in (
-        "A temporary resource to align context.",
-        "Pick 3 minutes, 1 hour, or 1 day.",
-        "When the clock ends, the link dies.",
-        "Not for secrets.",
-    ):
-        ok(f"hero keeps {phrase}", phrase in html)
+    ok("hero does not repeat the explanation stack",
+       'class="sub"' not in html and 'class="secret"' not in html
+       and "<h1>A temporary resource to align context.</h1>" not in html)
+    ok("document title stays the card claim",
+       'document.title = "A temporary resource to align context."' in html)
     css = html.split("<style>", 1)[1].split("</style>", 1)[0].lower()
     ok("accent is card purple", "#8b5cf6" in css)
     ok("background is near-black", "#05050a" in css)
     ok("mint accent is gone", "#7ee0c6" not in css)
-    ok("hero reuses the og card", 'url("/og.png")' in html)
+    ok("wide hero reuses the og card", 'url("/og.png")' in html)
+    header = html.split("<header", 1)[1].split("</header>", 1)[0]
+    footer = html.split("<footer", 1)[1].split("</footer>", 1)[0]
+    ok("primary nav is new bridge and trust",
+       "New bridge" in header and 'href="/trust"' in header
+       and "Agent API" not in header and "llms.txt" not in header)
+    ok("agent api and llms.txt sit in the footer",
+       "Agent API" in footer and 'href="/llms.txt"' in footer)
     lowered = html.lower()
     ok("homepage does not pitch another person", "another person" not in lowered)
     ok("what-it-is does not use they open the link", "they open the link" not in lowered)

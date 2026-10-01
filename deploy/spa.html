@@ -29,7 +29,7 @@ button{touch-action:manipulation}
 }
 .top{
   display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;
-  gap:0.15rem 0.75rem;margin-bottom:0.85rem;
+  gap:0.15rem 0.75rem;margin-bottom:0.45rem;
 }
 .brand{
   font-weight:600;letter-spacing:-.03em;min-height:44px;
@@ -42,52 +42,38 @@ button{touch-action:manipulation}
 .top nav a{color:var(--muted);margin:0;min-height:44px;display:inline-flex;align-items:center;padding:0 .5rem;text-decoration:none}
 .top nav a:hover{color:var(--accent)}
 .what{
-  margin:0 0 .9rem;padding:.7rem .85rem;
+  margin:0;padding:.4rem .7rem;
   border-left:3px solid var(--accent);
   background:rgba(139,92,246,.1);
   border-radius:0 12px 12px 0;
-  color:var(--ink);font-size:1.02rem;line-height:1.45;
+  color:var(--ink);font-size:.95rem;line-height:1.35;
 }
-.hero{margin:0 0 .85rem}
+.hero{margin:0 0 .5rem}
 .hero.off{display:none !important}
 html.is-meld .hero{display:none}
-.hero-grid{display:grid;grid-template-columns:1fr;gap:.7rem;align-items:center}
-.hero h1{
-  font-size:1.85rem;line-height:1.12;letter-spacing:-.03em;font-weight:650;
-  margin:0 0 .5rem;max-width:16ch;
-}
-.sub{color:var(--muted);margin:0 0 .4rem;font-size:1.02rem;line-height:1.45}
-.secret{margin:0;color:var(--accent);font-weight:700;font-size:1.15rem}
-.hero-visual{
-  width:100%;height:8.5rem;border-radius:18px;
-  background-color:#07060f;background-repeat:no-repeat;
-  background-position:right center;background-size:auto 360%;
-  position:relative;overflow:hidden;
-}
-html.is-home .hero-visual{background-image:url("/og.png")}
-.hero-visual::after{
-  content:"";position:absolute;inset:0;pointer-events:none;
-  background:linear-gradient(90deg,#05050a 0%,rgba(5,5,10,.55) 18%,rgba(5,5,10,0) 42%);
+.hero-visual{display:none}
+.sr{
+  position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0,0,0,0);white-space:nowrap;border:0;
 }
 .layout{display:grid;grid-template-columns:1fr;gap:.75rem;align-items:start}
 .layout>*{min-width:0}
 .rail,.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;min-width:0;max-width:100%}
-.rail{padding:.5rem .65rem .55rem}
+.rail{padding:.3rem .4rem .35rem}
 .rail.off{display:none !important}
 .rail h2,.panel h2{margin:0 0 .45rem;font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
-#creator-rail,#receiver-rail{display:grid;gap:.35rem .55rem;align-items:start}
-#creator-rail{grid-template-columns:repeat(2,minmax(0,1fr))}
+.rail h2{display:none}
+#creator-rail,#receiver-rail{display:grid;gap:.15rem;align-items:center}
+#creator-rail{grid-template-columns:repeat(4,minmax(0,1fr))}
 #receiver-rail{grid-template-columns:repeat(3,minmax(0,1fr))}
-.rail h2{grid-column:1 / -1;margin:0}
-.step{display:flex;gap:.4rem;padding:.2rem 0;border-top:0;color:var(--muted);min-width:0}
-#receiver-rail .step{flex-direction:column;align-items:flex-start;gap:.2rem}
+.step{display:flex;flex-direction:column;align-items:center;text-align:center;gap:.1rem;padding:.12rem 0;border-top:0;color:var(--muted);min-width:0;font-size:.72rem;line-height:1.15}
 .step.on{color:var(--ink)}
 .step.done .n{background:var(--accent);color:var(--accent-ink)}
-.n{flex:0 0 auto;width:1.75rem;height:1.75rem;border-radius:99px;display:grid;place-items:center;border:1px solid var(--line);font-size:.8rem}
+.n{flex:0 0 auto;width:1.4rem;height:1.4rem;border-radius:99px;display:grid;place-items:center;border:1px solid var(--line);font-size:.75rem}
 .step.on .n{border-color:var(--accent);color:var(--accent)}
-.step small{display:block;color:var(--muted);font-size:.75rem;line-height:1.3}
-.panel{padding:.75rem .8rem .9rem}
-.task-head{margin:0 0 .35rem;font-size:1.15rem;font-weight:650;letter-spacing:-.02em}
+.step small{display:none}
+.panel{padding:.65rem .7rem .75rem}
+.task-head{display:flex;justify-content:space-between;align-items:baseline;gap:.5rem;margin:0 0 .35rem;font-size:1.15rem;font-weight:650;letter-spacing:-.02em}
 h1{font-size:1.45rem;line-height:1.2;margin:.05rem 0 .3rem;overflow-wrap:anywhere}
 .lede{color:var(--muted);margin:0 0 .6rem;font-size:1rem;line-height:1.45}
 .needs{display:grid;grid-template-columns:1fr;gap:.55rem;margin:.9rem 0 0}
@@ -96,7 +82,7 @@ h1{font-size:1.45rem;line-height:1.2;margin:.05rem 0 .3rem;overflow-wrap:anywher
 .need span{display:block;color:var(--muted);font-size:.85rem;line-height:1.4;margin-top:.15rem}
 label{display:flex;justify-content:space-between;align-items:baseline;gap:.5rem;flex-wrap:wrap;font-weight:650;margin:.2rem 0 .35rem}
 textarea{
-  width:100%;max-width:100%;min-height:7.5rem;resize:vertical;
+  width:100%;max-width:100%;min-height:6.5rem;resize:vertical;
   padding:.75rem;border-radius:12px;border:1px solid var(--line);
   background:#07060e;color:var(--ink);
   font-size:1rem;line-height:1.45;
@@ -104,21 +90,28 @@ textarea{
 }
 textarea:focus,button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .hint{color:var(--muted);font-size:.85rem;line-height:1.4;margin:.35rem 0 .75rem}
-.times{display:grid;grid-template-columns:1fr;gap:.5rem}
+.times{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.4rem;margin-top:.55rem}
 .time{
-  text-align:left;width:100%;min-height:44px;
-  padding:.7rem .85rem;border-radius:12px;border:1px solid var(--line);
+  text-align:center;width:100%;min-height:44px;
+  padding:.55rem .3rem;border-radius:12px;border:1px solid var(--line);
   background:#07060e;color:var(--ink);cursor:pointer;
+  font-weight:650;font-size:.92rem;line-height:1.2;
 }
-.time b{display:block;font-size:1rem;line-height:1.25}
-.time span{display:block;color:var(--muted);font-size:.85rem;line-height:1.35;margin-top:.15rem}
 .time[aria-checked="true"]{background:var(--accent);color:#fff;border-color:var(--accent)}
-.time[aria-checked="true"] span{color:#efe9ff}
 .trust{margin:.7rem 0;padding:.75rem .85rem;border-radius:12px;background:var(--warn-bg);color:var(--warn);overflow:visible}
 .trust strong{color:#ffe7ad}
 .trust ul{margin:.35rem 0 0;padding-left:1.1rem}
 .trust li{margin:.2rem 0}
-.actions{display:flex;flex-direction:column;align-items:stretch;gap:.55rem;scroll-margin-bottom:1rem}
+.trust-line{margin:.7rem 0 0;color:var(--muted);font-size:.85rem;line-height:1.4}
+.trust-line a{font-weight:650}
+.foot{
+  margin-top:1.15rem;padding-top:.35rem;
+  display:flex;flex-wrap:wrap;gap:0 .85rem;
+  color:var(--muted);font-size:.8rem;
+}
+.foot a{color:var(--muted);min-height:44px;display:inline-flex;align-items:center;text-decoration:none}
+.foot a:hover{color:var(--accent)}
+.actions{display:flex;flex-direction:column;align-items:stretch;gap:.55rem;margin-top:.55rem;scroll-margin-bottom:1rem}
 button.primary,button.ghost{min-height:44px;width:100%;display:inline-flex;align-items:center;justify-content:center;scroll-margin:12px}
 button.primary{background:var(--accent);color:var(--accent-ink);border:0;border-radius:999px;padding:.75rem 1.15rem;font-weight:700;cursor:pointer}
 button.primary:disabled{opacity:.55;cursor:wait}
@@ -137,22 +130,28 @@ a.url{display:block;font-size:1rem;line-height:1.4;color:var(--ok);text-decorati
   .app{padding:1.25rem 1.1rem 3rem}
   .top{flex-wrap:nowrap;margin-bottom:1.1rem}
   .top nav{flex-wrap:nowrap}
-  .hero-grid{grid-template-columns:1.05fr .95fr;gap:1.25rem}
-  .hero h1{font-size:2.55rem}
-  .hero-visual{height:16.5rem;background-size:auto 175%;background-position:88% center}
-  .hero-visual::after{background:linear-gradient(90deg,#05050a 0%,rgba(5,5,10,.35) 16%,rgba(5,5,10,0) 38%)}
-  .layout{grid-template-columns:15rem 1fr;gap:1rem}
+  html.is-home .hero{
+    display:grid;grid-template-columns:1fr minmax(8rem,13.5rem);gap:.9rem;align-items:center;
+    margin-bottom:.85rem;
+  }
+  html.is-home .hero-visual{
+    display:block;width:100%;height:5.5rem;border-radius:14px;
+    background-color:#07060f;background-image:url("/og.png");background-repeat:no-repeat;
+    background-position:80% center;background-size:auto 220%;
+    position:relative;overflow:hidden;
+  }
+  .layout{grid-template-columns:12.5rem 1fr;gap:1rem}
   #creator-rail,#receiver-rail{display:block;padding:1rem}
-  .rail h2{margin:0 0 .75rem}
-  .step{flex-direction:row;align-items:flex-start;gap:.7rem;padding:.65rem 0;border-top:1px solid var(--line)}
+  .rail h2{display:block;margin:0 0 .75rem}
+  .step{flex-direction:row;align-items:center;text-align:left;gap:.7rem;padding:.55rem 0;border-top:1px solid var(--line);font-size:.95rem}
   #receiver-rail .step{flex-direction:row;align-items:flex-start;gap:.7rem}
   .step:first-of-type{border-top:0}
-  .step small{font-size:.78rem}
+  #receiver-rail .step small{display:block;color:var(--muted);font-size:.78rem;line-height:1.3}
   .panel{padding:1.15rem 1.2rem 1.25rem}
   h1{font-size:1.7rem;line-height:1.15}
   .needs{grid-template-columns:1fr 1fr;gap:.6rem}
   textarea{min-height:180px}
-  .times{grid-template-columns:repeat(3,minmax(0,1fr));gap:.55rem}
+  .times{gap:.55rem}
   .actions{flex-direction:row;flex-wrap:wrap;align-items:center;gap:.7rem}
   button.primary,button.ghost{width:auto}
 }
@@ -162,26 +161,19 @@ a.url{display:block;font-size:1rem;line-height:1.4;color:var(--ok);text-decorati
 <div class="app">
   <header class="top">
     <a class="brand" href="/"><img class="mark" alt="" width="36" height="28" src="data:image/png;base64,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"> <span class="word">meld</span></a>
-    <nav><a href="/">New bridge</a><a href="/agents">Agent API</a><a href="/trust">Trust</a><a href="/llms.txt">llms.txt</a></nav>
+    <nav aria-label="Primary"><a href="/">New bridge</a><a href="/trust">Trust</a></nav>
   </header>
   <section class="hero" id="hero" aria-label="What meld is">
     <p class="what">meld is a temporary resource that aligns context between you and an agent, or between two agents — timed link, then it dies. Not for secrets.</p>
-    <div class="hero-grid">
-      <div class="hero-copy">
-        <h1>A temporary resource to align context.</h1>
-        <p class="sub">Pick 3 minutes, 1 hour, or 1 day.<br>When the clock ends, the link dies.</p>
-        <p class="secret">Not for secrets.</p>
-      </div>
-      <div class="hero-visual" role="img" aria-label="Two orbs joined by a bridge of light"></div>
-    </div>
+    <div class="hero-visual" role="img" aria-label="Two orbs joined by a bridge of light"></div>
   </section>
   <div class="layout">
-    <aside class="rail" id="creator-rail" aria-label="Task steps">
-      <h2>This task</h2>
-      <div class="step on" id="s1"><div class="n">1</div><div>Write the handoff<small>What the other agent must read</small></div></div>
-      <div class="step" id="s2"><div class="n">2</div><div>Choose the time<small>3 minutes, 1 hour, or 1 day</small></div></div>
-      <div class="step" id="s3"><div class="n">3</div><div>Share the link<small>The bearer URL is the channel</small></div></div>
-      <div class="step" id="s4"><div class="n">4</div><div>Read the reply<small>Same link, until it expires</small></div></div>
+    <aside class="rail" id="creator-rail" aria-label="Progress">
+      <h2>Progress</h2>
+      <div class="step on" id="s1"><div class="n">1</div><div>Write</div></div>
+      <div class="step" id="s2"><div class="n">2</div><div>Time</div></div>
+      <div class="step" id="s3"><div class="n">3</div><div>Share</div></div>
+      <div class="step" id="s4"><div class="n">4</div><div>Reply</div></div>
     </aside>
     <aside class="rail off" id="receiver-rail" aria-label="Your job">
       <h2>Your job</h2>
@@ -191,6 +183,10 @@ a.url{display:block;font-size:1rem;line-height:1.4;color:var(--ok);text-decorati
     </aside>
     <main class="panel" id="root"></main>
   </div>
+  <footer class="foot">
+    <a href="/agents">Agent API</a>
+    <a href="/llms.txt">llms.txt</a>
+  </footer>
 </div>
 <script>
 const API = location.origin;
@@ -245,34 +241,23 @@ function trustBlock(forOpener) {
     + "<li>" + last + "</li>"
     + "</ul></div>";
 }
-function needsBlock() {
-  return '<div class="needs">'
-    + '<div class="need"><b>The handoff</b><span>Working context you pour in for an agent.</span></div>'
-    + '<div class="need"><b>A bridge time</b><span>Only three: 3 minutes, 1 hour, or 1 day.</span></div>'
-    + '<div class="need"><b>The bearer URL</b><span>That URL is the channel the other agent uses.</span></div>'
-    + '<div class="need"><b>A reply on that URL</b><span>The agent answers there, and you read the reply here.</span></div>'
-    + "</div>";
-}
 function landing() {
   stopWatch();
   revealTop();
   showHero(true);
   document.title = "A temporary resource to align context.";
   setSteps(1);
-  root.innerHTML = '<p class="task-head">Create the timed link</p>'
-    + trustBlock()
-    + '<label for="ctx">1. Context the agent must read <span class="count" id="count">0 / 100000</span></label>'
-    + '<textarea id="ctx" placeholder="Decisions, constraints, and the next step the agent needs. Ordinary working context only."></textarea>'
-    + '<p class="hint">This text is what the agent reads on the link. Leave out secrets.</p>'
-    + '<label id="time-label">2. How long should this bridge stay live?</label>'
-    + '<div class="times" role="radiogroup" aria-labelledby="time-label">'
-    + timeBtn("3m", "3 minutes", "For a quick handoff. Dissolves in 3 minutes.")
-    + timeBtn("1hr", "1 hour", "For a working session. Dissolves in 1 hour.")
-    + timeBtn("1d", "1 day", "For a handoff that can wait. Dissolves in 1 day.")
+  root.innerHTML = '<p class="task-head"><span>Create the timed link</span><span class="count" id="count">0 / 100000</span></p>'
+    + '<label class="sr" for="ctx">Context the agent must read</label>'
+    + '<textarea id="ctx" autofocus placeholder="Decisions, constraints, and the next step the agent needs. Ordinary working context only."></textarea>'
+    + '<div class="times" role="radiogroup" aria-label="How long this bridge stays live">'
+    + timeBtn("3m", "3 minutes")
+    + timeBtn("1hr", "1 hour")
+    + timeBtn("1d", "1 day")
     + "</div>"
-    + '<p class="hint" id="time-hint">Choose one. Nothing is selected until you do. There is no other duration.</p>'
+    + '<p class="sr" id="time-hint">Choose 3 minutes, 1 hour, or 1 day.</p>'
     + '<div class="actions"><button class="primary" id="create" type="button">Create the bridge</button><span class="status" id="status" role="status"></span></div>'
-    + needsBlock();
+    + '<p class="trust-line">Anyone with the link can read it while live · Not for secrets · <a href="/trust">Trust</a></p>';
   const ctx = document.getElementById("ctx");
   const count = document.getElementById("count");
   ctx.addEventListener("input", () => {
@@ -283,9 +268,10 @@ function landing() {
     btn.addEventListener("click", () => selectTime(btn.dataset.ttl));
   });
   document.getElementById("create").addEventListener("click", createBridge);
+  ctx.focus({ preventScroll: true });
 }
-function timeBtn(ttl, title, detail) {
-  return '<button type="button" class="time" role="radio" data-ttl="' + ttl + '" aria-checked="false"><b>' + title + '</b><span>' + detail + '</span></button>';
+function timeBtn(ttl, title) {
+  return '<button type="button" class="time" role="radio" data-ttl="' + ttl + '" aria-checked="false">' + title + '</button>';
 }
 function selectTime(ttl) {
   picked = ttl;
@@ -335,15 +321,8 @@ function showCreated(d) {
     + '<p class="lede">This URL is the channel. Pass it to an agent — from you, or from another agent. Whoever holds it can read the live exchange and write the reply.</p>'
     + '<a class="box url" id="share" href="' + esc(d.url) + '">' + esc(d.url) + '</a>'
     + '<p class="meta">Bridge time: <b>' + esc(ttlLabel(d.ttl || picked)) + '</b> · dissolves ' + esc(when) + '</p>'
-    + trustBlock()
     + '<div class="actions"><button class="ghost" id="copy" type="button">Copy link</button><button class="primary" id="check" type="button">Check for the reply</button><span class="status" id="status" role="status"></span></div>'
-    + '<div id="result"></div>'
-    + '<div class="needs">'
-    + '<div class="need"><b>You do this</b><span>Copy the URL and pass it to the agent.</span></div>'
-    + '<div class="need"><b>The agent does this</b><span>Read the context on the URL and write the reply.</span></div>'
-    + '<div class="need"><b>Then you</b><span>Stay on this page. It watches for the reply.</span></div>'
-    + '<div class="need"><b>Then it ends</b><span>When the timer hits, the bridge dissolves.</span></div>'
-    + '</div>';
+    + '<div id="result"></div>';
   document.getElementById("copy").onclick = copyLink;
   document.getElementById("check").onclick = () => checkResult(false);
   revealTop();
