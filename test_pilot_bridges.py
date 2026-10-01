@@ -451,6 +451,12 @@ def test_card_homepage():
        and "Agent API" not in header and "llms.txt" not in header)
     ok("agent api and llms.txt sit in the footer",
        "Agent API" in footer and 'href="/llms.txt"' in footer)
+    ok("better launch badge sits in the home footer",
+       'href="https://www.betterlaunch.co/product/meld"' in footer
+       and 'src="https://www.betterlaunch.co/badge-seen-gradient.svg"' in footer
+       and 'alt="Better Launch"' in footer)
+    ok("better launch badge is hidden on the receiver view",
+       "html.is-meld .badges{display:none}" in css)
     lowered = html.lower()
     ok("homepage does not pitch another person", "another person" not in lowered)
     ok("what-it-is does not use they open the link", "they open the link" not in lowered)

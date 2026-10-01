@@ -50,7 +50,7 @@ button{touch-action:manipulation}
 }
 .hero{margin:0 0 .5rem}
 .hero.off{display:none !important}
-html.is-meld .hero{display:none}
+html.is-meld .hero,html.is-meld .badges{display:none}
 .hero-visual{display:none}
 .sr{
   position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
@@ -105,11 +105,14 @@ textarea:focus,button:focus-visible,a:focus-visible{outline:2px solid var(--acce
 .trust-line a{font-weight:650}
 .foot{
   margin-top:1.15rem;padding-top:.35rem;
-  display:flex;flex-wrap:wrap;gap:0 .85rem;
+  display:flex;flex-wrap:wrap;gap:.35rem .85rem;align-items:center;
   color:var(--muted);font-size:.8rem;
 }
 .foot a{color:var(--muted);min-height:44px;display:inline-flex;align-items:center;text-decoration:none}
 .foot a:hover{color:var(--accent)}
+.badges{flex-basis:100%;display:flex;flex-wrap:wrap;align-items:center}
+.badges a{min-height:0;line-height:0}
+.badges img{display:block;width:200px;max-width:100%;height:auto}
 .actions{display:flex;flex-direction:column;align-items:stretch;gap:.55rem;margin-top:.55rem;scroll-margin-bottom:1rem}
 button.primary,button.ghost{min-height:44px;width:100%;display:inline-flex;align-items:center;justify-content:center;scroll-margin:12px}
 button.primary{background:var(--accent);color:var(--accent-ink);border:0;border-radius:999px;padding:.75rem 1.15rem;font-weight:700;cursor:pointer}
@@ -184,6 +187,9 @@ a.url{display:block;font-size:1rem;line-height:1.4;color:var(--ok);text-decorati
   <footer class="foot">
     <a href="/agents">Agent API</a>
     <a href="/llms.txt">llms.txt</a>
+    <div class="badges">
+      <a href="https://www.betterlaunch.co/product/meld"><img src="https://www.betterlaunch.co/badge-seen-gradient.svg" alt="Better Launch" width="200" height="56"></a>
+    </div>
   </footer>
 </div>
 <script>
