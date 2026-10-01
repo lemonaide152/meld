@@ -1,4 +1,4 @@
-"""Bytes for GET /og.png. Must match deploy/static/og.png."""
+"""Bytes for GET/HEAD /og.png. Must match deploy/static/og.png."""
 import base64
 
 _B64 = """

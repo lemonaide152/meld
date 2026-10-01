@@ -378,6 +378,10 @@ async def security(request: Request, call_next):
             "Content-Type, Accept, Authorization, X-Meld-Token, X-Meld-Client, "
             "X-Forwarded-For, Mcp-Session-Id, Mcp-Protocol-Version")
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+    return _apply_security_headers(resp)
+
+
+def _apply_security_headers(resp: Response) -> Response:
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Referrer-Policy"] = "no-referrer"
@@ -385,6 +389,54 @@ async def security(request: Request, call_next):
         "default-src 'self'; script-src 'unsafe-inline'; "
         "style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'")
     return resp
+
+
+def _og_png_response(*, head: bool) -> Response:
+    """1200×630 card bytes. HEAD carries the GET headers and an empty body.
+
+    Content-Length is the PNG size for both methods. X HEADs og:image before
+    fetching; a 405 or a missing length blanks the card.
+    """
+    return Response(
+        content=b"" if head else OG_PNG,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "Content-Length": str(len(OG_PNG)),
+        },
+    )
+
+
+class _OgPngBypass:
+    """Serve /og.png outside BaseHTTPMiddleware.
+
+    That middleware rewrites every body as a stream (more_body=True). The
+    Workers ASGI adapter then builds a ReadableStream, and Cloudflare omits
+    Content-Length. A single buffered body keeps the length crawlers need.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("path") != "/og.png":
+            await self.app(scope, receive, send)
+            return
+        if scope.get("method") not in ("GET", "HEAD"):
+            await self.app(scope, receive, send)
+            return
+        # Staging allowlist stays in the security middleware.
+        env = scope.get("env")
+        allowed_raw = getattr(env, "ALLOWED_IPS", "") if env else ""
+        if allowed_raw and str(allowed_raw).strip():
+            await self.app(scope, receive, send)
+            return
+        response = _apply_security_headers(_og_png_response(head=scope["method"] == "HEAD"))
+        await response(scope, receive, send)
+
+
+# Outermost user middleware: registered after security so it runs first.
+app.add_middleware(_OgPngBypass)
 
 
 _CORS_PREFLIGHT_HEADERS = {
@@ -1070,14 +1122,14 @@ def _is_link_preview_bot(request: Request) -> bool:
     return any(bot in ua for bot in _LINK_PREVIEW_BOTS)
 
 
-@app.get("/og.png")
-async def og_image():
-    """Static 1200×630 product card. No meld content."""
-    return Response(
-        content=OG_PNG,
-        media_type="image/png",
-        headers={"Cache-Control": "public, max-age=86400"},
-    )
+@app.api_route("/og.png", methods=["GET", "HEAD"])
+async def og_image(request: Request):
+    """Static 1200×630 product card. No meld content.
+
+    Production GET/HEAD is sent by _OgPngBypass before this route. The route
+    remains so a direct router call still answers both methods.
+    """
+    return _og_png_response(head=request.method == "HEAD")
 
 @app.get("/m/{code}")
 async def serve_meld(request: Request, code: str):
@@ -1557,9 +1609,16 @@ async def serve_page(path: str):
     return HTMLResponse(_render_page(share=False))
 
 
-@app.get("/")
-async def root():
-    return HTMLResponse(_render_page(share=False))
+@app.api_route("/", methods=["GET", "HEAD"])
+async def root(request: Request):
+    html = _render_page(share=False)
+    encoded = html.encode("utf-8")
+    # HEAD is the same headers as GET, including the meta document's length, and no body.
+    # OPTIONS / is registered earlier and would otherwise 405 a HEAD (Allow: OPTIONS).
+    return HTMLResponse(
+        content=b"" if request.method == "HEAD" else encoded,
+        headers={"Content-Length": str(len(encoded))},
+    )
 
 
 AGENTS_ROOT_MD = '# AGENTS.md — working with meld\n\nmeld puts context on a capability URL with a TTL. The host is readable while live, and anyone with the link can read it. After TTL, the meld dissolves and the host serves 410. Not for secrets, credentials, or regulated data.\n\n## Quick start\n\n```bash\n# Create; share url. Keep owner_token only for the legacy /result read.\ncurl -s https://meld.mergeinc.workers.dev/api/melds \\\n  -H \'content-type: application/json\' -H \'X-Meld-Client: agent\' \\\n  -d \'{"context":"...","ttl":"1hr"}\'\n# -> {code, url, owner_url, owner_token, expires_at}\n\n# Resolve from the link.\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}/resolve \\\n  -H \'content-type: application/json\' -d \'{"context":"..."}\'\n\n# Anyone holding the capability URL can read the live contexts.\ncurl -s https://meld.mergeinc.workers.dev/api/melds/{code}\n```\n\n## Locked claims\n\n- Capability URL + TTL.\n- Host-readable while live.\n- Anyone with the link can read it.\n- Not for secrets/credentials/regulated.\n- Dissolves on TTL.\n- Bridge time is required: 3m, 1hr, or 1d. The server enforces that TTL. There is no default.\n\n## Agent-to-agent\n\nCreate, send the share URL, resolve once, then read the URL. Pass `ttl` as `3m`, `1hr`, or `1d`. There is no default. MCP: https://meld.mergeinc.workers.dev/mcp\n\n## Limits and docs\n\nPilot bridges are free. Create requires `ttl`: `3m`, `1hr`, or `1d`. Per-minute limits apply to everyone. Errors: 400, 403 PIN, 404, 409, 410, 429.\n\nMachine-readable docs: /llms.txt · /agents.md · /recipes.md · /openapi.json · /trust.md\n'

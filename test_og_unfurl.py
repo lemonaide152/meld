@@ -3,6 +3,7 @@
 Marketing pages advertise the working-context handoff.
 Capability URLs must not put the meld body into card tags or preview HTML.
 """
+import asyncio
 import re
 import sys
 import types
@@ -173,6 +174,86 @@ ok("og.png content-type", image.headers.get("content-type", "").startswith("imag
 cache = image.headers.get("cache-control", "")
 ok("og.png cache", "public" in cache and "max-age=" in cache, cache)
 ok("og.png body", image.content == OG_PNG, str(len(image.content)))
+ok("og.png content-length", image.headers.get("content-length") == str(len(OG_PNG)), image.headers.get("content-length"))
+ok("og.png nosniff", image.headers.get("x-content-type-options") == "nosniff", image.headers.get("x-content-type-options"))
+
+image_head = client.head("/og.png")
+ok("og.png HEAD 200", image_head.status_code == 200, str(image_head.status_code))
+ok(
+    "og.png HEAD content-type",
+    image_head.headers.get("content-type", "").startswith("image/png"),
+    image_head.headers.get("content-type"),
+)
+head_cache = image_head.headers.get("cache-control", "")
+ok("og.png HEAD cache", "public" in head_cache and "max-age=" in head_cache, head_cache)
+ok(
+    "og.png HEAD content-length",
+    image_head.headers.get("content-length") == str(len(OG_PNG)),
+    image_head.headers.get("content-length"),
+)
+ok("og.png HEAD empty body", image_head.content == b"", str(len(image_head.content)))
+ok("og.png HEAD nosniff", image_head.headers.get("x-content-type-options") == "nosniff", image_head.headers.get("x-content-type-options"))
+
+home_head = client.head("/")
+ok("home HEAD 200", home_head.status_code == 200, str(home_head.status_code))
+ok(
+    "home HEAD content-type",
+    "text/html" in home_head.headers.get("content-type", ""),
+    home_head.headers.get("content-type"),
+)
+ok(
+    "home HEAD content-length",
+    home_head.headers.get("content-length") == str(len(home.content)),
+    f"{home_head.headers.get('content-length')} vs {len(home.content)}",
+)
+ok("home HEAD empty body", home_head.content == b"", str(len(home_head.content)))
+
+
+async def _asgi_messages(method, path):
+    messages = []
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "https",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "headers": [],
+        "client": ("127.0.0.1", 1234),
+        "server": ("test", 443),
+        "app": worker.app,
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        messages.append(message)
+
+    await worker.app(scope, receive, send)
+    return messages
+
+
+def _header_map(message):
+    return {k.decode().lower(): v.decode() for k, v in message.get("headers", [])}
+
+
+for method in ("GET", "HEAD"):
+    frames = asyncio.run(_asgi_messages(method, "/og.png"))
+    starts = [m for m in frames if m["type"] == "http.response.start"]
+    bodies = [m for m in frames if m["type"] == "http.response.body"]
+    ok(f"og.png {method} buffered start", len(starts) == 1 and starts[0]["status"] == 200, str(starts))
+    ok(f"og.png {method} one body frame", len(bodies) == 1, str([(len(m.get("body") or b""), m.get("more_body")) for m in bodies]))
+    ok(f"og.png {method} not streamed", not bodies[0].get("more_body", False) if bodies else False)
+    hdrs = _header_map(starts[0]) if starts else {}
+    ok(f"og.png {method} asgi content-type", hdrs.get("content-type", "").startswith("image/png"), hdrs.get("content-type"))
+    ok(f"og.png {method} asgi content-length", hdrs.get("content-length") == str(len(OG_PNG)), hdrs.get("content-length"))
+    if method == "HEAD":
+        ok("og.png HEAD asgi empty body", bodies and bodies[0].get("body", b"") == b"")
+    else:
+        ok("og.png GET asgi body", bodies and bodies[0].get("body", b"") == OG_PNG)
 
 human = client.get(f"/m/{CODE}", headers={"Accept": "text/html", "User-Agent": "Mozilla/5.0"})
 ok("human meld 200", human.status_code == 200, str(human.status_code))
