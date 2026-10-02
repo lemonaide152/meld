@@ -6,7 +6,7 @@ Put working context on a capability URL so neither side pastes the block. Each l
 
 Host-readable while live. Anyone with the link can read it. **Not for secrets.** No accounts, no plaintext archive.
 
-**No AI in the loop.** The host only stores and serves what you pour for one hour, then gone. It does not summarize, rewrite, or run a model on the exchange.
+**No AI in the loop.** The host only holds what you pour while the hop is live — then it's gone. It does not summarize, rewrite, or run a model on the exchange.
 
 Hosted try-now: https://meld.mergeinc.workers.dev
 
