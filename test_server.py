@@ -42,6 +42,7 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 def reset(clock: dict) -> None:
     server._melds.clear()
+    server._tombstones.clear()
     server._now = lambda: clock["t"]
 
 
@@ -131,13 +132,15 @@ def test_dissolve_and_mint_next() -> None:
         clock["t"] = T0 + timedelta(hours=1, seconds=1)
         late = client.post("/api/melds", json={"context": "too late", "prev_code": stale["code"]})
         check("mint on expired parent is 410", late.status_code == 410, late.text)
-        check("expired parent deleted", client.get(f"/api/melds/{stale['code']}").status_code == 404)
-        check("mint after delete is 404", client.post(
+        check("expired parent still 410", client.get(f"/api/melds/{stale['code']}").status_code == 410)
+        check("mint after dissolve is 410", client.post(
             "/api/melds", json={"context": "still late", "prev_code": stale["code"]}
-        ).status_code == 404)
+        ).status_code == 410)
+        check("expired plaintext absent", "stale-body" not in late.text)
         gone = client.get(f"/api/melds/{parent['code']}")
         check("parent 410", gone.status_code == 410, gone.text)
-        check("parent deleted", client.get(f"/api/melds/{parent['code']}").status_code == 404)
+        check("parent still 410", client.get(f"/api/melds/{parent['code']}").status_code == 410)
+        check("parent plaintext absent", "parent-body" not in gone.text)
         child = client.get(f"/api/melds/{hop_body['code']}")
         check("child still live", child.status_code == 200, child.text)
         chain = client.get(f"/api/melds/{hop_body['code']}/chain")
@@ -149,9 +152,108 @@ def test_dissolve_and_mint_next() -> None:
         clock["t"] = T0 + timedelta(minutes=30, hours=1, seconds=1)
         child_gone = client.get(f"/m/{hop_body['code']}")
         check("child 410", child_gone.status_code == 410, child_gone.text)
-        check("child not archived", client.get(f"/api/melds/{hop_body['code']}").status_code == 404)
+        child_again = client.get(f"/api/melds/{hop_body['code']}")
+        check("child still 410", child_again.status_code == 410, child_again.text)
+        check("child plaintext not kept", "child-body" not in child_again.text)
+        check("child row deleted", hop_body["code"] not in server._melds)
+        check(
+            "child tombstone is code only",
+            hop_body["code"] in server._tombstones and server._tombstones[hop_body["code"]] is None,
+        )
         unknown = client.post("/api/melds", json={"context": "x", "prev_code": "missing-code"})
         check("mint on unknown is 404", unknown.status_code == 404, unknown.text)
+
+
+def test_dissolved_stays_410_unknown_stays_404() -> None:
+    """Purge and chain deletes must keep serving 410. Never-existed stays 404."""
+    clock = {"t": T0}
+    reset(clock)
+    with TestClient(server.app) as client:
+        purged = client.post("/api/melds", json={"context": "purge-me"}).json()
+        clock["t"] = T0 + timedelta(hours=1, seconds=1)
+        fresh = client.post("/api/melds", json={"context": "still-here"})
+        check("create after expiry", fresh.status_code == 200, fresh.text)
+        check("purge removed the row", purged["code"] not in server._melds)
+        gone = client.get(f"/api/melds/{purged['code']}")
+        check("purged code 410", gone.status_code == 410, gone.text)
+        check("purge body has no plaintext", "purge-me" not in gone.text)
+        check("purged capability 410", client.get(f"/m/{purged['code']}").status_code == 410)
+        check(
+            "resolve dissolved is 410",
+            client.post(f"/api/melds/{purged['code']}/resolve", json={"context": "b"}).status_code == 410,
+        )
+        check(
+            "chain on dissolved is 410",
+            client.get(f"/api/melds/{purged['code']}/chain").status_code == 410,
+        )
+        check(
+            "mint on dissolved is 410",
+            client.post("/api/melds", json={"context": "x", "prev_code": purged["code"]}).status_code == 410,
+        )
+        live = client.get(f"/api/melds/{fresh.json()['code']}")
+        check("live path unchanged", live.status_code == 200 and live.json()["context_a"] == "still-here")
+
+        parent = client.post("/api/melds", json={"context": "chain-parent"}).json()
+        clock["t"] = T0 + timedelta(hours=1, minutes=20, seconds=1)
+        child = client.post(
+            "/api/melds",
+            json={"context": "chain-child", "prev_code": parent["code"]},
+        ).json()
+        clock["t"] = T0 + timedelta(hours=2, seconds=2)
+        check("parent still stored before chain", parent["code"] in server._melds)
+        chain = client.get(f"/api/melds/{child['code']}/chain")
+        check("chain of live child", chain.status_code == 200, chain.text)
+        check("chain drops dissolved plaintext", "chain-parent" not in chain.text)
+        check("chain removed the row", parent["code"] not in server._melds)
+        check("chain dissolve is 410", client.get(f"/m/{parent['code']}").status_code == 410)
+        check("child still live", client.get(f"/m/{child['code']}").status_code == 200)
+        missing = client.get("/api/melds/never-existed")
+        check("never existed 404", missing.status_code == 404, missing.text)
+        check("never existed capability 404", client.get("/m/never-existed").status_code == 404)
+        check(
+            "tombstones store no payload",
+            all(value is None for value in server._tombstones.values())
+            and purged["code"] in server._tombstones
+            and parent["code"] in server._tombstones,
+        )
+
+
+def test_tombstone_cap_drops_oldest() -> None:
+    clock = {"t": T0}
+    reset(clock)
+    previous = server.TOMBSTONE_CAP
+    server.TOMBSTONE_CAP = 2
+    try:
+        with TestClient(server.app) as client:
+            first = client.post("/api/melds", json={"context": "first"}).json()
+            second = client.post("/api/melds", json={"context": "second"}).json()
+            third = client.post("/api/melds", json={"context": "third"}).json()
+            clock["t"] = T0 + timedelta(hours=1, seconds=1)
+            check("oldest dissolve 410", client.get(f"/m/{first['code']}").status_code == 410)
+            check("middle dissolve 410", client.get(f"/m/{second['code']}").status_code == 410)
+            check("newest dissolve 410", client.get(f"/m/{third['code']}").status_code == 410)
+            check("cap held", len(server._tombstones) == 2)
+            check("oldest forgotten is 404", client.get(f"/api/melds/{first['code']}").status_code == 404)
+            check("middle still 410", client.get(f"/m/{second['code']}").status_code == 410)
+            check("newest still 410", client.get(f"/api/melds/{third['code']}").status_code == 410)
+            check("never existed stays 404", client.get("/m/never-existed-xx").status_code == 404)
+            check(
+                "mint forgotten is 404",
+                client.post("/api/melds", json={"context": "x", "prev_code": first["code"]}).status_code == 404,
+            )
+            check(
+                "mint remembered is 410",
+                client.post("/api/melds", json={"context": "x", "prev_code": second["code"]}).status_code == 410,
+            )
+            live = client.post("/api/melds", json={"context": "live-after"})
+            check("live create", live.status_code == 200, live.text)
+            check(
+                "live path after cap",
+                client.get(f"/m/{live.json()['code']}").status_code == 200
+                and client.get(f"/m/{live.json()['code']}").json()["context_a"] == "live-after",
+            )
+    finally:
+        server.TOMBSTONE_CAP = previous
 
 
 def test_surface() -> None:
@@ -202,8 +304,12 @@ def test_public_tree() -> None:
     check("readme publish", "ghcr.io/lemonaide152/meld:latest" in readme and "docker push" in readme)
     check("readme host-readable", "Host-readable while live." in readme)
     check("readme not for secrets", "Not for secrets" in readme)
+    check("readme tombstone cap", str(server.TOMBSTONE_CAP) in readme)
+    check("readme distinguishes gone", "410" in readme and "404" in readme)
     check("trust host-readable", "Host-readable while live." in trust)
     check("trust not a vault", "not a vault" in trust)
+    check("trust tombstone cap", str(server.TOMBSTONE_CAP) in trust)
+    check("trust distinguishes gone", "410" in trust and "404" in trust)
     for path in ROOT.rglob("*"):
         if not path.is_file():
             continue
@@ -229,6 +335,8 @@ def main() -> None:
     test_public_url()
     test_ttl_lock()
     test_dissolve_and_mint_next()
+    test_dissolved_stays_410_unknown_stays_404()
+    test_tombstone_cap_drops_oldest()
     test_surface()
     test_public_tree()
     print("all passed")

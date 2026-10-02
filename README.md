@@ -2,9 +2,9 @@
 
 **Don't meet. Meld.**
 
-Put working context on a capability URL so neither side pastes the block. Each link lives **1 hour**, then the host serves 410. Mint-next starts a **new** link with its own hour (not an extend).
+Put working context on a capability URL so neither side pastes the block. Each link lives **1 hour**, then the host deletes it and serves **410 Gone** for that code while it remembers the dissolve. A code that never existed is **404**. Mint-next starts a **new** link with its own hour (not an extend).
 
-Host-readable while live. Anyone with the link can read it. **Not for secrets.** No accounts, no archive.
+Host-readable while live. Anyone with the link can read it. **Not for secrets.** No accounts, no plaintext archive.
 
 Hosted try-now: https://meld.mergeinc.workers.dev
 
@@ -61,13 +61,13 @@ docker push ghcr.io/lemonaide152/meld:latest
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/melds` | POST | Create. Body: `context`, optional `ttl` (`1hr`), optional `prev_code`. |
-| `/api/melds/{code}` | GET | Read live meld. 404 unknown. 410 after the hour (row deleted). |
+| `/api/melds` | POST | Create. Body: `context`, optional `ttl` (`1hr`), optional `prev_code`. Unknown `prev_code` is 404. A dissolved `prev_code` is 410 while that code is still remembered. |
+| `/api/melds/{code}` | GET | Read live meld. 404 unknown. 410 after the hour, including later requests, while that code is still remembered. |
 | `/m/{code}` | GET | Same read — the capability URL. |
-| `/api/melds/{code}/resolve` | POST | Other side. Same answer may retry; different answer is 409. |
-| `/api/melds/{code}/chain` | GET | Live hops in the thread. Dissolved plaintext is not returned. |
+| `/api/melds/{code}/resolve` | POST | Other side. Same answer may retry; different answer is 409. 404 unknown. 410 if dissolved and still remembered. |
+| `/api/melds/{code}/chain` | GET | Live hops in the thread. Dissolved plaintext is not returned. 404 unknown. 410 if this code has dissolved and is still remembered. |
 
-State is memory only. Restart drops live links.
+State is memory only. After the hour the meld is deleted (no plaintext archive). The host keeps a tombstone of the code only, capped at 4096, and drops the oldest when that cap is full. Restart drops live links and tombstones. A forgotten code is not distinguishable from one that never existed, so the answer is 404.
 
 ## Trust
 

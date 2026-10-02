@@ -1,10 +1,13 @@
 """meld base-case server.
 
-In-memory capability URLs. Each link lives 1 hour, then the host serves 410.
+In-memory capability URLs. Each link lives 1 hour, then the host deletes it.
+While the host still remembers that code, it serves 410. A code that never
+existed, or one forgotten after the tombstone cap or a restart, is 404.
 Mint-next (prev_code) creates a new bearer with its own hour. That is not an extend.
 
 The host can read a live meld. Anyone with the link can read it.
-Not for secrets. No accounts. Dissolved links are deleted and not archived.
+Not for secrets. No accounts. Dissolved plaintext is deleted.
+A tombstone keeps the code only, so a later request can still be 410.
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ import os
 import secrets
 import string
 import threading
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException, Request
@@ -28,8 +32,13 @@ TTL_KEY = "1hr"
 HOUR_SECONDS = 60 * 60
 CODE_LEN = 12
 MAX_CONTEXT = 100_000
+# Dissolved codes only. Values stay None: the code, never the plaintext.
+# Oldest dropped when full. A dropped code, or one forgotten on restart,
+# is indistinguishable from a code that never existed, so the answer is 404.
+TOMBSTONE_CAP = 4096
 
 _melds: dict[str, dict] = {}
+_tombstones: OrderedDict[str, None] = OrderedDict()
 _lock = threading.Lock()
 
 
@@ -84,26 +93,40 @@ def _alloc_code() -> str:
     alphabet = string.ascii_lowercase + string.digits
     for _ in range(8):
         code = "".join(secrets.choice(alphabet) for _ in range(CODE_LEN))
-        if code not in _melds:
+        if code not in _melds and code not in _tombstones:
             return code
     raise HTTPException(500, "Could not allocate a code")
+
+
+def _dissolve(code: str) -> None:
+    """Delete the meld and remember the code only."""
+    _melds.pop(code, None)
+    _tombstones[code] = None
+    _tombstones.move_to_end(code)
+    while len(_tombstones) > TOMBSTONE_CAP:
+        _tombstones.popitem(last=False)
+    _log.info("dissolved code=%s", code)
 
 
 def _purge(now: datetime) -> None:
     dead = [code for code, meld in _melds.items() if meld["expires_at"] <= now]
     for code in dead:
-        _melds.pop(code, None)
-        _log.info("dissolved code=%s", code)
+        _dissolve(code)
 
 
 def _get_live(code: str, now: datetime):
-    """Return (meld, 'live'|'missing'|'expired'). Expired rows are deleted."""
+    """Return (meld, 'live'|'missing'|'expired').
+
+    An expired row is deleted and the code is tombstoned. A later request
+    for that code is expired (410). A code we have never stored is missing (404).
+    """
     meld = _melds.get(code)
     if meld is None:
+        if code in _tombstones:
+            return None, "expired"
         return None, "missing"
     if meld["expires_at"] <= now:
-        _melds.pop(code, None)
-        _log.info("dissolved code=%s", code)
+        _dissolve(code)
         return None, "expired"
     return meld, "live"
 
@@ -245,8 +268,7 @@ async def get_chain(code: str, request: Request):
             if item["thread_id"] == thread_id and item["expires_at"] <= now
         ]
         for item_code in expired:
-            _melds.pop(item_code, None)
-            _log.info("dissolved code=%s", item_code)
+            _dissolve(item_code)
         nodes = [
             item
             for item in _melds.values()
