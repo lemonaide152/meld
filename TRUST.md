@@ -2,6 +2,7 @@
 
 - Capability URL + 1 hour: the URL grants access while that meld is live.
 - Host-readable while live.
+- No AI in the loop: the host stores and serves the plaintext while live. It does not summarize, rewrite, or put a model in the middle.
 - Anyone with the link can read it.
 - Not for secrets, credentials, or regulated data.
 - Each link lives 1 hour, then it dissolves. The server deletes the meld and responds 410 while it still remembers that code. It does not keep the plaintext.
