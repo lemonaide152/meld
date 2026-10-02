@@ -55,6 +55,7 @@ def test_create_resolve_read() -> None:
         body = created.json()
         code = body["code"]
         check("ttl is 1hr", body["ttl"] == "1hr")
+        check("create is dormant", body["expires_at"] is None)
         check("capability url", body["url"].endswith(f"/m/{code}"))
         check("no owner token", "owner_token" not in body)
         check("prev empty on root", body["prev_code"] is None)
@@ -62,10 +63,12 @@ def test_create_resolve_read() -> None:
         api = client.get(f"/api/melds/{code}")
         check("capability read", same.status_code == 200 and same.json()["context_a"] == "side a")
         check("api read matches", api.json() == same.json())
+        check("GET starts clock", same.json()["expires_at"] is not None)
         check("unresolved body", api.json()["context_b"] is None and api.json()["resolved"] is False)
+        started = same.json()["expires_at"]
         resolved = client.post(f"/api/melds/{code}/resolve", json={"context": "side b"})
         check("resolve", resolved.status_code == 200 and resolved.json()["resolved"] is True, resolved.text)
-        check("resolve keeps expiry", resolved.json()["expires_at"] == body["expires_at"])
+        check("resolve keeps expiry", resolved.json()["expires_at"] == started)
         retry = client.post(f"/api/melds/{code}/resolve", json={"context": "side b"})
         check("same answer retries", retry.status_code == 200 and retry.json().get("retry") is True)
         clash = client.post(f"/api/melds/{code}/resolve", json={"context": "other"})
@@ -113,7 +116,10 @@ def test_dissolve_and_mint_next() -> None:
     with TestClient(server.app) as client:
         stale = client.post("/api/melds", json={"context": "stale-body"}).json()
         parent = client.post("/api/melds", json={"context": "parent-body"}).json()
-        parent_exp = parent["expires_at"]
+        # Start parent clock so we can later expire it independently of the hop.
+        client.get(f"/api/melds/{parent['code']}")
+        parent_exp = client.get(f"/api/melds/{parent['code']}").json()["expires_at"]
+        stale_exp = client.get(f"/api/melds/{stale['code']}").json()["expires_at"]  # start at T0
         clock["t"] = T0 + timedelta(minutes=30)
         hop = client.post(
             "/api/melds",
@@ -124,10 +130,12 @@ def test_dissolve_and_mint_next() -> None:
         check("new code", hop_body["code"] != parent["code"])
         check("links parent", hop_body["prev_code"] == parent["code"])
         check("same thread", hop_body["thread_id"] == parent["thread_id"])
-        check("child has its own expiry", hop_body["expires_at"] != parent_exp)
+        check("child create is dormant", hop_body["expires_at"] is None)
+        hop_live = client.get(f"/api/melds/{hop_body['code']}").json()
+        check("child has its own expiry after GET", hop_live["expires_at"] != parent_exp)
         still = client.get(f"/api/melds/{parent['code']}").json()
         check("parent clock unchanged", still["expires_at"] == parent_exp)
-        check("stale clock unchanged", client.get(f"/api/melds/{stale['code']}").json()["expires_at"] == stale["expires_at"])
+        check("stale clock unchanged", client.get(f"/api/melds/{stale['code']}").json()["expires_at"] == stale_exp)
 
         clock["t"] = T0 + timedelta(hours=1, seconds=1)
         late = client.post("/api/melds", json={"context": "too late", "prev_code": stale["code"]})
@@ -170,6 +178,7 @@ def test_dissolved_stays_410_unknown_stays_404() -> None:
     reset(clock)
     with TestClient(server.app) as client:
         purged = client.post("/api/melds", json={"context": "purge-me"}).json()
+        client.get(f"/api/melds/{purged['code']}")  # start clock at T0
         clock["t"] = T0 + timedelta(hours=1, seconds=1)
         fresh = client.post("/api/melds", json={"context": "still-here"})
         check("create after expiry", fresh.status_code == 200, fresh.text)
@@ -194,11 +203,13 @@ def test_dissolved_stays_410_unknown_stays_404() -> None:
         check("live path unchanged", live.status_code == 200 and live.json()["context_a"] == "still-here")
 
         parent = client.post("/api/melds", json={"context": "chain-parent"}).json()
+        client.get(f"/api/melds/{parent['code']}")  # start parent clock
         clock["t"] = T0 + timedelta(hours=1, minutes=20, seconds=1)
         child = client.post(
             "/api/melds",
             json={"context": "chain-child", "prev_code": parent["code"]},
         ).json()
+        client.get(f"/api/melds/{child['code']}")  # start child clock at mint time
         clock["t"] = T0 + timedelta(hours=2, seconds=2)
         check("parent still stored before chain", parent["code"] in server._melds)
         chain = client.get(f"/api/melds/{child['code']}/chain")
@@ -228,6 +239,8 @@ def test_tombstone_cap_drops_oldest() -> None:
             first = client.post("/api/melds", json={"context": "first"}).json()
             second = client.post("/api/melds", json={"context": "second"}).json()
             third = client.post("/api/melds", json={"context": "third"}).json()
+            for row in (first, second, third):
+                client.get(f"/api/melds/{row['code']}")
             clock["t"] = T0 + timedelta(hours=1, seconds=1)
             check("oldest dissolve 410", client.get(f"/m/{first['code']}").status_code == 410)
             check("middle dissolve 410", client.get(f"/m/{second['code']}").status_code == 410)

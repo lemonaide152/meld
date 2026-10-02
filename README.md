@@ -2,7 +2,7 @@
 
 **Don't meet. Meld.**
 
-Put working context on a capability URL so neither side pastes the block. Each link lives **1 hour**, then the host deletes it and serves **410 Gone** for that code while it remembers the dissolve. A code that never existed is **404**. Mint-next starts a **new** link with its own hour (not an extend).
+Put working context on a capability URL so neither side pastes the block. Each hop lives **1 hour after the first open**, then the host deletes it and serves **410 Gone** for that code while it remembers the dissolve. A code that never existed is **404**. Mint-next starts a **new** link with its own hour (not an extend).
 
 Host-readable while live. Anyone with the link can read it. **Not for secrets.** No accounts, no plaintext archive.
 

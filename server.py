@@ -1,9 +1,11 @@
 """meld base-case server.
 
-In-memory capability URLs. Each link lives 1 hour, then the host deletes it.
-While the host still remembers that code, it serves 410. A code that never
-existed, or one forgotten after the tombstone cap or a restart, is 404.
-Mint-next (prev_code) creates a new bearer with its own hour. That is not an extend.
+In-memory capability URLs. Each hop lives 1 hour after the first open
+(body GET or resolve), then the host deletes it. Create leaves the hop
+dormant (expires_at None). While the host still remembers that code, it
+serves 410. A code that never existed, or one forgotten after the tombstone
+cap or a restart, is 404. Mint-next (prev_code) creates a new bearer with
+its own clock. That is not an extend.
 
 The host can read a live meld. Anyone with the link can read it.
 Not for secrets. No accounts. Dissolved plaintext is deleted.
@@ -50,6 +52,17 @@ def _now() -> datetime:
     return _wall_now()
 
 
+def _clock_started(expires_at) -> bool:
+    return expires_at is not None
+
+
+def _start_clock(meld: dict, now: datetime) -> None:
+    """Start the 1hr clock on first body use. Idempotent."""
+    if _clock_started(meld["expires_at"]):
+        return
+    meld["expires_at"] = now + timedelta(seconds=HOUR_SECONDS)
+
+
 def _require_context(context) -> str:
     if not isinstance(context, str):
         raise HTTPException(400, "Context must be a string")
@@ -61,14 +74,14 @@ def _require_context(context) -> str:
 
 
 def _require_ttl(value) -> tuple[str, int]:
-    """Every meld lives 1 hour. Omit ttl or send 1hr. Any other value is rejected."""
+    """Lifetime is 1 hour once the clock starts. Omit ttl or send 1hr. Any other value is rejected."""
     if value is None or (isinstance(value, str) and not value.strip()):
         return TTL_KEY, HOUR_SECONDS
     if isinstance(value, str) and value.strip().lower() == TTL_KEY:
         return TTL_KEY, HOUR_SECONDS
     raise HTTPException(
         400,
-        'This link lives 1 hour. Send ttl "1hr" or omit it. There is no other lifetime.',
+        'This hop lives 1 hour after the first open. Send ttl "1hr" or omit it. There is no other lifetime.',
     )
 
 
@@ -109,7 +122,11 @@ def _dissolve(code: str) -> None:
 
 
 def _purge(now: datetime) -> None:
-    dead = [code for code, meld in _melds.items() if meld["expires_at"] <= now]
+    dead = [
+        code
+        for code, meld in _melds.items()
+        if _clock_started(meld["expires_at"]) and meld["expires_at"] <= now
+    ]
     for code in dead:
         _dissolve(code)
 
@@ -125,7 +142,7 @@ def _get_live(code: str, now: datetime):
         if code in _tombstones:
             return None, "expired"
         return None, "missing"
-    if meld["expires_at"] <= now:
+    if _clock_started(meld["expires_at"]) and meld["expires_at"] <= now:
         _dissolve(code)
         return None, "expired"
     return meld, "live"
@@ -162,16 +179,19 @@ def _hop_parent(prev, now: datetime) -> tuple[str | None, str | None]:
     return prev, parent["thread_id"]
 
 
-def _remaining(meld: dict, now: datetime) -> int:
+def _remaining(meld: dict, now: datetime) -> int | None:
+    if not _clock_started(meld["expires_at"]):
+        return None
     return max(0, int((meld["expires_at"] - now).total_seconds()))
 
 
 def _read_payload(meld: dict, now: datetime) -> dict:
+    exp = meld["expires_at"]
     return {
         "code": meld["code"],
         "resolved": meld["resolved"],
         "resolved_at": meld["resolved_at"],
-        "expires_at": meld["expires_at"].isoformat(),
+        "expires_at": exp.isoformat() if exp is not None else None,
         "seconds_remaining": _remaining(meld, now),
         "context_a": meld["context_a"],
         "context_b": meld["context_b"],
@@ -186,7 +206,7 @@ def _url(base: str, code: str) -> str:
 async def root():
     return (
         "meld base-case server. POST /api/melds with {context}. "
-        "Each link lives 1 hour, then it dissolves. "
+        "Each hop lives 1 hour after the first open, then it dissolves. "
         "Host-readable while live. Anyone with the link can read it. Not for secrets.\n"
     )
 
@@ -208,7 +228,6 @@ async def create_meld(request: Request):
         code = _alloc_code()
         if thread_id is None:
             thread_id = code
-        expiry = now + timedelta(seconds=ttl_seconds)
         _melds[code] = {
             "code": code,
             "context_a": context,
@@ -216,7 +235,7 @@ async def create_meld(request: Request):
             "resolved": False,
             "resolved_at": None,
             "created_at": now,
-            "expires_at": expiry,
+            "expires_at": None,
             "prev_code": prev_code,
             "thread_id": thread_id,
         }
@@ -227,7 +246,7 @@ async def create_meld(request: Request):
             "context_a": context,
             "resolved": False,
             "ttl": ttl_key,
-            "expires_at": expiry.isoformat(),
+            "expires_at": None,
             "prev_code": prev_code,
             "thread_id": thread_id,
         }
@@ -246,6 +265,7 @@ async def get_meld(code: str):
             missing="Meld not found",
             expired="This meld has expired",
         )
+        _start_clock(meld, now)
         return _read_payload(meld, now)
 
 
@@ -265,16 +285,24 @@ async def get_chain(code: str, request: Request):
         expired = [
             item["code"]
             for item in _melds.values()
-            if item["thread_id"] == thread_id and item["expires_at"] <= now
+            if item["thread_id"] == thread_id
+            and _clock_started(item["expires_at"])
+            and item["expires_at"] <= now
         ]
         for item_code in expired:
             _dissolve(item_code)
         nodes = [
             item
             for item in _melds.values()
-            if item["thread_id"] == thread_id and item["expires_at"] > now
+            if item["thread_id"] == thread_id
+            and (
+                not _clock_started(item["expires_at"])
+                or item["expires_at"] > now
+            )
         ]
         nodes.sort(key=lambda item: item["created_at"])
+        for item in nodes:
+            _start_clock(item, now)
         return {
             "thread_id": thread_id,
             "nodes": [
@@ -306,6 +334,7 @@ async def resolve_meld(code: str, request: Request):
             missing="Meld not found",
             expired="This meld has expired",
         )
+        _start_clock(meld, now)
         if meld["resolved"]:
             if meld["context_b"] == context:
                 return {
@@ -319,7 +348,7 @@ async def resolve_meld(code: str, request: Request):
         meld["context_b"] = context
         meld["resolved"] = True
         meld["resolved_at"] = now.isoformat()
-        # Resolve does not move expires_at. The hour chosen at create stands.
+        # Clock already started above on first use; resolve does not reset it.
         payload = {
             "code": code,
             "context_a": meld["context_a"],
