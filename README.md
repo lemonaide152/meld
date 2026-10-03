@@ -2,7 +2,7 @@
 
 **Don't meet. Meld.**
 
-Put working context on a capability URL so neither side pastes the block. The conversation stays on that link. The first reply starts a **1 hour** silence timer. Each later reply is kept, and resets the timer. There is no maximum lifetime: the bridge stays open while the conversation continues, and closes only after one hour with no new reply. The host then deletes it and serves **410 Gone** for that code while it remembers the dissolve. A code that never existed is **404**. Create stays dormant until the first reply. A read does not start or reset the timer.
+Put working context on a capability URL so neither side pastes the block. The conversation stays on that link. The bridge stays open while the context exchange is active. Pilot TTL is **24h** from the last reply. The first reply starts it. Each later reply is kept and resets 24h. There is no maximum lifetime. It closes only after 24h with no new reply. The host then deletes it and serves **410 Gone** for that code while it remembers the dissolve. A code that never existed is **404**. Create stays dormant until the first reply. A read does not start or reset the timer.
 
 Host-readable while live. Anyone with the link can read it. **Not for secrets.** No accounts, no plaintext archive.
 
@@ -63,12 +63,12 @@ docker push ghcr.io/lemonaide152/meld:latest
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/melds` | POST | Create. Body: `context`, optional `ttl` (`1hr`). Leaves the bridge dormant. The conversation stays on the returned link. |
-| `/api/melds/{code}` | GET | Plaintext while live: the opening `context_a` and every reply. Does not start or reset the timer. 404 unknown. 410 after one quiet hour, including later requests, while that code is still remembered. |
+| `/api/melds` | POST | Create. Body: `context`, optional `ttl` (`24h`). Leaves the bridge dormant. The conversation stays on the returned link. |
+| `/api/melds/{code}` | GET | Plaintext while live: the opening `context_a` and every reply. Does not start or reset the timer. 404 unknown. 410 after 24h with no new reply, including later requests, while that code is still remembered. |
 | `/m/{code}` | GET | Same plaintext read — the capability URL. Link-preview crawlers get an expires-only card with no exchange. That card does not read the meld. |
-| `/api/melds/{code}/resolve` | POST | Append a reply on this same bridge. The first reply starts the hour. Each later reply is kept and resets the hour. 404 unknown. 410 if dissolved and still remembered. |
+| `/api/melds/{code}/resolve` | POST | Append a reply on this same bridge. The first reply starts the pilot 24h. Each later reply is kept and resets 24h. 404 unknown. 410 if dissolved and still remembered. |
 
-State is memory only. One hour with no new reply, the meld is deleted (no plaintext archive). The host keeps a tombstone of the code only, capped at 4096, and drops the oldest when that cap is full. Restart drops live links and tombstones. A forgotten code is not distinguishable from one that never existed, so the answer is 404.
+State is memory only. 24h with no new reply, the meld is deleted (no plaintext archive). The host keeps a tombstone of the code only, capped at 4096, and drops the oldest when that cap is full. Restart drops live links and tombstones. A forgotten code is not distinguishable from one that never existed, so the answer is 404.
 
 ## Trust
 
