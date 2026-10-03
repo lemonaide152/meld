@@ -1,19 +1,19 @@
 """meld base-case server.
 
-In-memory capability URLs. Each hop lives 1 hour after the first plaintext
-read or resolve, then the host deletes it. Create leaves the hop dormant
-(expires_at None). A link-preview crawl does not read the body and does not
-start the clock. A chain read is metadata: no plaintext, and it does not
-start this hop or its siblings. While the host still remembers a dissolved
-code, it serves 410. A code that never existed, or one forgotten after the
-tombstone cap or a restart, is 404. Mint-next (prev_code) creates a new
-bearer with its own clock. That is not an extend.
+In-memory capability URLs. Two parties talk on the same bridge. Create
+leaves it dormant (expires_at None). The first reply starts a 1 hour
+silence timer. Each later reply is kept, and resets that timer to 1 hour.
+There is no maximum lifetime. The bridge stays open while the conversation
+continues, and closes only after one hour with no new reply. A body read
+does not start or reset the timer. A link-preview crawl does not read the
+body. While the host still remembers a dissolved code, it serves 410. A
+code that never existed, or one forgotten after the tombstone cap or a
+restart, is 404.
 
 The host can read a live meld. Anyone with the link can read it.
 Not for secrets. No accounts. The host does not invent a reply.
 Dissolved plaintext is deleted.
 A tombstone keeps the code only, so a later request can still be 410.
-Resolve writes the reply, including when one is already stored.
 """
 
 from __future__ import annotations
@@ -60,10 +60,12 @@ def _clock_started(expires_at) -> bool:
     return expires_at is not None
 
 
-def _start_clock(meld: dict, now: datetime) -> None:
-    """Start the 1hr clock on first body use. Idempotent."""
-    if _clock_started(meld["expires_at"]):
-        return
+def _reset_hour(meld: dict, now: datetime) -> None:
+    """Each reply starts or resets a 1 hour silence timer.
+
+    There is no maximum lifetime. A quiet hour closes the bridge.
+    A body read does not call this.
+    """
     meld["expires_at"] = now + timedelta(seconds=HOUR_SECONDS)
 
 
@@ -85,7 +87,7 @@ def _require_ttl(value) -> tuple[str, int]:
         return TTL_KEY, HOUR_SECONDS
     raise HTTPException(
         400,
-        'This hop lives 1 hour after the first open. Send ttl "1hr" or omit it. There is no other lifetime.',
+        'Each reply resets a 1 hour timer. Send ttl "1hr" or omit it. There is no other lifetime.',
     )
 
 
@@ -161,28 +163,6 @@ def _require_live(code: str, now: datetime, *, missing: str, expired: str) -> di
     return meld
 
 
-def _hop_parent(prev, now: datetime) -> tuple[str | None, str | None]:
-    """Return (prev_code, thread_id). A new root is (None, None).
-
-    The previous meld must still be live. This does not change its expires_at.
-    """
-    if prev is None or prev == "":
-        return None, None
-    if not isinstance(prev, str):
-        raise HTTPException(400, "prev_code must be a string")
-    prev = prev.strip()
-    if not prev:
-        return None, None
-    _require_live(
-        prev,
-        now,
-        missing="Previous meld not found",
-        expired="Previous meld has expired",
-    )
-    parent = _melds[prev]
-    return prev, parent["thread_id"]
-
-
 def _remaining(meld: dict, now: datetime) -> int | None:
     if not _clock_started(meld["expires_at"]):
         return None
@@ -198,7 +178,7 @@ def _read_payload(meld: dict, now: datetime) -> dict:
         "expires_at": exp.isoformat() if exp is not None else None,
         "seconds_remaining": _remaining(meld, now),
         "context_a": meld["context_a"],
-        "context_b": meld["context_b"],
+        "replies": list(meld["replies"]),
     }
 
 
@@ -207,8 +187,8 @@ def _url(base: str, code: str) -> str:
 
 
 # Link-preview crawlers. A match on /m/{code} gets an expires-only card and
-# does not read the meld, so the hour stays dormant. Search crawlers are not
-# listed: a normal GET returns the plaintext and starts the clock.
+# does not read the meld. A normal GET returns the plaintext and does not
+# start or reset the silence timer.
 _LINK_PREVIEW_BOTS = (
     "twitterbot",
     "slackbot",
@@ -256,27 +236,13 @@ def _is_link_preview_bot(request: Request) -> bool:
     return any(bot in ua for bot in _LINK_PREVIEW_BOTS)
 
 
-def _chain_node(item: dict, base: str, now: datetime) -> dict:
-    """Hop metadata. Plaintext stays on the body read."""
-    exp = item["expires_at"]
-    return {
-        "code": item["code"],
-        "url": _url(base, item["code"]),
-        "resolved": item["resolved"],
-        "has_reply": item["context_b"] is not None,
-        "expires_at": exp.isoformat() if exp is not None else None,
-        "seconds_remaining": _remaining(item, now),
-        "ttl": TTL_KEY,
-        "prev_code": item["prev_code"],
-    }
-
-
 @app.get("/", response_class=PlainTextResponse)
 async def root():
     return (
         "meld base-case server. POST /api/melds with {context}. "
-        "Each hop lives 1 hour after the first plaintext read or resolve, then it dissolves. "
-        "A link preview does not start the clock. "
+        "The conversation stays on that link. "
+        "The first reply starts a 1 hour timer. Each later reply resets it. "
+        "One hour with no new reply, and it dissolves. A read does not start or reset the timer. "
         "Host-readable while live. Anyone with the link can read it. Not for secrets. "
         "No AI in the loop.\n"
     )
@@ -290,36 +256,32 @@ async def health():
 @app.post("/api/melds")
 async def create_meld(request: Request):
     body = await _body(request)
+    if body.get("prev_code") not in (None, ""):
+        raise HTTPException(400, "The conversation stays on this bridge. There is no next link.")
     context = _require_context(body.get("context", ""))
-    ttl_key, ttl_seconds = _require_ttl(body.get("ttl"))
+    ttl_key, _ttl_seconds = _require_ttl(body.get("ttl"))
     now = _now()
     base = _base(request)
     with _lock:
-        prev_code, thread_id = _hop_parent(body.get("prev_code"), now)
         code = _alloc_code()
-        if thread_id is None:
-            thread_id = code
         _melds[code] = {
             "code": code,
             "context_a": context,
-            "context_b": None,
+            "replies": [],
             "resolved": False,
             "resolved_at": None,
             "created_at": now,
             "expires_at": None,
-            "prev_code": prev_code,
-            "thread_id": thread_id,
         }
         _purge(now)
         payload = {
             "code": code,
             "url": _url(base, code),
             "context_a": context,
+            "replies": [],
             "resolved": False,
             "ttl": ttl_key,
             "expires_at": None,
-            "prev_code": prev_code,
-            "thread_id": thread_id,
         }
     _log.info("created code=%s", code)
     return payload
@@ -328,10 +290,10 @@ async def create_meld(request: Request):
 @app.get("/api/melds/{code}")
 @app.get("/m/{code}")
 async def get_meld(code: str, request: Request):
-    """Plaintext read of a live meld. Starts the hour on first use.
+    """Plaintext read of a live meld. Does not start or reset the timer.
 
     Link-preview crawlers that GET /m/{code} receive an expires-only card.
-    That response does not read the meld and does not start the clock.
+    That response does not read the meld.
     """
     if request.url.path.startswith("/m/") and _is_link_preview_bot(request):
         return HTMLResponse(_PREVIEW_HTML)
@@ -343,54 +305,12 @@ async def get_meld(code: str, request: Request):
             missing="Meld not found",
             expired="This meld has expired",
         )
-        _start_clock(meld, now)
         return _read_payload(meld, now)
-
-
-@app.get("/api/melds/{code}/chain")
-async def get_chain(code: str, request: Request):
-    """Metadata for live hops on this thread.
-
-    No plaintext. Does not start any hop's clock, including siblings.
-    A body read is GET /api/melds/{code} or a non-preview GET /m/{code}.
-    """
-    now = _now()
-    base = _base(request)
-    with _lock:
-        meld = _require_live(
-            code,
-            now,
-            missing="Meld not found",
-            expired="This meld has expired",
-        )
-        thread_id = meld["thread_id"]
-        expired = [
-            item["code"]
-            for item in _melds.values()
-            if item["thread_id"] == thread_id
-            and _clock_started(item["expires_at"])
-            and item["expires_at"] <= now
-        ]
-        for item_code in expired:
-            _dissolve(item_code)
-        nodes = [
-            item
-            for item in _melds.values()
-            if item["thread_id"] == thread_id
-            and (
-                not _clock_started(item["expires_at"])
-                or item["expires_at"] > now
-            )
-        ]
-        nodes.sort(key=lambda item: item["created_at"])
-        return {
-            "thread_id": thread_id,
-            "nodes": [_chain_node(item, base, now) for item in nodes],
-        }
 
 
 @app.post("/api/melds/{code}/resolve")
 async def resolve_meld(code: str, request: Request):
+    """Append a reply. The first reply starts the hour. Each later reply resets it."""
     body = await _body(request)
     context = _require_context(body.get("context", ""))
     now = _now()
@@ -401,15 +321,14 @@ async def resolve_meld(code: str, request: Request):
             missing="Meld not found",
             expired="This meld has expired",
         )
-        _start_clock(meld, now)
-        meld["context_b"] = context
+        meld["replies"].append(context)
         meld["resolved"] = True
         meld["resolved_at"] = now.isoformat()
-        # Clock already started above on first use; resolve does not reset it.
+        _reset_hour(meld, now)
         payload = {
             "code": code,
             "context_a": meld["context_a"],
-            "context_b": context,
+            "replies": list(meld["replies"]),
             "resolved": True,
             "expires_at": meld["expires_at"].isoformat(),
         }
