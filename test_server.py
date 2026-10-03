@@ -71,10 +71,19 @@ def test_create_resolve_read() -> None:
         check("resolve keeps expiry", resolved.json()["expires_at"] == started)
         retry = client.post(f"/api/melds/{code}/resolve", json={"context": "side b"})
         check("same answer retries", retry.status_code == 200 and retry.json().get("retry") is True)
-        clash = client.post(f"/api/melds/{code}/resolve", json={"context": "other"})
+        clash = client.post(f"/api/melds/{code}/resolve", json={"context": "side c"})
         check("different answer 409", clash.status_code == 409, clash.text)
+        clash_body = clash.json()
+        check(
+            "409 is a status",
+            clash_body.get("detail") == "Already resolved with a different answer",
+            clash.text,
+        )
+        check("409 echoes the winner", clash_body.get("context_b") == "side b", clash.text)
+        check("409 omits the loser", "side c" not in clash.text, clash.text)
         both = client.get(f"/api/melds/{code}").json()
         check("both sides", both["context_a"] == "side a" and both["context_b"] == "side b")
+        check("conflict did not overwrite", both["context_b"] == "side b" and server._melds[code]["context_b"] == "side b")
 
 
 def test_public_url() -> None:
@@ -269,6 +278,123 @@ def test_tombstone_cap_drops_oldest() -> None:
         server.TOMBSTONE_CAP = previous
 
 
+def test_clock_skips_preview_and_chain() -> None:
+    """Body read or resolve starts the hour. Preview, HEAD, and chain do not."""
+    clock = {"t": T0}
+    reset(clock)
+    with TestClient(server.app) as client:
+        parent = client.post("/api/melds", json={"context": "parent-secret"}).json()
+        child = client.post(
+            "/api/melds",
+            json={"context": "child-secret", "prev_code": parent["code"]},
+        ).json()
+        chain = client.get(f"/api/melds/{child['code']}/chain")
+        check("chain before use", chain.status_code == 200, chain.text)
+        nodes = chain.json()["nodes"]
+        check("chain lists both hops", {node["code"] for node in nodes} == {parent["code"], child["code"]})
+        for node in nodes:
+            check(
+                "chain metadata only",
+                node["expires_at"] is None
+                and node["seconds_remaining"] is None
+                and node["has_reply"] is False
+                and node["resolved"] is False
+                and "context_a" not in node
+                and "context_b" not in node,
+                str(node),
+            )
+        check("chain has no plaintext", "parent-secret" not in chain.text and "child-secret" not in chain.text)
+        check("chain left parent dormant", server._melds[parent["code"]]["expires_at"] is None)
+        check("chain left child dormant", server._melds[child["code"]]["expires_at"] is None)
+
+        preview = client.get(
+            f"/m/{parent['code']}",
+            headers={
+                "User-Agent": "Slackbot-LinkExpanding 1.0",
+                "Accept": "application/json",
+            },
+        )
+        check("slack preview", preview.status_code == 200, preview.text)
+        check("slack is html", "text/html" in preview.headers["content-type"], preview.headers["content-type"])
+        check("slack card", "this bridge expires" in preview.text and "not included in this preview" in preview.text)
+        check("slack has no script", "<script" not in preview.text.lower())
+        check("slack has no plaintext", "parent-secret" not in preview.text and parent["code"] not in preview.text)
+        check("slack left the clock dormant", server._melds[parent["code"]]["expires_at"] is None)
+
+        head = client.head(f"/m/{child['code']}")
+        check("head is not a body read", head.status_code == 405, head.text)
+        check("head left the clock dormant", server._melds[child["code"]]["expires_at"] is None)
+        api_head = client.head(f"/api/melds/{parent['code']}")
+        check("api head is not a body read", api_head.status_code == 405, api_head.text)
+        check("api head left the clock dormant", server._melds[parent["code"]]["expires_at"] is None)
+
+        clock["t"] = T0 + timedelta(minutes=25)
+        discord = client.get(
+            f"/m/{child['code']}",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; Discordbot/2.0)"},
+        )
+        check("discord preview", discord.status_code == 200 and "child-secret" not in discord.text, discord.text)
+        check("discord left the clock dormant", server._melds[child["code"]]["expires_at"] is None)
+
+        opened = client.get(
+            f"/api/melds/{parent['code']}",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        check("browser body read", opened.status_code == 200 and opened.json()["context_a"] == "parent-secret")
+        opened_exp = datetime.fromisoformat(opened.json()["expires_at"])
+        check(
+            "clock starts at the body read",
+            opened_exp == clock["t"] + timedelta(seconds=server.HOUR_SECONDS),
+            opened.json()["expires_at"],
+        )
+        check("sibling still dormant", server._melds[child["code"]]["expires_at"] is None)
+        again = client.get(f"/api/melds/{child['code']}/chain")
+        by_code = {node["code"]: node for node in again.json()["nodes"]}
+        check("chain still hides plaintext", "parent-secret" not in again.text and "child-secret" not in again.text)
+        check("chain shows the started hop", by_code[parent["code"]]["expires_at"] == opened.json()["expires_at"])
+        check("chain does not start the sibling", by_code[child["code"]]["expires_at"] is None)
+        check("sibling row still dormant", server._melds[child["code"]]["expires_at"] is None)
+
+        clock["t"] = T0 + timedelta(minutes=40)
+        resolved = client.post(f"/api/melds/{child['code']}/resolve", json={"context": "child-reply"})
+        check("resolve starts a dormant hop", resolved.status_code == 200, resolved.text)
+        child_exp = datetime.fromisoformat(resolved.json()["expires_at"])
+        check(
+            "resolve clock is its own hour",
+            child_exp == clock["t"] + timedelta(seconds=server.HOUR_SECONDS),
+            resolved.json()["expires_at"],
+        )
+        check("resolve did not move the parent", server._melds[parent["code"]]["expires_at"] == opened_exp)
+        meta = client.get(f"/api/melds/{child['code']}/chain").json()
+        child_node = next(node for node in meta["nodes"] if node["code"] == child["code"])
+        check("chain reports the reply without the text", child_node["has_reply"] is True and child_node["resolved"] is True)
+        check("reply text stays off the chain", "child-reply" not in str(meta))
+
+
+def test_preview_does_not_flip_410_or_404() -> None:
+    clock = {"t": T0}
+    reset(clock)
+    with TestClient(server.app) as client:
+        row = client.post("/api/melds", json={"context": "gone-secret"}).json()
+        client.get(f"/api/melds/{row['code']}")
+        clock["t"] = T0 + timedelta(hours=1, seconds=1)
+        check("dissolve on read", client.get(f"/api/melds/{row['code']}").status_code == 410)
+        preview = client.get(f"/m/{row['code']}", headers={"User-Agent": "Twitterbot/1.0"})
+        check("preview of a tombstone", preview.status_code == 200 and "gone-secret" not in preview.text, preview.text)
+        still_gone = client.get(f"/m/{row['code']}")
+        check("tombstone stays 410", still_gone.status_code == 410 and "gone-secret" not in still_gone.text, still_gone.text)
+        check("unknown stays 404", client.get("/api/melds/never-existed").status_code == 404)
+        missing_preview = client.get("/m/never-existed", headers={"User-Agent": "facebookexternalhit/1.1"})
+        check(
+            "preview of an unknown code",
+            missing_preview.status_code == 200 and "never-existed" not in missing_preview.text,
+            missing_preview.text,
+        )
+        check("unknown still 404", client.get("/api/melds/never-existed").status_code == 404)
+        check("unknown capability still 404", client.get("/m/never-existed").status_code == 404)
+        check("preview did not mint a row", "never-existed" not in server._melds and "never-existed" not in server._tombstones)
+
+
 def test_surface() -> None:
     clock = {"t": T0}
     reset(clock)
@@ -350,6 +476,8 @@ def main() -> None:
     test_dissolve_and_mint_next()
     test_dissolved_stays_410_unknown_stays_404()
     test_tombstone_cap_drops_oldest()
+    test_clock_skips_preview_and_chain()
+    test_preview_does_not_flip_410_or_404()
     test_surface()
     test_public_tree()
     print("all passed")

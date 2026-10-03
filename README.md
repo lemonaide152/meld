@@ -2,11 +2,11 @@
 
 **Don't meet. Meld.**
 
-Put working context on a capability URL so neither side pastes the block. Each hop lives **1 hour after the first open**, then the host deletes it and serves **410 Gone** for that code while it remembers the dissolve. A code that never existed is **404**. Mint-next starts a **new** link with its own hour (not an extend).
+Put working context on a capability URL so neither side pastes the block. Each hop lives **1 hour after the first plaintext read or resolve**, then the host deletes it and serves **410 Gone** for that code while it remembers the dissolve. A code that never existed is **404**. Create stays dormant until that first use. A link-preview crawl does not start the clock. Mint-next starts a **new** link with its own hour (not an extend).
 
 Host-readable while live. Anyone with the link can read it. **Not for secrets.** No accounts, no plaintext archive.
 
-**No AI in the loop.** The host only holds what you pour while the hop is live — then it's gone. It does not summarize, rewrite, or run a model on the exchange.
+**No AI in the loop.** The host only holds what you pour while the hop is live — then it's gone. It does not summarize, rewrite, invent a reply, or run a model on the exchange.
 
 Hosted try-now: https://meld.mergeinc.workers.dev
 
@@ -63,11 +63,11 @@ docker push ghcr.io/lemonaide152/meld:latest
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/melds` | POST | Create. Body: `context`, optional `ttl` (`1hr`), optional `prev_code`. Unknown `prev_code` is 404. A dissolved `prev_code` is 410 while that code is still remembered. |
-| `/api/melds/{code}` | GET | Read live meld. 404 unknown. 410 after the hour, including later requests, while that code is still remembered. |
-| `/m/{code}` | GET | Same read — the capability URL. |
-| `/api/melds/{code}/resolve` | POST | Other side. Same answer may retry; different answer is 409. 404 unknown. 410 if dissolved and still remembered. |
-| `/api/melds/{code}/chain` | GET | Live hops in the thread. Dissolved plaintext is not returned. 404 unknown. 410 if this code has dissolved and is still remembered. |
+| `/api/melds` | POST | Create. Body: `context`, optional `ttl` (`1hr`), optional `prev_code`. Leaves the hop dormant. Unknown `prev_code` is 404. A dissolved `prev_code` is 410 while that code is still remembered. |
+| `/api/melds/{code}` | GET | Plaintext of a live meld (`context_a` and `context_b`). Starts the hour on first use. 404 unknown. 410 after the hour, including later requests, while that code is still remembered. |
+| `/m/{code}` | GET | Same plaintext read — the capability URL — and the same clock start. Link-preview crawlers get an expires-only card with no exchange; that does not read the meld and does not start the clock. |
+| `/api/melds/{code}/resolve` | POST | Other side. Starts the hour if it has not started. The same answer may retry. A different answer is 409 and does not overwrite the first. 404 unknown. 410 if dissolved and still remembered. |
+| `/api/melds/{code}/chain` | GET | Metadata for live hops in the thread: code, link, whether a reply exists, expiry. No plaintext. Does not start the clock on this hop or its siblings. 404 unknown. 410 if this code has dissolved and is still remembered. |
 
 State is memory only. After the hour the meld is deleted (no plaintext archive). The host keeps a tombstone of the code only, capped at 4096, and drops the oldest when that cap is full. Restart drops live links and tombstones. A forgotten code is not distinguishable from one that never existed, so the answer is 404.
 

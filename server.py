@@ -1,15 +1,20 @@
 """meld base-case server.
 
-In-memory capability URLs. Each hop lives 1 hour after the first open
-(body GET or resolve), then the host deletes it. Create leaves the hop
-dormant (expires_at None). While the host still remembers that code, it
-serves 410. A code that never existed, or one forgotten after the tombstone
-cap or a restart, is 404. Mint-next (prev_code) creates a new bearer with
-its own clock. That is not an extend.
+In-memory capability URLs. Each hop lives 1 hour after the first plaintext
+read or resolve, then the host deletes it. Create leaves the hop dormant
+(expires_at None). A link-preview crawl does not read the body and does not
+start the clock. A chain read is metadata: no plaintext, and it does not
+start this hop or its siblings. While the host still remembers a dissolved
+code, it serves 410. A code that never existed, or one forgotten after the
+tombstone cap or a restart, is 404. Mint-next (prev_code) creates a new
+bearer with its own clock. That is not an extend.
 
 The host can read a live meld. Anyone with the link can read it.
-Not for secrets. No accounts. Dissolved plaintext is deleted.
+Not for secrets. No accounts. The host does not invent a reply.
+Dissolved plaintext is deleted.
 A tombstone keeps the code only, so a later request can still be 410.
+The first different reply wins. A second different reply is 409 and does
+not overwrite.
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 _log = logging.getLogger("meld")
@@ -202,12 +207,79 @@ def _url(base: str, code: str) -> str:
     return f"{base}/m/{code}"
 
 
+# Link-preview crawlers. A match on /m/{code} gets an expires-only card and
+# does not read the meld, so the hour stays dormant. Search crawlers are not
+# listed: a normal GET returns the plaintext and starts the clock.
+_LINK_PREVIEW_BOTS = (
+    "twitterbot",
+    "slackbot",
+    "slack-imgproxy",
+    "discordbot",
+    "facebookexternalhit",
+    "facebot",
+    "linkedinbot",
+    "whatsapp",
+    "telegrambot",
+    "embedly",
+    "iframely",
+    "redditbot",
+    "pinterest",
+    "vkshare",
+    "quora link preview",
+    "skypeuripreview",
+)
+
+_PREVIEW_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>meld — this bridge expires</title>
+<meta name="description" content="This link expires. The exchange is not included in this preview.">
+<meta name="robots" content="noindex, nofollow">
+<meta property="og:title" content="meld — this bridge expires">
+<meta property="og:description" content="This link expires. The exchange is not included in this preview.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="meld — this bridge expires">
+<meta name="twitter:description" content="This link expires. The exchange is not included in this preview.">
+</head>
+<body>
+<p>meld — this bridge expires</p>
+<p>This link expires. The exchange is not included in this preview.</p>
+</body>
+</html>
+"""
+
+
+def _is_link_preview_bot(request: Request) -> bool:
+    ua = (request.headers.get("user-agent") or "").lower()
+    return any(bot in ua for bot in _LINK_PREVIEW_BOTS)
+
+
+def _chain_node(item: dict, base: str, now: datetime) -> dict:
+    """Hop metadata. Plaintext stays on the body read."""
+    exp = item["expires_at"]
+    return {
+        "code": item["code"],
+        "url": _url(base, item["code"]),
+        "resolved": item["resolved"],
+        "has_reply": item["context_b"] is not None,
+        "expires_at": exp.isoformat() if exp is not None else None,
+        "seconds_remaining": _remaining(item, now),
+        "ttl": TTL_KEY,
+        "prev_code": item["prev_code"],
+    }
+
+
 @app.get("/", response_class=PlainTextResponse)
 async def root():
     return (
         "meld base-case server. POST /api/melds with {context}. "
-        "Each hop lives 1 hour after the first open, then it dissolves. "
-        "Host-readable while live. Anyone with the link can read it. Not for secrets.\n"
+        "Each hop lives 1 hour after the first plaintext read or resolve, then it dissolves. "
+        "A link preview does not start the clock. "
+        "Host-readable while live. Anyone with the link can read it. Not for secrets. "
+        "No AI in the loop.\n"
     )
 
 
@@ -256,7 +328,14 @@ async def create_meld(request: Request):
 
 @app.get("/api/melds/{code}")
 @app.get("/m/{code}")
-async def get_meld(code: str):
+async def get_meld(code: str, request: Request):
+    """Plaintext read of a live meld. Starts the hour on first use.
+
+    Link-preview crawlers that GET /m/{code} receive an expires-only card.
+    That response does not read the meld and does not start the clock.
+    """
+    if request.url.path.startswith("/m/") and _is_link_preview_bot(request):
+        return HTMLResponse(_PREVIEW_HTML)
     now = _now()
     with _lock:
         meld = _require_live(
@@ -271,7 +350,11 @@ async def get_meld(code: str):
 
 @app.get("/api/melds/{code}/chain")
 async def get_chain(code: str, request: Request):
-    """Live hops that share this link's thread. Expired plaintext is not returned."""
+    """Metadata for live hops on this thread.
+
+    No plaintext. Does not start any hop's clock, including siblings.
+    A body read is GET /api/melds/{code} or a non-preview GET /m/{code}.
+    """
     now = _now()
     base = _base(request)
     with _lock:
@@ -301,24 +384,9 @@ async def get_chain(code: str, request: Request):
             )
         ]
         nodes.sort(key=lambda item: item["created_at"])
-        for item in nodes:
-            _start_clock(item, now)
         return {
             "thread_id": thread_id,
-            "nodes": [
-                {
-                    "code": item["code"],
-                    "url": _url(base, item["code"]),
-                    "context_a": item["context_a"],
-                    "context_b": item["context_b"],
-                    "resolved": item["resolved"],
-                    "expires_at": item["expires_at"].isoformat(),
-                    "seconds_remaining": _remaining(item, now),
-                    "ttl": TTL_KEY,
-                    "prev_code": item["prev_code"],
-                }
-                for item in nodes
-            ],
+            "nodes": [_chain_node(item, base, now) for item in nodes],
         }
 
 
@@ -344,7 +412,20 @@ async def resolve_meld(code: str, request: Request):
                     "resolved": True,
                     "retry": True,
                 }
-            raise HTTPException(409, "Already resolved with a different answer")
+            # Status only. The first reply stays; this does not write a new one.
+            exp = meld["expires_at"]
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "Already resolved with a different answer",
+                    "code": code,
+                    "context_a": meld["context_a"],
+                    "context_b": meld["context_b"],
+                    "resolved": True,
+                    "expires_at": exp.isoformat() if exp is not None else None,
+                    "seconds_remaining": _remaining(meld, now),
+                },
+            )
         meld["context_b"] = context
         meld["resolved"] = True
         meld["resolved_at"] = now.isoformat()
