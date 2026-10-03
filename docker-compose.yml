@@ -1,0 +1,38 @@
+services:
+  meld:
+    build: .
+    image: ghcr.io/lemonaide152/meld:latest
+    environment:
+      PORT: "8080"
+      MELD_PUBLIC_URL: ${MELD_PUBLIC_URL:-http://127.0.0.1:8080}
+      FORWARDED_ALLOW_IPS: "*"
+    ports:
+      - "${MELD_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  caddy:
+    profiles: ["tls"]
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      MELD_SITE: ${MELD_SITE:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      meld:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
