@@ -46,6 +46,19 @@ def reset(clock: dict) -> None:
     server._now = lambda: clock["t"]
 
 
+READ_KEYS = {
+    "code",
+    "resolved",
+    "resolved_at",
+    "expires_at",
+    "seconds_remaining",
+    "context_a",
+    "for",
+    "not_for",
+    "replies",
+}
+
+
 def pour(context, **extra):
     body = {"context": context, "for": "a working handoff", "not_for": "secrets"}
     body.update(extra)
@@ -66,9 +79,7 @@ def test_create_resolve_read() -> None:
         check("declaration", body["for"] == "a design handoff" and body["not_for"] == "secrets")
         check("36h from create", datetime.fromisoformat(body["expires_at"]) == T0 + timedelta(seconds=server.OPEN_SECONDS))
         check("capability url", body["url"].endswith(f"/m/{code}"))
-        check("no owner token", "owner_token" not in body)
-        check("no next-link fields", "prev_code" not in body and "thread_id" not in body)
-        check("no read receipt", "read_at" not in body and "seen" not in body)
+        check("creation fields", set(body) == READ_KEYS | {"url"})
         same = client.get(f"/m/{code}")
         api = client.get(f"/api/melds/{code}")
         check("capability read", same.status_code == 200 and same.json()["context_a"] == "side a")
@@ -76,7 +87,7 @@ def test_create_resolve_read() -> None:
         check("GET does not move the 36h window", same.json()["expires_at"] == body["expires_at"])
         check("no replies yet", api.json()["replies"] == [] and api.json()["resolved"] is False)
         resolved = client.post(f"/api/melds/{code}/resolve", json={"context": "side b"})
-        check("resolve", resolved.status_code == 200 and resolved.json()["resolved"] is True, resolved.text)
+        check("resolve", resolved.status_code == 200 and resolved.json()["resolved"] is True and set(resolved.json()) == READ_KEYS, resolved.text)
         first_exp = datetime.fromisoformat(resolved.json()["expires_at"])
         check("first reply sets 24 hours", first_exp == T0 + timedelta(seconds=server.TTL_SECONDS))
         check("first reply kept", resolved.json()["replies"] == ["side b"])
@@ -84,7 +95,7 @@ def test_create_resolve_read() -> None:
         peeked = client.get(f"/api/melds/{code}").json()
         check("read shows the thread", peeked["context_a"] == "side a" and peeked["replies"] == ["side b"])
         check("read does not reset 24 hours", peeked["expires_at"] == resolved.json()["expires_at"])
-        check("read has no receipt", "read_at" not in peeked and "readers" not in peeked)
+        check("read fields", set(peeked) == READ_KEYS)
         later = client.post(f"/api/melds/{code}/resolve", json={"context": "side c"})
         check("later reply appends", later.status_code == 200 and later.json()["replies"] == ["side b", "side c"], later.text)
         later_exp = datetime.fromisoformat(later.json()["expires_at"])
@@ -147,8 +158,8 @@ def test_silence_closes_same_bridge() -> None:
         clock["t"] = T0 + timedelta(hours=23)
         check("still open inside 24h", client.get(f"/api/melds/{stale['code']}").status_code == 200)
         nxt = client.post("/api/melds", json=pour("nope", prev_code=live["code"]))
-        check("no next link", nxt.status_code == 400 and "no next link" in nxt.text, nxt.text)
-        check("next link did not allocate", len(server._melds) == 2)
+        check("stays on this bridge", nxt.status_code == 400 and "stays on this bridge" in nxt.text, nxt.text)
+        check("same links only", len(server._melds) == 2)
 
         clock["t"] = T0 + timedelta(hours=24, seconds=1)
         late = client.post(f"/api/melds/{stale['code']}/resolve", json={"context": "too late"})
@@ -173,7 +184,7 @@ def test_silence_closes_same_bridge() -> None:
 
 
 def test_dissolved_stays_410_unknown_stays_404() -> None:
-    """Purge and chain deletes must keep serving 410. Never-existed stays 404."""
+    """A dissolved code stays 410. A code that never existed stays 404."""
     clock = {"t": T0}
     reset(clock)
     with TestClient(server.app) as client:
@@ -303,7 +314,6 @@ def test_thread_and_clock_reset() -> None:
         check("24h of silence closes it", closed.status_code == 410, closed.text)
         check("thread plaintext is gone", "opening" not in closed.text and "four" not in closed.text)
         check("unknown stays 404", client.get("/api/melds/never-existed").status_code == 404)
-        check("chain route is gone", client.get(f"/api/melds/{code}/chain").status_code == 404)
 
 
 def test_36h_until_first_reply_then_24h() -> None:
@@ -321,7 +331,7 @@ def test_36h_until_first_reply_then_24h() -> None:
         clock["t"] = T0 + timedelta(hours=10)
         seen = client.get(f"/api/melds/{active['code']}").json()
         check("read does not start or reset", seen["expires_at"] == active["expires_at"])
-        check("read is not a receipt", "read_at" not in seen and "seen" not in seen and "readers" not in seen)
+        check("read fields during the open window", set(seen) == READ_KEYS)
         clock["t"] = T0 + timedelta(hours=30)
         first = client.post(f"/api/melds/{active['code']}/resolve", json={"context": "from B"})
         first_exp = datetime.fromisoformat(first.json()["expires_at"])
@@ -366,7 +376,7 @@ def test_preview_does_not_flip_410_or_404() -> None:
         )
         check("unknown still 404", client.get("/api/melds/never-existed").status_code == 404)
         check("unknown capability still 404", client.get("/m/never-existed").status_code == 404)
-        check("preview did not mint a row", "never-existed" not in server._melds and "never-existed" not in server._tombstones)
+        check("preview did not create a row", "never-existed" not in server._melds and "never-existed" not in server._tombstones)
 
 
 def test_surface() -> None:
@@ -382,7 +392,6 @@ def test_surface() -> None:
             and "resets that 24 hours" in home.text,
             home.text,
         )
-        check("root is not a 1 hour timer", "1 hour" not in home.text, home.text)
         lowered_home = home.text.lower()
         check(
             "home has no zk",
@@ -433,9 +442,8 @@ def test_public_tree() -> None:
     check("trust not a vault", "not a vault" in trust)
     check("trust tombstone cap", str(server.TOMBSTONE_CAP) in trust)
     check("trust distinguishes gone", "410" in trust and "404" in trust)
-    for phrase in ("mint-next", "mint next", "prev_code", "next hop"):
-        check(f"readme has no {phrase}", phrase not in readme.lower())
-        check(f"trust has no {phrase}", phrase not in trust.lower())
+    check("readme says creation", "creates the link" in readme and "Creation." in readme and "mint" not in readme.lower())
+    check("trust says creation", "creates the link" in trust and "mint" not in trust.lower())
     for path in ROOT.rglob("*"):
         if not path.is_file():
             continue

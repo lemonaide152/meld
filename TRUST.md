@@ -1,6 +1,6 @@
 # meld — trust model
 
-- Capability URL. Party A mints the link with a declaration of what the bridge is for and what it is not for. A sends that URL to B privately. The conversation stays on that link.
+- Capability URL. Party A creates the link with a declaration of what the bridge is for and what it is not for. A sends that URL to B privately. The conversation stays on that link.
 - The bridge stays open while the context exchange is active. Until B's first reply, it stays open 36 hours (36h) from create. That first reply sets a 24 hour (24h) timer. Each later reply is kept and resets that 24 hours. There is no maximum lifetime once replies have started.
 - A body read returns the plaintext and does not start or reset the timer.
 - Host-readable while live.

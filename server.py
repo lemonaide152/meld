@@ -1,6 +1,6 @@
 """meld base-case server.
 
-In-memory capability URLs. Party A mints a link with a declaration of
+In-memory capability URLs. Party A creates a link with a declaration of
 what the bridge is for and what it is not for, and sends that URL to B
 privately. Two parties talk on the same bridge. The bridge stays open
 while the context exchange is active. Until B's first reply it stays
@@ -270,7 +270,7 @@ async def health():
 async def create_meld(request: Request):
     body = await _body(request)
     if body.get("prev_code") not in (None, ""):
-        raise HTTPException(400, "The conversation stays on this bridge. There is no next link.")
+        raise HTTPException(400, "The conversation stays on this bridge.")
     _reject_ttl_picker(body.get("ttl"))
     context = _require_context(body.get("context", ""))
     purpose_for = _require_declaration(body.get("for", ""), "for")
