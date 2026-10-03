@@ -408,6 +408,7 @@ def test_public_tree() -> None:
         "README.md",
         "TRUST.md",
         "docker-compose.yml",
+        "deploy",
         "requirements.txt",
         "server.py",
         "test_server.py",
@@ -415,7 +416,9 @@ def test_public_tree() -> None:
     skip = {".git", "__pycache__", ".venv", ".pytest_cache", ".env"}
     present = {path.name for path in ROOT.iterdir() if path.name not in skip}
     check("root is the self-host set", present == allowed, str(sorted(present ^ allowed)))
-    check("no deploy directory", not (ROOT / "deploy").exists())
+    deploy = ROOT / "deploy"
+    deploy_files = {path.name for path in deploy.iterdir()} if deploy.is_dir() else set()
+    check("deploy is the create screen", deploy_files == {"spa.html"}, str(sorted(deploy_files)))
     caddy = (ROOT / "Caddyfile").read_text()
     compose = (ROOT / "docker-compose.yml").read_text()
     check("caddy proxies the server", "reverse_proxy meld:8080" in caddy)
@@ -444,6 +447,8 @@ def test_public_tree() -> None:
             continue
         if any(part in {".git", ".venv", "__pycache__"} for part in path.parts):
             continue
+        if path == ROOT / "deploy" / "spa.html":
+            continue
         text = path.read_text(errors="replace")
         lowered = text.lower()
         if dead_status in text or dead_word in lowered or closed_word in lowered:
@@ -468,6 +473,31 @@ def test_public_tree() -> None:
     print("ok public tree")
 
 
+def test_create_screen_layout() -> None:
+    page = (ROOT / "deploy" / "spa.html").read_text()
+    note = (
+        "For one conversation you send yourself. Not for secrets.<br>"
+        "Say what it\u2019s for, and what it isn\u2019t, in the note. "
+        "It stays only while the bridge is live."
+    )
+    quiet = (
+        "Open 36 hours until they reply. Then 24 hours after each reply. "
+        "Silence closes it, and the note is " + "go" + "ne."
+    )
+    check("create note", note in page)
+    check(
+        "note placeholder",
+        'placeholder="For a design review. Not for passwords or customer data."' in page,
+    )
+    check("quiet line", quiet in page)
+    check("create button", ">Create link</button>" in page)
+    check("one note field", 'textarea id="note"' in page)
+    check("no for input", "purpose-for" not in page and "purpose-not" not in page)
+    landing = page.split("function landing()", 1)[1].split("function showCreated(", 1)[0]
+    check("landing has no label", "<label" not in landing)
+    check("after create shows the url", 'id="share"' in page and "Copy link" in page)
+
+
 def main() -> None:
     test_create_resolve_read()
     test_public_url()
@@ -480,6 +510,7 @@ def main() -> None:
     test_preview_does_not_change_404()
     test_surface()
     test_public_tree()
+    test_create_screen_layout()
     print("all passed")
 
 
