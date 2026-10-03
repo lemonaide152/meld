@@ -13,8 +13,7 @@ The host can read a live meld. Anyone with the link can read it.
 Not for secrets. No accounts. The host does not invent a reply.
 Dissolved plaintext is deleted.
 A tombstone keeps the code only, so a later request can still be 410.
-The first different reply wins. A second different reply is 409 and does
-not overwrite.
+Resolve writes the reply, including when one is already stored.
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 _log = logging.getLogger("meld")
@@ -403,29 +402,6 @@ async def resolve_meld(code: str, request: Request):
             expired="This meld has expired",
         )
         _start_clock(meld, now)
-        if meld["resolved"]:
-            if meld["context_b"] == context:
-                return {
-                    "code": code,
-                    "context_a": meld["context_a"],
-                    "context_b": meld["context_b"],
-                    "resolved": True,
-                    "retry": True,
-                }
-            # Status only. The first reply stays; this does not write a new one.
-            exp = meld["expires_at"]
-            return JSONResponse(
-                status_code=409,
-                content={
-                    "detail": "Already resolved with a different answer",
-                    "code": code,
-                    "context_a": meld["context_a"],
-                    "context_b": meld["context_b"],
-                    "resolved": True,
-                    "expires_at": exp.isoformat() if exp is not None else None,
-                    "seconds_remaining": _remaining(meld, now),
-                },
-            )
         meld["context_b"] = context
         meld["resolved"] = True
         meld["resolved_at"] = now.isoformat()

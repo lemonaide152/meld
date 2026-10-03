@@ -8,7 +8,7 @@
 - Each hop lives 1 hour after the first plaintext read or resolve, then it dissolves. The server deletes the meld and responds 410 while it still remembers that code. It does not keep the plaintext.
 - A link-preview crawl of `/m/{code}` gets an expires-only card. The exchange is not in that card. The crawl does not read the meld and does not start the clock.
 - A chain read is metadata for live hops: no plaintext, and it does not start the clock on this hop or its siblings. The plaintext read is `GET /api/melds/{code}` or `GET /m/{code}`.
-- The first different reply wins. The same answer may retry. A different answer is 409 and does not overwrite the first. The conflict is that status; the host does not write a substitute reply.
+- Resolve writes the reply that was sent, including when a reply is already stored.
 - A code that never existed is 404. Dissolved codes are remembered only up to a cap of 4096 (oldest dropped) and are forgotten on restart. A forgotten code is indistinguishable from one that never existed, so the answer is 404.
 - Mint-next creates a new bearer URL with its own hour. That is not an extend. It is not a forever thread.
 - Expired hops are deleted. A chain read lists only hops that are still live. Dissolved plaintext is not kept.

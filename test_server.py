@@ -69,21 +69,13 @@ def test_create_resolve_read() -> None:
         resolved = client.post(f"/api/melds/{code}/resolve", json={"context": "side b"})
         check("resolve", resolved.status_code == 200 and resolved.json()["resolved"] is True, resolved.text)
         check("resolve keeps expiry", resolved.json()["expires_at"] == started)
-        retry = client.post(f"/api/melds/{code}/resolve", json={"context": "side b"})
-        check("same answer retries", retry.status_code == 200 and retry.json().get("retry") is True)
-        clash = client.post(f"/api/melds/{code}/resolve", json={"context": "side c"})
-        check("different answer 409", clash.status_code == 409, clash.text)
-        clash_body = clash.json()
-        check(
-            "409 is a status",
-            clash_body.get("detail") == "Already resolved with a different answer",
-            clash.text,
-        )
-        check("409 echoes the winner", clash_body.get("context_b") == "side b", clash.text)
-        check("409 omits the loser", "side c" not in clash.text, clash.text)
         both = client.get(f"/api/melds/{code}").json()
         check("both sides", both["context_a"] == "side a" and both["context_b"] == "side b")
-        check("conflict did not overwrite", both["context_b"] == "side b" and server._melds[code]["context_b"] == "side b")
+        later = client.post(f"/api/melds/{code}/resolve", json={"context": "side c"})
+        check("later resolve writes", later.status_code == 200 and later.json()["context_b"] == "side c", later.text)
+        check("later resolve keeps expiry", later.json()["expires_at"] == started)
+        stored = client.get(f"/api/melds/{code}").json()
+        check("stored reply is the latest", stored["context_a"] == "side a" and stored["context_b"] == "side c")
 
 
 def test_public_url() -> None:
