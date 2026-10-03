@@ -46,38 +46,49 @@ def reset(clock: dict) -> None:
     server._now = lambda: clock["t"]
 
 
+def pour(context, **extra):
+    body = {"context": context, "for": "a working handoff", "not_for": "secrets"}
+    body.update(extra)
+    return body
+
+
 def test_create_resolve_read() -> None:
     clock = {"t": T0}
     reset(clock)
     with TestClient(server.app) as client:
-        created = client.post("/api/melds", json={"context": "side a", "ttl": "24h"})
+        created = client.post(
+            "/api/melds",
+            json=pour("side a", **{"for": "a design handoff", "not_for": "secrets"}),
+        )
         check("create 200", created.status_code == 200, created.text)
         body = created.json()
         code = body["code"]
-        check("ttl is 24h", body["ttl"] == "24h")
-        check("create is dormant", body["expires_at"] is None)
+        check("declaration", body["for"] == "a design handoff" and body["not_for"] == "secrets")
+        check("36h from create", datetime.fromisoformat(body["expires_at"]) == T0 + timedelta(seconds=server.OPEN_SECONDS))
         check("capability url", body["url"].endswith(f"/m/{code}"))
         check("no owner token", "owner_token" not in body)
         check("no next-link fields", "prev_code" not in body and "thread_id" not in body)
+        check("no read receipt", "read_at" not in body and "seen" not in body)
         same = client.get(f"/m/{code}")
         api = client.get(f"/api/melds/{code}")
         check("capability read", same.status_code == 200 and same.json()["context_a"] == "side a")
         check("api read matches", api.json() == same.json())
-        check("GET leaves the clock dormant", same.json()["expires_at"] is None)
+        check("GET does not move the 36h window", same.json()["expires_at"] == body["expires_at"])
         check("no replies yet", api.json()["replies"] == [] and api.json()["resolved"] is False)
         resolved = client.post(f"/api/melds/{code}/resolve", json={"context": "side b"})
         check("resolve", resolved.status_code == 200 and resolved.json()["resolved"] is True, resolved.text)
         first_exp = datetime.fromisoformat(resolved.json()["expires_at"])
-        check("first reply starts 24h", first_exp == T0 + timedelta(seconds=server.TTL_SECONDS))
+        check("first reply sets 24 hours", first_exp == T0 + timedelta(seconds=server.TTL_SECONDS))
         check("first reply kept", resolved.json()["replies"] == ["side b"])
         clock["t"] = T0 + timedelta(minutes=10)
         peeked = client.get(f"/api/melds/{code}").json()
         check("read shows the thread", peeked["context_a"] == "side a" and peeked["replies"] == ["side b"])
-        check("read does not reset 24h", peeked["expires_at"] == resolved.json()["expires_at"])
+        check("read does not reset 24 hours", peeked["expires_at"] == resolved.json()["expires_at"])
+        check("read has no receipt", "read_at" not in peeked and "readers" not in peeked)
         later = client.post(f"/api/melds/{code}/resolve", json={"context": "side c"})
         check("later reply appends", later.status_code == 200 and later.json()["replies"] == ["side b", "side c"], later.text)
         later_exp = datetime.fromisoformat(later.json()["expires_at"])
-        check("later reply resets 24h", later_exp == clock["t"] + timedelta(seconds=server.TTL_SECONDS))
+        check("later reply resets 24 hours", later_exp == clock["t"] + timedelta(seconds=server.TTL_SECONDS))
         stored = client.get(f"/api/melds/{code}").json()
         check("stored thread", stored["context_a"] == "side a" and stored["replies"] == ["side b", "side c"])
 
@@ -88,7 +99,7 @@ def test_public_url() -> None:
     os.environ["MELD_PUBLIC_URL"] = "https://example.test/"
     try:
         with TestClient(server.app) as client:
-            created = client.post("/api/melds", json={"context": "named host"}).json()
+            created = client.post("/api/melds", json=pour("named host")).json()
             check("public url", created["url"].startswith("https://example.test/m/"))
     finally:
         os.environ.pop("MELD_PUBLIC_URL", None)
@@ -97,20 +108,23 @@ def test_public_url() -> None:
 def test_ttl_lock() -> None:
     clock = {"t": T0}
     reset(clock)
-    check("pilot ttl is 24h", server.TTL_SECONDS == 24 * 60 * 60 and server.TTL_KEY == "24h")
+    check("windows are 36h then 24h", server.OPEN_SECONDS == 36 * 60 * 60 and server.TTL_SECONDS == 24 * 60 * 60)
     with TestClient(server.app) as client:
-        omitted = client.post("/api/melds", json={"context": "a"})
-        check("omit ttl", omitted.status_code == 200 and omitted.json()["ttl"] == "24h", omitted.text)
-        upper = client.post("/api/melds", json={"context": "a", "ttl": " 24H "})
-        check("24H accepted", upper.status_code == 200, upper.text)
-        for bad in ("1hr", "1d", "3m", "60", 3600, ""):
-            # Empty string is omit. Skip it here.
-            if bad == "":
-                continue
-            got = client.post("/api/melds", json={"context": "a", "ttl": bad})
-            check(f"reject ttl {bad!r}", got.status_code == 400 and "24h" in got.text, got.text)
-        empty = client.post("/api/melds", json={"context": "   "})
+        opened = client.post("/api/melds", json=pour("a"))
+        check("create opens 36 hours", opened.status_code == 200, opened.text)
+        check(
+            "create expiry is 36 hours",
+            datetime.fromisoformat(opened.json()["expires_at"]) == T0 + timedelta(hours=36),
+        )
+        for bad in ("1hr", "24h", "36h", "1d", "3m", "60", 3600):
+            got = client.post("/api/melds", json=pour("a", ttl=bad))
+            check(f"reject ttl {bad!r}", got.status_code == 400 and "36 hours" in got.text and "24 hour" in got.text, got.text)
+        empty = client.post("/api/melds", json=pour("   "))
         check("blank context", empty.status_code == 400, empty.text)
+        missing_for = client.post("/api/melds", json={"context": "a", "not_for": "secrets"})
+        check("for is required", missing_for.status_code == 400, missing_for.text)
+        missing_not = client.post("/api/melds", json={"context": "a", "for": "a handoff"})
+        check("not_for is required", missing_not.status_code == 400, missing_not.text)
         missing = client.get("/api/melds/no-such-code")
         check("unknown 404", missing.status_code == 404, missing.text)
 
@@ -120,8 +134,8 @@ def test_silence_closes_same_bridge() -> None:
     clock = {"t": T0}
     reset(clock)
     with TestClient(server.app) as client:
-        stale = client.post("/api/melds", json={"context": "stale-body"}).json()
-        live = client.post("/api/melds", json={"context": "live-body"}).json()
+        stale = client.post("/api/melds", json=pour("stale-body")).json()
+        live = client.post("/api/melds", json=pour("live-body")).json()
         client.post(f"/api/melds/{stale['code']}/resolve", json={"context": "stale-reply"})
         client.post(f"/api/melds/{live['code']}/resolve", json={"context": "live-reply"})
         clock["t"] = T0 + timedelta(minutes=30)
@@ -132,7 +146,7 @@ def test_silence_closes_same_bridge() -> None:
         check("reply resets 24h", reset_exp == clock["t"] + timedelta(seconds=server.TTL_SECONDS))
         clock["t"] = T0 + timedelta(hours=23)
         check("still open inside 24h", client.get(f"/api/melds/{stale['code']}").status_code == 200)
-        nxt = client.post("/api/melds", json={"context": "nope", "prev_code": live["code"]})
+        nxt = client.post("/api/melds", json=pour("nope", prev_code=live["code"]))
         check("no next link", nxt.status_code == 400 and "no next link" in nxt.text, nxt.text)
         check("next link did not allocate", len(server._melds) == 2)
 
@@ -163,10 +177,10 @@ def test_dissolved_stays_410_unknown_stays_404() -> None:
     clock = {"t": T0}
     reset(clock)
     with TestClient(server.app) as client:
-        purged = client.post("/api/melds", json={"context": "purge-me"}).json()
+        purged = client.post("/api/melds", json=pour("purge-me")).json()
         client.post(f"/api/melds/{purged['code']}/resolve", json={"context": "purge-reply"})
         clock["t"] = T0 + timedelta(hours=24, seconds=1)
-        fresh = client.post("/api/melds", json={"context": "still-here"})
+        fresh = client.post("/api/melds", json=pour("still-here"))
         check("create after expiry", fresh.status_code == 200, fresh.text)
         check("purge removed the row", purged["code"] not in server._melds)
         gone = client.get(f"/api/melds/{purged['code']}")
@@ -179,7 +193,10 @@ def test_dissolved_stays_410_unknown_stays_404() -> None:
         )
         live = client.get(f"/api/melds/{fresh.json()['code']}")
         check("live path unchanged", live.status_code == 200 and live.json()["context_a"] == "still-here")
-        check("dormant create has no timer", live.json()["expires_at"] is None)
+        check(
+            "fresh create is 36 hours",
+            datetime.fromisoformat(live.json()["expires_at"]) == clock["t"] + timedelta(hours=36),
+        )
         missing = client.get("/api/melds/never-existed")
         check("never existed 404", missing.status_code == 404, missing.text)
         check("never existed capability 404", client.get("/m/never-existed").status_code == 404)
@@ -197,9 +214,9 @@ def test_tombstone_cap_drops_oldest() -> None:
     server.TOMBSTONE_CAP = 2
     try:
         with TestClient(server.app) as client:
-            first = client.post("/api/melds", json={"context": "first"}).json()
-            second = client.post("/api/melds", json={"context": "second"}).json()
-            third = client.post("/api/melds", json={"context": "third"}).json()
+            first = client.post("/api/melds", json=pour("first")).json()
+            second = client.post("/api/melds", json=pour("second")).json()
+            third = client.post("/api/melds", json=pour("third")).json()
             for row in (first, second, third):
                 client.post(f"/api/melds/{row['code']}/resolve", json={"context": "reply"})
             clock["t"] = T0 + timedelta(hours=24, seconds=1)
@@ -219,7 +236,7 @@ def test_tombstone_cap_drops_oldest() -> None:
                 "reply on remembered is 410",
                 client.post(f"/api/melds/{second['code']}/resolve", json={"context": "x"}).status_code == 410,
             )
-            live = client.post("/api/melds", json={"context": "live-after"})
+            live = client.post("/api/melds", json=pour("live-after"))
             check("live create", live.status_code == 200, live.text)
             check(
                 "live path after cap",
@@ -235,26 +252,27 @@ def test_thread_and_clock_reset() -> None:
     clock = {"t": T0}
     reset(clock)
     with TestClient(server.app) as client:
-        created = client.post("/api/melds", json={"context": "opening"}).json()
+        created = client.post("/api/melds", json=pour("opening")).json()
         code = created["code"]
+        opened = created["expires_at"]
         clock["t"] = T0 + timedelta(hours=5)
-        dormant = client.get(f"/api/melds/{code}")
-        check("dormant survives a long wait", dormant.status_code == 200 and dormant.json()["expires_at"] is None)
-        check("long wait did not start the clock", server._melds[code]["expires_at"] is None)
+        waiting = client.get(f"/api/melds/{code}")
+        check("still open inside 36 hours", waiting.status_code == 200 and waiting.json()["expires_at"] == opened)
+        check("read did not move the 36h window", server._melds[code]["expires_at"] == datetime.fromisoformat(opened))
 
         preview = client.get(
             f"/m/{code}",
             headers={"User-Agent": "Slackbot-LinkExpanding 1.0", "Accept": "application/json"},
         )
         check("slack preview", preview.status_code == 200 and "opening" not in preview.text, preview.text)
-        check("slack left the clock dormant", server._melds[code]["expires_at"] is None)
+        check("slack did not move the timer", server._melds[code]["expires_at"] == datetime.fromisoformat(opened))
         check("head is not a body read", client.head(f"/m/{code}").status_code == 405)
-        check("head left the clock dormant", server._melds[code]["expires_at"] is None)
+        check("head did not move the timer", server._melds[code]["expires_at"] == datetime.fromisoformat(opened))
 
         first = client.post(f"/api/melds/{code}/resolve", json={"context": "one"})
         check("first reply", first.status_code == 200 and first.json()["replies"] == ["one"], first.text)
         first_exp = datetime.fromisoformat(first.json()["expires_at"])
-        check("first reply starts 24h", first_exp == clock["t"] + timedelta(seconds=server.TTL_SECONDS))
+        check("first reply sets 24 hours", first_exp == clock["t"] + timedelta(seconds=server.TTL_SECONDS))
 
         clock["t"] = clock["t"] + timedelta(minutes=20)
         peeked = client.get(f"/m/{code}", headers={"User-Agent": "Mozilla/5.0"})
@@ -288,11 +306,46 @@ def test_thread_and_clock_reset() -> None:
         check("chain route is gone", client.get(f"/api/melds/{code}/chain").status_code == 404)
 
 
+def test_36h_until_first_reply_then_24h() -> None:
+    """No reply closes at 36 hours from create. The first reply sets 24 hours."""
+    clock = {"t": T0}
+    reset(clock)
+    with TestClient(server.app) as client:
+        quiet = client.post("/api/melds", json=pour("quiet-body")).json()
+        active = client.post(
+            "/api/melds",
+            json=pour("active-body", **{"for": "the handoff", "not_for": "secrets"}),
+        ).json()
+        check("declaration is stored", active["for"] == "the handoff" and active["not_for"] == "secrets")
+        check("create window is 36 hours", quiet["expires_at"] == active["expires_at"])
+        clock["t"] = T0 + timedelta(hours=10)
+        seen = client.get(f"/api/melds/{active['code']}").json()
+        check("read does not start or reset", seen["expires_at"] == active["expires_at"])
+        check("read is not a receipt", "read_at" not in seen and "seen" not in seen and "readers" not in seen)
+        clock["t"] = T0 + timedelta(hours=30)
+        first = client.post(f"/api/melds/{active['code']}/resolve", json={"context": "from B"})
+        first_exp = datetime.fromisoformat(first.json()["expires_at"])
+        check("B's first reply sets 24 hours", first_exp == clock["t"] + timedelta(hours=24), first.text)
+        check("24h sliding passes the 36h mark", first_exp > datetime.fromisoformat(active["expires_at"]))
+        clock["t"] = T0 + timedelta(hours=36, seconds=1)
+        closed = client.get(f"/api/melds/{quiet['code']}")
+        check("no reply closes at 36 hours", closed.status_code == 410 and "quiet-body" not in closed.text, closed.text)
+        check("replied bridge stays open past 36 hours", client.get(f"/api/melds/{active['code']}").status_code == 200)
+        clock["t"] = first_exp - timedelta(minutes=30)
+        again = client.post(f"/api/melds/{active['code']}/resolve", json={"context": "more"})
+        check("later replies are kept", again.status_code == 200 and again.json()["replies"] == ["from B", "more"], again.text)
+        reset_at = clock["t"] + timedelta(hours=24)
+        check("later reply resets 24 hours", datetime.fromisoformat(again.json()["expires_at"]) == reset_at)
+        held = again.json()["expires_at"]
+        clock["t"] = clock["t"] + timedelta(hours=2)
+        check("another read does not reset", client.get(f"/m/{active['code']}").json()["expires_at"] == held)
+
+
 def test_preview_does_not_flip_410_or_404() -> None:
     clock = {"t": T0}
     reset(clock)
     with TestClient(server.app) as client:
-        row = client.post("/api/melds", json={"context": "gone-secret"}).json()
+        row = client.post("/api/melds", json=pour("gone-secret")).json()
         client.post(f"/api/melds/{row['code']}/resolve", json={"context": "gone-reply"})
         clock["t"] = T0 + timedelta(hours=24, seconds=1)
         check("dissolve on read", client.get(f"/api/melds/{row['code']}").status_code == 410)
@@ -322,7 +375,13 @@ def test_surface() -> None:
     with TestClient(server.app) as client:
         home = client.get("/")
         check("home", home.status_code == 200 and "Not for secrets" in home.text, home.text)
-        check("root says 24 hours", "24 hours" in home.text and "starts a 24 hour timer" in home.text, home.text)
+        check(
+            "root says 36 hours then 24 hours",
+            "36 hours from create" in home.text
+            and "sets a 24 hour timer" in home.text
+            and "resets that 24 hours" in home.text,
+            home.text,
+        )
         check("root is not a 1 hour timer", "1 hour" not in home.text, home.text)
         lowered_home = home.text.lower()
         check(
@@ -368,8 +427,8 @@ def test_public_tree() -> None:
     check("readme not for secrets", "Not for secrets" in readme)
     check("readme tombstone cap", str(server.TOMBSTONE_CAP) in readme)
     check("readme distinguishes gone", "410" in readme and "404" in readme)
-    check("readme says 24h", "24h" in readme and "24 hours" in readme)
-    check("trust says 24h", "24h" in trust and "24 hours" in trust)
+    check("readme says 36h then 24h", "36 hours" in readme and "24 hours" in readme and "privately" in readme)
+    check("trust says 36h then 24h", "36 hours" in trust and "24 hours" in trust and "privately" in trust)
     check("trust host-readable", "Host-readable while live." in trust)
     check("trust not a vault", "not a vault" in trust)
     check("trust tombstone cap", str(server.TOMBSTONE_CAP) in trust)
@@ -405,6 +464,7 @@ def main() -> None:
     test_dissolved_stays_410_unknown_stays_404()
     test_tombstone_cap_drops_oldest()
     test_thread_and_clock_reset()
+    test_36h_until_first_reply_then_24h()
     test_preview_does_not_flip_410_or_404()
     test_surface()
     test_public_tree()

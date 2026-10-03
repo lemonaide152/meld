@@ -1,15 +1,15 @@
 """meld base-case server.
 
-In-memory capability URLs. Two parties talk on the same bridge. Create
-leaves it dormant (expires_at None). The bridge stays open while the
-context exchange is active. The pilot timer is 24h from the last reply.
-The first reply starts it. Each later reply is kept and resets 24h.
-There is no maximum lifetime. It closes only after 24h with no new reply.
-A body read
-does not start or reset the timer. A link-preview crawl does not read the
-body. While the host still remembers a dissolved code, it serves 410. A
-code that never existed, or one forgotten after the tombstone cap or a
-restart, is 404.
+In-memory capability URLs. Party A mints a link with a declaration of
+what the bridge is for and what it is not for, and sends that URL to B
+privately. Two parties talk on the same bridge. The bridge stays open
+while the context exchange is active. Until B's first reply it stays
+open 36 hours from create. That first reply sets a 24 hour timer. Each
+later reply is kept and resets that 24 hours. There is no maximum
+lifetime after replies start. A body read does not start or reset the
+timer. A link-preview crawl does not read the body. While the host still
+remembers a dissolved code, it serves 410. A code that never existed, or
+one forgotten after the tombstone cap or a restart, is 404.
 
 The host can read a live meld. Anyone with the link can read it.
 Not for secrets. No accounts. The host does not invent a reply.
@@ -35,10 +35,12 @@ _log = logging.getLogger("meld")
 
 app = FastAPI(title="meld", version="1.0.0", docs_url=None, redoc_url=None)
 
-TTL_KEY = "24h"
+# Until B's first reply: 36 hours from create. After that, 24 hours from each reply.
+OPEN_SECONDS = 36 * 60 * 60
 TTL_SECONDS = 24 * 60 * 60
 CODE_LEN = 12
 MAX_CONTEXT = 100_000
+MAX_DECLARATION = 2_000
 # Dissolved codes only. Values stay None: the code, never the plaintext.
 # Oldest dropped when full. A dropped code, or one forgotten on restart,
 # is indistinguishable from a code that never existed, so the answer is 404.
@@ -62,12 +64,7 @@ def _clock_started(expires_at) -> bool:
 
 
 def _reset_ttl(meld: dict, now: datetime) -> None:
-    """Each reply starts or resets the pilot 24h silence timer.
-
-    The bridge stays open while the exchange is active. There is no
-    maximum lifetime. 24h with no new reply closes it.
-    A body read does not call this.
-    """
+    """A reply sets or resets the 24 hour timer. A body read does not call this."""
     meld["expires_at"] = now + timedelta(seconds=TTL_SECONDS)
 
 
@@ -81,16 +78,26 @@ def _require_context(context) -> str:
     return context
 
 
-def _require_ttl(value) -> tuple[str, int]:
-    """Pilot TTL is 24h from the last reply. Omit ttl or send 24h. Any other value is rejected."""
+def _reject_ttl_picker(value) -> None:
+    """The two windows are fixed. A client cannot pick another lifetime."""
     if value is None or (isinstance(value, str) and not value.strip()):
-        return TTL_KEY, TTL_SECONDS
-    if isinstance(value, str) and value.strip().lower() == TTL_KEY:
-        return TTL_KEY, TTL_SECONDS
+        return
     raise HTTPException(
         400,
-        'Pilot TTL is 24h from the last reply. Send ttl "24h" or omit it. There is no other lifetime.',
+        "Until the first reply the bridge stays open 36 hours from create. "
+        "The first reply sets a 24 hour timer. Each later reply resets that 24 hours. "
+        "There is no other lifetime.",
     )
+
+
+def _require_declaration(value, label: str) -> str:
+    if not isinstance(value, str):
+        raise HTTPException(400, f"{label} must be a string")
+    if not value.strip():
+        raise HTTPException(400, f"{label} must be non-empty")
+    if len(value) > MAX_DECLARATION:
+        raise HTTPException(400, f"{label} is too long")
+    return value
 
 
 async def _body(request: Request) -> dict:
@@ -180,6 +187,8 @@ def _read_payload(meld: dict, now: datetime) -> dict:
         "expires_at": exp.isoformat() if exp is not None else None,
         "seconds_remaining": _remaining(meld, now),
         "context_a": meld["context_a"],
+        "for": meld["for"],
+        "not_for": meld["not_for"],
         "replies": list(meld["replies"]),
     }
 
@@ -244,7 +253,8 @@ async def root():
         "meld base-case server. POST /api/melds with {context}. "
         "The conversation stays on that link. "
         "The bridge stays open while the context exchange is active. "
-        "The first reply starts a 24 hour timer. Each later reply resets that 24 hours. "
+        "Until the first reply, it stays open 36 hours from create. "
+        "The first reply sets a 24 hour timer. Each later reply resets that 24 hours. "
         "A read does not start or reset the timer. "
         "Host-readable while live. Anyone with the link can read it. Not for secrets. "
         "No AI in the loop.\n"
@@ -261,31 +271,29 @@ async def create_meld(request: Request):
     body = await _body(request)
     if body.get("prev_code") not in (None, ""):
         raise HTTPException(400, "The conversation stays on this bridge. There is no next link.")
+    _reject_ttl_picker(body.get("ttl"))
     context = _require_context(body.get("context", ""))
-    ttl_key, _ttl_seconds = _require_ttl(body.get("ttl"))
+    purpose_for = _require_declaration(body.get("for", ""), "for")
+    purpose_not = _require_declaration(body.get("not_for", ""), "not_for")
     now = _now()
     base = _base(request)
+    expires_at = now + timedelta(seconds=OPEN_SECONDS)
     with _lock:
         code = _alloc_code()
         _melds[code] = {
             "code": code,
             "context_a": context,
+            "for": purpose_for,
+            "not_for": purpose_not,
             "replies": [],
             "resolved": False,
             "resolved_at": None,
             "created_at": now,
-            "expires_at": None,
+            "expires_at": expires_at,
         }
         _purge(now)
-        payload = {
-            "code": code,
-            "url": _url(base, code),
-            "context_a": context,
-            "replies": [],
-            "resolved": False,
-            "ttl": ttl_key,
-            "expires_at": None,
-        }
+        payload = _read_payload(_melds[code], now)
+        payload["url"] = _url(base, code)
     _log.info("created code=%s", code)
     return payload
 
@@ -313,7 +321,7 @@ async def get_meld(code: str, request: Request):
 
 @app.post("/api/melds/{code}/resolve")
 async def resolve_meld(code: str, request: Request):
-    """Append a reply. The first reply starts the pilot 24h. Each later reply resets 24h."""
+    """Append a reply. The first reply sets 24 hours. Each later reply resets that 24 hours."""
     body = await _body(request)
     context = _require_context(body.get("context", ""))
     now = _now()
@@ -328,13 +336,7 @@ async def resolve_meld(code: str, request: Request):
         meld["resolved"] = True
         meld["resolved_at"] = now.isoformat()
         _reset_ttl(meld, now)
-        payload = {
-            "code": code,
-            "context_a": meld["context_a"],
-            "replies": list(meld["replies"]),
-            "resolved": True,
-            "expires_at": meld["expires_at"].isoformat(),
-        }
+        payload = _read_payload(meld, now)
     _log.info("resolved code=%s", code)
     return payload
 

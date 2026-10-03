@@ -2,7 +2,7 @@
 
 **Don't meet. Meld.**
 
-Put working context on a capability URL so neither side pastes the block. The conversation stays on that link. The bridge stays open while the context exchange is active. Pilot TTL is **24 hours** (24h) from the last reply. The first reply starts a 24 hour timer. Each later reply is kept and resets that 24 hours. There is no maximum lifetime. It closes only after 24 hours with no new reply. The host then deletes it and serves **410 Gone** for that code while it remembers the dissolve. A code that never existed is **404**. Create stays dormant until the first reply. A read does not start or reset the timer.
+Put working context on a capability URL so neither side pastes the block. Party A mints the link with a declaration of what the bridge is for and what it is not for. A sends that URL to B privately. The conversation stays on that link. The bridge stays open while the context exchange is active. Until B's first reply, it stays open **36 hours** (36h) from create. That first reply sets a **24 hour** (24h) timer. Each later reply is kept and resets that 24 hours. There is no maximum lifetime once replies have started. The host then deletes it and serves **410 Gone** for that code while it remembers the dissolve. A code that never existed is **404**. A read does not start or reset the timer.
 
 Host-readable while live. Anyone with the link can read it. **Not for secrets.** No accounts, no plaintext archive.
 
@@ -21,10 +21,10 @@ Then:
 ```bash
 curl -s -X POST http://127.0.0.1:8080/api/melds \
   -H "Content-Type: application/json" \
-  -d '{"context":"Auth flow: OAuth2+PKCE, JWT refresh"}'
+  -d '{"context":"Auth flow: OAuth2+PKCE, JWT refresh","for":"a working handoff","not_for":"secrets"}'
 ```
 
-Open the `url` from the response (or `GET /m/{code}`). Resolve with `POST /api/melds/{code}/resolve`.
+A sends the `url` to B privately. B replies with `POST /api/melds/{code}/resolve`.
 
 ### Compose (local)
 
@@ -63,12 +63,12 @@ docker push ghcr.io/lemonaide152/meld:latest
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/melds` | POST | Create. Body: `context`, optional `ttl` (`24h`). Leaves the bridge dormant. The conversation stays on the returned link. |
-| `/api/melds/{code}` | GET | Plaintext while live: the opening `context_a` and every reply. Does not start or reset the timer. 404 unknown. 410 after 24h with no new reply, including later requests, while that code is still remembered. |
+| `/api/melds` | POST | A mints the link. Body: `context`, `for`, `not_for`. Open 36 hours from create until the first reply. A sends the URL to B privately. |
+| `/api/melds/{code}` | GET | Plaintext while live: the declaration, the opening `context_a`, and every reply. Does not start or reset the timer. 404 unknown. 410 after the open window or the 24 hour reply timer, including later requests, while that code is still remembered. |
 | `/m/{code}` | GET | Same plaintext read — the capability URL. Link-preview crawlers get an expires-only card with no exchange. That card does not read the meld. |
-| `/api/melds/{code}/resolve` | POST | Append a reply on this same bridge. The first reply starts the pilot 24h. Each later reply is kept and resets 24h. 404 unknown. 410 if dissolved and still remembered. |
+| `/api/melds/{code}/resolve` | POST | Append a reply on this same bridge. B's first reply sets a 24 hour timer. Each later reply is kept and resets that 24 hours. 404 unknown. 410 if dissolved and still remembered. |
 
-State is memory only. 24h with no new reply, the meld is deleted (no plaintext archive). The host keeps a tombstone of the code only, capped at 4096, and drops the oldest when that cap is full. Restart drops live links and tombstones. A forgotten code is not distinguishable from one that never existed, so the answer is 404.
+State is memory only. With no reply, 36 hours from create deletes the meld. After a reply, 24 hours with no new reply deletes it (no plaintext archive). The host keeps a tombstone of the code only, capped at 4096, and drops the oldest when that cap is full. Restart drops live links and tombstones. A forgotten code is not distinguishable from one that never existed, so the answer is 404.
 
 ## Trust
 
