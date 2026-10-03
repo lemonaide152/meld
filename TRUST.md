@@ -1,7 +1,7 @@
 # meld — trust model
 
 - Capability URL. The conversation stays on that link. Create stays dormant until the first reply.
-- The bridge stays open while the context exchange is active. Pilot TTL is 24h from the last reply. The first reply starts it. Each later reply is kept and resets 24h. There is no maximum lifetime. It closes only after 24h with no new reply.
+- The bridge stays open while the context exchange is active. Pilot TTL is 24 hours (24h) from the last reply. The first reply starts a 24 hour timer. Each later reply is kept and resets that 24 hours. There is no maximum lifetime. It closes only after 24 hours with no new reply.
 - A body read returns the plaintext and does not start or reset the timer.
 - Host-readable while live.
 - No AI in the loop: the host only holds what you pour while the bridge is live — then it's gone. While live the host can read the plaintext as-is; it does not summarize, rewrite, invent a reply, or put a model in the middle. After 24h with no new reply: 410, no keep after TTL.

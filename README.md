@@ -2,7 +2,7 @@
 
 **Don't meet. Meld.**
 
-Put working context on a capability URL so neither side pastes the block. The conversation stays on that link. The bridge stays open while the context exchange is active. Pilot TTL is **24h** from the last reply. The first reply starts it. Each later reply is kept and resets 24h. There is no maximum lifetime. It closes only after 24h with no new reply. The host then deletes it and serves **410 Gone** for that code while it remembers the dissolve. A code that never existed is **404**. Create stays dormant until the first reply. A read does not start or reset the timer.
+Put working context on a capability URL so neither side pastes the block. The conversation stays on that link. The bridge stays open while the context exchange is active. Pilot TTL is **24 hours** (24h) from the last reply. The first reply starts a 24 hour timer. Each later reply is kept and resets that 24 hours. There is no maximum lifetime. It closes only after 24 hours with no new reply. The host then deletes it and serves **410 Gone** for that code while it remembers the dissolve. A code that never existed is **404**. Create stays dormant until the first reply. A read does not start or reset the timer.
 
 Host-readable while live. Anyone with the link can read it. **Not for secrets.** No accounts, no plaintext archive.
 

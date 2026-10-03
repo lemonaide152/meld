@@ -244,7 +244,7 @@ async def root():
         "meld base-case server. POST /api/melds with {context}. "
         "The conversation stays on that link. "
         "The bridge stays open while the context exchange is active. "
-        "Pilot TTL is 24h from the last reply. The first reply starts it. Each later reply resets 24h. "
+        "The first reply starts a 24 hour timer. Each later reply resets that 24 hours. "
         "A read does not start or reset the timer. "
         "Host-readable while live. Anyone with the link can read it. Not for secrets. "
         "No AI in the loop.\n"

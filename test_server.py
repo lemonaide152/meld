@@ -322,6 +322,8 @@ def test_surface() -> None:
     with TestClient(server.app) as client:
         home = client.get("/")
         check("home", home.status_code == 200 and "Not for secrets" in home.text, home.text)
+        check("root says 24 hours", "24 hours" in home.text and "starts a 24 hour timer" in home.text, home.text)
+        check("root is not a 1 hour timer", "1 hour" not in home.text, home.text)
         lowered_home = home.text.lower()
         check(
             "home has no zk",
@@ -366,8 +368,8 @@ def test_public_tree() -> None:
     check("readme not for secrets", "Not for secrets" in readme)
     check("readme tombstone cap", str(server.TOMBSTONE_CAP) in readme)
     check("readme distinguishes gone", "410" in readme and "404" in readme)
-    check("readme says 24h", "24h" in readme)
-    check("trust says 24h", "24h" in trust)
+    check("readme says 24h", "24h" in readme and "24 hours" in readme)
+    check("trust says 24h", "24h" in trust and "24 hours" in trust)
     check("trust host-readable", "Host-readable while live." in trust)
     check("trust not a vault", "not a vault" in trust)
     check("trust tombstone cap", str(server.TOMBSTONE_CAP) in trust)
