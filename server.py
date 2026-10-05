@@ -1,15 +1,15 @@
 """meld base-case server.
 
-In-memory capability URLs. Party A creates a link with a declaration of
-what the bridge is for and what it is not for, and sends that URL to B
-privately. Two parties talk on the same bridge. The bridge stays open
-while the context exchange is active. Until B's first reply it stays
-open 36 hours from creation. That first reply sets a 24 hour timer. Each
-later reply is kept and resets that 24 hours. There is no maximum
-lifetime after replies start. A body read does not start or reset the
-timer. A link-preview crawl does not read the body. Dissolve deletes
-the bridge. The next request for that code is 404. A code that never
-existed is 404. An expired code is 404. The response is the same.
+In-memory capability URLs. Party A creates a link with one note that
+says what the exchange is for and what it is not for, and sends that
+URL to B privately. Two parties keep talking on the same bridge. The
+bridge stays open while the context exchange is active. Until the first
+reply it stays open 36 hours from creation. That first reply sets a 24
+hour timer. Each later reply is kept and resets that 24 hours. There is
+no maximum lifetime after replies start. A body read does not start or
+reset the timer. A link-preview crawl does not read the body. Dissolve
+deletes the bridge. The next request for that code is 404. A code that
+never existed is 404. An expired code is 404. The response is the same.
 
 The host can read a live meld. Anyone with the link can read it.
 Not for secrets. No accounts. The host does not invent a reply.
@@ -33,12 +33,11 @@ _log = logging.getLogger("meld")
 
 app = FastAPI(title="meld", version="1.0.0", docs_url=None, redoc_url=None)
 
-# Until B's first reply: 36 hours from create. After that, 24 hours from each reply.
+# Until the first reply: 36 hours from create. After that, 24 hours from each reply.
 OPEN_SECONDS = 36 * 60 * 60
 TTL_SECONDS = 24 * 60 * 60
 CODE_LEN = 12
 MAX_CONTEXT = 100_000
-MAX_DECLARATION = 2_000
 
 _melds: dict[str, dict] = {}
 _lock = threading.Lock()
@@ -83,14 +82,36 @@ def _reject_ttl_picker(value) -> None:
     )
 
 
-def _require_declaration(value, label: str) -> str:
-    if not isinstance(value, str):
-        raise HTTPException(400, f"{label} must be a string")
-    if not value.strip():
-        raise HTTPException(400, f"{label} must be non-empty")
-    if len(value) > MAX_DECLARATION:
-        raise HTTPException(400, f"{label} is too long")
-    return value
+def _one_note(body: dict) -> str:
+    """Creation is one note.
+
+    `note` is that text. `context`, `for`, and `not_for` are the same
+    text when a client still sends those keys.
+    """
+    texts: list[str] = []
+    for key in ("note", "context", "for", "not_for"):
+        if key not in body or body[key] is None:
+            continue
+        value = body[key]
+        if not isinstance(value, str):
+            raise HTTPException(400, "The note must be a string")
+        if not value.strip():
+            raise HTTPException(400, "The note must be non-empty")
+        texts.append(value)
+    if not texts:
+        raise HTTPException(
+            400,
+            "A note is required. Say what the exchange is for and what it is not for.",
+        )
+    note = texts[0]
+    if any(item != note for item in texts):
+        raise HTTPException(
+            400,
+            "One note. Put the same text in note, context, for, and not_for.",
+        )
+    if len(note) > MAX_CONTEXT:
+        raise HTTPException(400, "Note too large (100K max)")
+    return note
 
 
 async def _body(request: Request) -> dict:
@@ -171,9 +192,10 @@ def _read_payload(meld: dict, now: datetime) -> dict:
         "resolved_at": meld["resolved_at"],
         "expires_at": exp.isoformat() if exp is not None else None,
         "seconds_remaining": _remaining(meld, now),
-        "context_a": meld["context_a"],
-        "for": meld["for"],
-        "not_for": meld["not_for"],
+        "note": meld["note"],
+        "context_a": meld["note"],
+        "for": meld["note"],
+        "not_for": meld["note"],
         "replies": list(meld["replies"]),
     }
 
@@ -235,12 +257,14 @@ def _is_link_preview_bot(request: Request) -> bool:
 @app.get("/", response_class=PlainTextResponse)
 async def root():
     return (
-        "meld base-case server. POST /api/melds with {context}. "
+        "meld base-case server. POST /api/melds with one note. "
+        "The note says what the exchange is for and what it is not for. "
         "The conversation stays on that link. "
         "The bridge stays open while the context exchange is active. "
         "Until the first reply, it stays open 36 hours from create. "
         "The first reply sets a 24 hour timer. Each later reply resets that 24 hours. "
         "A read does not start or reset the timer. "
+        "When the window ends, the next request is 404. "
         "Host-readable while live. Anyone with the link can read it. Not for secrets. "
         "No AI in the loop.\n"
     )
@@ -257,9 +281,7 @@ async def create_meld(request: Request):
     if body.get("prev_code") not in (None, ""):
         raise HTTPException(400, "The conversation stays on this bridge.")
     _reject_ttl_picker(body.get("ttl"))
-    context = _require_context(body.get("context", ""))
-    purpose_for = _require_declaration(body.get("for", ""), "for")
-    purpose_not = _require_declaration(body.get("not_for", ""), "not_for")
+    note = _one_note(body)
     now = _now()
     base = _base(request)
     expires_at = now + timedelta(seconds=OPEN_SECONDS)
@@ -267,9 +289,7 @@ async def create_meld(request: Request):
         code = _alloc_code()
         _melds[code] = {
             "code": code,
-            "context_a": context,
-            "for": purpose_for,
-            "not_for": purpose_not,
+            "note": note,
             "replies": [],
             "resolved": False,
             "resolved_at": None,
