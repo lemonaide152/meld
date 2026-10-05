@@ -51,6 +51,7 @@ READ_KEYS = {
     "resolved_at",
     "expires_at",
     "seconds_remaining",
+    "note",
     "context_a",
     "for",
     "not_for",
@@ -58,8 +59,9 @@ READ_KEYS = {
 }
 
 
-def pour(context, **extra):
-    body = {"context": context, "for": "a working handoff", "not_for": "secrets"}
+def pour(note, **extra):
+    """One note. The older wire keys carry that same text."""
+    body = {"context": note, "for": note, "not_for": note}
     body.update(extra)
     return body
 
@@ -68,14 +70,17 @@ def test_create_resolve_read() -> None:
     clock = {"t": T0}
     reset(clock)
     with TestClient(server.app) as client:
-        created = client.post(
-            "/api/melds",
-            json=pour("side a", **{"for": "a design handoff", "not_for": "secrets"}),
-        )
+        created = client.post("/api/melds", json=pour("side a"))
         check("create 200", created.status_code == 200, created.text)
         body = created.json()
         code = body["code"]
-        check("declaration", body["for"] == "a design handoff" and body["not_for"] == "secrets")
+        check(
+            "one note on the wire",
+            body["note"] == "side a"
+            and body["context_a"] == "side a"
+            and body["for"] == "side a"
+            and body["not_for"] == "side a",
+        )
         check("36h from create", datetime.fromisoformat(body["expires_at"]) == T0 + timedelta(seconds=server.OPEN_SECONDS))
         check("capability url", body["url"].endswith(f"/m/{code}"))
         check("creation fields", set(body) == READ_KEYS | {"url"})
@@ -130,11 +135,7 @@ def test_ttl_lock() -> None:
             got = client.post("/api/melds", json=pour("a", ttl=bad))
             check(f"reject ttl {bad!r}", got.status_code == 400 and "36 hours" in got.text and "24 hour" in got.text, got.text)
         empty = client.post("/api/melds", json=pour("   "))
-        check("blank context", empty.status_code == 400, empty.text)
-        missing_for = client.post("/api/melds", json={"context": "a", "not_for": "secrets"})
-        check("for is required", missing_for.status_code == 400, missing_for.text)
-        missing_not = client.post("/api/melds", json={"context": "a", "for": "a handoff"})
-        check("not_for is required", missing_not.status_code == 400, missing_not.text)
+        check("blank note", empty.status_code == 400 and "note" in empty.text.lower(), empty.text)
         missing = client.get("/api/melds/no-such-code")
         check("unknown 404", missing.status_code == 404, missing.text)
 
@@ -308,11 +309,14 @@ def test_36h_until_first_reply_then_24h() -> None:
     reset(clock)
     with TestClient(server.app) as client:
         quiet = client.post("/api/melds", json=pour("quiet-body")).json()
-        active = client.post(
-            "/api/melds",
-            json=pour("active-body", **{"for": "the handoff", "not_for": "secrets"}),
-        ).json()
-        check("declaration is stored", active["for"] == "the handoff" and active["not_for"] == "secrets")
+        active = client.post("/api/melds", json=pour("active-body")).json()
+        check(
+            "create stores one note",
+            active["note"] == "active-body"
+            and active["context_a"] == "active-body"
+            and active["for"] == "active-body"
+            and active["not_for"] == "active-body",
+        )
         check("create window is 36 hours", quiet["expires_at"] == active["expires_at"])
         clock["t"] = T0 + timedelta(hours=10)
         seen = client.get(f"/api/melds/{active['code']}").json()
@@ -373,12 +377,81 @@ def test_preview_does_not_change_404() -> None:
         check("dissolve left no record", row["code"] not in server._melds)
 
 
+def test_one_note_create_body() -> None:
+    """Creation is one note. The clock is 36 hours from create, and a read does not extend it."""
+    clock = {"t": T0}
+    reset(clock)
+    note = "For a design review. Not for passwords or customer data."
+    with TestClient(server.app) as client:
+        only = client.post("/api/melds", json={"note": note})
+        check("note field creates", only.status_code == 200, only.text)
+        body = only.json()
+        check(
+            "note is the only text",
+            body["note"] == note
+            and body["context_a"] == note
+            and body["for"] == note
+            and body["not_for"] == note,
+        )
+        opened = datetime.fromisoformat(body["expires_at"])
+        check("note opens 36 hours", opened == T0 + timedelta(hours=36))
+        check("note is not a 1 hour link", opened != T0 + timedelta(hours=1))
+        clock["t"] = T0 + timedelta(hours=35)
+        peeked = client.get(f"/api/melds/{body['code']}")
+        check("read inside 36 hours", peeked.status_code == 200 and peeked.json()["expires_at"] == body["expires_at"], peeked.text)
+        check("read did not extend the clock", peeked.json()["seconds_remaining"] == 60 * 60)
+        clock["t"] = T0 + timedelta(hours=36, seconds=1)
+        closed = client.get(f"/api/melds/{body['code']}")
+        unknown = client.get("/api/melds/no-such-note")
+        check("quiet note is 404", closed.status_code == 404 and closed.text == unknown.text, closed.text)
+        check("quiet note plaintext absent", note not in closed.text)
+
+        wire = client.post("/api/melds", json={"context": note, "for": note, "not_for": note})
+        check("same text on the wire", wire.status_code == 200 and wire.json()["note"] == note, wire.text)
+        check(
+            "wire echoes one note",
+            wire.json()["context_a"] == note and wire.json()["for"] == note and wire.json()["not_for"] == note,
+        )
+
+        context_only = client.post("/api/melds", json={"context": note})
+        check(
+            "context alone is the note",
+            context_only.status_code == 200
+            and context_only.json()["note"] == note
+            and context_only.json()["for"] == note
+            and context_only.json()["not_for"] == note,
+            context_only.text,
+        )
+
+        mismatch = client.post(
+            "/api/melds",
+            json={"context": "the working dump", "for": "a handoff", "not_for": "secrets"},
+        )
+        check("split fields are rejected", mismatch.status_code == 400 and "same text" in mismatch.text, mismatch.text)
+        absent = client.post("/api/melds", json={})
+        check("note is required", absent.status_code == 400 and "note" in absent.text.lower(), absent.text)
+        long_note = "For the review. Not for secrets. " + ("detail " * 400)
+        check("long note is still one field", len(long_note) > 2000)
+        long = client.post("/api/melds", json={"note": long_note})
+        check("long note accepted", long.status_code == 200 and long.json()["for"] == long_note, long.text)
+        huge = client.post("/api/melds", json={"note": "x" * (server.MAX_CONTEXT + 1)})
+        check("note cap", huge.status_code == 400, huge.text)
+        extra = client.post("/api/melds", json={"note": note, "learn": True})
+        check("learn is not a self-host field", extra.status_code == 200 and "learn" not in extra.json(), extra.text)
+
+
 def test_surface() -> None:
     clock = {"t": T0}
     reset(clock)
     with TestClient(server.app) as client:
         home = client.get("/")
         check("home", home.status_code == 200 and "Not for secrets" in home.text, home.text)
+        check(
+            "home one note",
+            "one note" in home.text.lower()
+            and "what the exchange is for and what it is not for" in home.text,
+            home.text,
+        )
         check(
             "root says 36 hours then 24 hours",
             "36 hours from create" in home.text
@@ -423,7 +496,7 @@ def test_public_tree() -> None:
     check("compose runs caddy", "caddy:2" in compose)
     readme = (ROOT / "README.md").read_text()
     trust = (ROOT / "TRUST.md").read_text()
-    check("readme hosted pointer", readme.count("https://meld.mergeinc.workers.dev") == 1)
+    check("readme has no hosted try-now", "workers.dev" not in readme and "Hosted try-now" not in readme)
     check("readme self-host", "python server.py" in readme and "docker compose up" in readme and "docker run" in readme)
     check("readme publish", "ghcr.io/lemonaide152/meld:latest" in readme and "docker push" in readme)
     check("readme host-readable", "Host-readable while live." in readme)
@@ -434,6 +507,40 @@ def test_public_tree() -> None:
     check("trust not a vault", "not a vault" in trust)
     check("readme says creation", "creates the link" in readme and "Creation." in readme and "mint" not in readme.lower())
     check("trust says creation", "creates the link" in trust and "mint" not in trust.lower())
+    check(
+        "readme one note",
+        "One note says what the exchange is for and what it is not for." in readme
+        and '"note":"For a design review. Not for passwords or customer data."' in readme,
+    )
+    check(
+        "readme wire is the same note",
+        readme.count("For a design review. Not for passwords or customer data.") >= 2,
+    )
+    check("trust one note", "One note says what the exchange is for and what it is not for." in trust)
+    check("readme no split declaration", "The declaration says what the bridge is for." not in readme)
+    check("trust no split declaration", "The declaration says what the bridge is for." not in trust)
+    server_text = (ROOT / "server.py").read_text()
+    check("server says creation", "creates a link" in server_text and "mint" not in server_text.lower())
+    check("server one note", "def _one_note" in server_text and "MAX_DECLARATION" not in server_text)
+    check("server clock defaults", "OPEN_SECONDS = 36 * 60 * 60" in server_text and "TTL_SECONDS = 24 * 60 * 60" in server_text)
+    check("server has no 1hr default", "1hr" not in server_text and "one hour" not in server_text.lower() and "1 hour" not in server_text.lower())
+    for label, text in (
+        ("readme", readme),
+        ("trust", trust),
+        ("caddy", caddy),
+        ("compose", compose),
+        ("dockerfile", (ROOT / "Dockerfile").read_text()),
+        ("env", (ROOT / ".env.example").read_text()),
+    ):
+        lowered = text.lower()
+        check(f"{label} has no mint", "mint" not in lowered)
+        check(f"{label} has no one hour", "one hour" not in lowered and "1 hour" not in lowered)
+        check(f"{label} has no workers.dev", "workers.dev" not in lowered)
+    owner_token = "owner" + "_token"
+    for blob in (server_text, readme, trust, caddy, compose):
+        lowered = blob.lower()
+        if owner_token in lowered or "x-owner" in lowered:
+            fail("owner token leaked into the self-host tree")
     check("readme same 404", "never existed is **404**" in readme and "expired code is **404**" in readme)
     check("trust same 404", "dissolved code is 404" in trust and "expired code is 404" in trust)
     dead_status = "41" + "0"
@@ -472,6 +579,7 @@ def main() -> None:
     test_create_resolve_read()
     test_public_url()
     test_ttl_lock()
+    test_one_note_create_body()
     test_silence_closes_same_bridge()
     test_dissolved_matches_unknown()
     test_dissolve_keeps_no_record()
