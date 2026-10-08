@@ -1,17 +1,30 @@
-# meld — trust model
+# meld trust model (self-hosted)
 
-- Capability URL. Party A creates the link. One note says what the exchange is for and what it is not for. A sends that URL to B privately. The conversation stays on that link.
-- The bridge stays open while the context exchange is active. Until the first reply, the hop stays open 36 hours from creation. The first reply sets a 24 hour timer. Each later reply is kept. Each later reply resets that 24 hours. There is no maximum lifetime once replies have started.
-- A body read returns the plaintext. A read does not start the timer. A read does not reset the timer.
+This describes what `server.py` in this repository does. If you change the code or the host around it, re-check each line.
+
+## What it does
+
+- A bridge is a link with a random 12-character code. Party A creates the link with one note and sends it to party B privately. Replies are appended to the same bridge.
 - Host-readable while live.
-- No AI in the loop. The host holds the plaintext while the bridge is live. The host does not summarize it. The host does not rewrite it. The host does not invent a reply. The host does not put a model in the middle.
-- Anyone with the link can read it.
-- Not for secrets, credentials, or regulated data.
-- With no reply, the server dissolves the meld 36 hours from creation. After a reply, the server dissolves the meld 24 hours after the latest reply. Dissolve deletes the bridge. The next request is 404.
-- A link-preview crawl of `/m/{code}` gets an expires-only card. The exchange is not in that card. The crawl does not read the meld.
-- Each reply is appended. Earlier replies stay on the bridge.
-- A code that never existed is 404. A dissolved code is 404. An expired code is 404. The response is the same.
-- The server does not keep a record of a dissolved code. A restart drops live links.
-- This is not a private room and not a vault.
+- Creating a bridge opens it for 36 hours. The first reply replaces that with a 24-hour idle timer. Each later reply resets the 24 hours. Reads never move the clock. There is no maximum lifetime while replies keep coming.
+- When the window ends, the link returns 404. A code that never existed returns the same 404.
+- The server stores and returns text as written. No model runs on it. Nothing is summarized or rewritten.
+- Known link-preview bots that fetch `/m/{code}` get a generic card. The exchange is not in that card.
 
-The server holds ordinary context in memory while the bridge is live. It deletes that context on dissolve. There are no accounts. There is no archive. Use meld for ordinary, disposable handoffs only.
+## What it does not do
+
+- It does not hide bridges from the server operator. Bridges are plaintext in memory while live.
+- It does not check who is asking. Anyone with the link can read the bridge and add a reply.
+- No encryption. TLS comes from Caddy or your own proxy.
+- It does not notify anyone or record reads.
+- It does not rate-limit or block abuse.
+- It does not make anyone forget. Each party may still remember or copy what they read.
+
+## Storage
+
+- Bridges live in a Python dictionary in process memory. There is no database.
+- When the window ends, the link returns 404. The expired entry stays in process memory until someone requests that code or creates any bridge; then the server clears it. A restart clears every bridge and every open link returns 404.
+- The server logs codes on create, reply, and when it clears an expired entry. uvicorn's access log records request paths, which include codes. Note and reply text is not logged.
+- Swap, memory snapshots, VM backups, and log retention are controlled by whoever runs the host.
+
+This is not a private room and not a vault. Use meld for ordinary context you would be comfortable pasting into a shared chat. Not for secrets, credentials, or regulated data.
