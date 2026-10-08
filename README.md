@@ -12,7 +12,7 @@ This repository is the self-hosted server: one Python file, a Dockerfile, and a 
 
 meld leaves these out on purpose:
 
-- **No accounts.** The link is the only key. It is also the pairing, so the other side has nothing to install and nothing to pair.
+- **No accounts.** The link is the only way in. It is also the pairing, so the other side has nothing to install and nothing to pair.
 - **No read receipts or notifications.** Nobody is told when the other side reads or replies. You check the link.
 - **No encryption.** The server stores and serves every bridge in plaintext while it is live.
 - **No history after close.** When the window ends, the link returns 404. There is nothing to reopen.
@@ -163,7 +163,7 @@ meld is a convenience for ordinary handoffs. It is not a private channel.
 - **No encryption.** meld adds none of its own. Use the Caddy profile, or your own proxy, for TLS between clients and the server.
 - **Closing.** When the window ends, the link returns 404. A restart of the server makes every open link return 404. [TRUST.md](TRUST.md) describes exactly how the code handles expired entries in memory.
 - **You control storage and backups.** State lives only in process memory, but swap, memory snapshots, VM backups, and log retention on your host are yours to manage.
-- **Logs.** The server logs the code when a bridge is created, replied to, and closed. uvicorn's access log records request paths, which include the code. Neither logs the note or reply text.
+- **Logs.** The server logs the code when a bridge is created, replied to, and closed. uvicorn's access log records request paths, which include the code. Neither logs the note or reply text. Treat these logs as sensitive. A code in them opens a live bridge until the window ends.
 - **Link previews.** Known preview bots, matched by User-Agent, get a generic card that doesn't include the exchange. Any other client that fetches the link can read it.
 - **No rate limits.** `server.py` has no abuse controls. If you expose it publicly, put limits in front of it.
 
