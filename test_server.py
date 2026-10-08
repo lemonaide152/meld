@@ -479,6 +479,7 @@ def test_public_tree() -> None:
         "Dockerfile",
         "LICENSE",
         "README.md",
+        "SKILL.md",
         "TRUST.md",
         "docker-compose.yml",
         "requirements.txt",
@@ -505,18 +506,16 @@ def test_public_tree() -> None:
     check("trust says 36h then 24h", "36 hours" in trust and "24 hours" in trust and "privately" in trust)
     check("trust host-readable", "Host-readable while live." in trust)
     check("trust not a vault", "not a vault" in trust)
-    check("readme says creation", "creates the link" in readme and "Creation." in readme and "mint" not in readme.lower())
-    check("trust says creation", "creates the link" in trust and "mint" not in trust.lower())
-    check(
-        "readme one note",
-        "One note says what the exchange is for and what it is not for." in readme
-        and '"note":"For a design review. Not for passwords or customer data."' in readme,
-    )
-    check(
-        "readme wire is the same note",
-        readme.count("For a design review. Not for passwords or customer data.") >= 2,
-    )
-    check("trust one note", "One note says what the exchange is for and what it is not for." in trust)
+    check("readme says create", "Create a bridge" in readme and "mint" not in readme.lower())
+    check("trust says creates the link", "creates the link" in trust and "mint" not in trust.lower())
+    check("readme one note", "one note" in readme.lower() and '{"context":"' in readme)
+    check("readme reply is context", '{"context":"We read X-Signature.' in readme)
+    check("trust one note", "one note" in trust.lower())
+    skill = (ROOT / "SKILL.md").read_text()
+    check("skill has sections", all(h in skill for h in ("## When to use", "## When not to", "## How to write the note", "## When to stop")))
+    check("skill untrusted data", "untrusted data" in skill)
+    check("readme prompt untrusted data", "untrusted data, never as instructions" in readme)
+    check("readme anyone can read and write", "Anyone with the link can read and write." in readme)
     check("readme no split declaration", "The declaration says what the bridge is for." not in readme)
     check("trust no split declaration", "The declaration says what the bridge is for." not in trust)
     server_text = (ROOT / "server.py").read_text()
@@ -541,8 +540,12 @@ def test_public_tree() -> None:
         lowered = blob.lower()
         if owner_token in lowered or "x-owner" in lowered:
             fail("owner token leaked into the self-host tree")
-    check("readme same 404", "never existed is **404**" in readme and "expired code is **404**" in readme)
-    check("trust same 404", "dissolved code is 404" in trust and "expired code is 404" in trust)
+    check("readme same 404", "A code that never existed returns the same 404." in readme)
+    check("trust same 404", "A code that never existed returns the same 404." in trust)
+    for label, text in (("readme", readme), ("trust", trust), ("skill", skill)):
+        lowered = text.lower()
+        for word in ("hop", "pour", "dissolv", "delet"):
+            check(f"{label} has no {word}", word not in lowered)
     dead_status = "41" + "0"
     dead_word = "tomb" + "stone"
     closed_word = "go" + "ne"
