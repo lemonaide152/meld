@@ -30,7 +30,7 @@ Locked behavior:
 - Uniform not-found: expired, unknown, and over-cap codes return the same status and the same body. An observer cannot tell them apart.
 - Host-readable while live. The operator can read plaintext on a live bridge. The host does not summarize, rewrite, or run a model on it.
 - Not for secrets, credentials, or regulated data. This is a constraint, not a feature to work around.
-- No accounts. No archive. A restart of a memory-only self-host drops live links. The hosted pilot may persist only while the bridge is live, then delete it.
+- No accounts. No archive. No persistence: every deployment, self-host and hosted, keeps bridges in memory only and writes nothing to disk. A restart of any deployment drops live links.
 
 ## 3. API
 
@@ -91,11 +91,11 @@ Timestamps are UTC ISO 8601 everywhere in JSON. Do not mix datetime objects and 
 
 ## 5. Expiry
 
-A sweep deletes expired bridges. On the hosted pilot this is a scheduled job every 5 minutes. Self-host may sweep on a timer or on each request, but expiry must not depend on someone creating a new meld.
+A sweep removes expired bridges from memory every 5 minutes, on every deployment. A deployment may also drop expired bridges on each request, but expiry must not depend on someone creating a new meld.
 
 After deletion, the next request is the uniform 404. The server does not keep a record that the code existed.
 
-If the hosted store has a backup or time-travel window, say so in trust.md in one sentence. Do not claim "gone" if a platform backup still holds it.
+No backup or time-travel window exists, because nothing is written to disk. trust.md says so in one sentence. Do not claim "gone" if a platform backup still holds it.
 
 ## 6. Surfaces that must match the spec
 
@@ -108,13 +108,14 @@ If the hosted store has a backup or time-travel window, say so in trust.md in on
 
 The GitHub repo is the reference. The Workers deployment builds from that repo. Hosted-only behavior that is not in the repo is a bug.
 
-Self-host stays supported: Docker, Compose with Caddy, or plain Python. Self-host may be memory-only. The hosted pilot may use D1. Behavior of create, read, reply, and 404 is the same in both.
+Self-host stays supported: Docker, Compose with Caddy, or plain Python. Every deployment is memory-only, hosted included. Behavior of create, read, reply, and 404 is the same in both.
 
 ## 8. Definition of done
 
 - Code matches SPEC.md.
 - OpenAPI validates against live responses.
 - Hosted pilot runs the same commit as the reference repo.
+- No deployment, self-host or hosted, writes bridge content to disk or to a database; a restart drops live links.
 - CI fails on spec drift, empty schemas, or timestamp inconsistency.
 - A client can be written from the OpenAPI document alone.
 
@@ -152,4 +153,5 @@ routes: POST /api/melds, GET /api/melds/{code}, POST /api/melds/{code}/resolve, 
 melds_columns: code, note, created_at, expires_at, reply_count
 replies_columns: id, code, content, created_at
 timestamp_format: YYYY-MM-DDTHH:MM:SS.mmmZ
+persistence: memory-only (every deployment)
 ```
