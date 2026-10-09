@@ -75,20 +75,27 @@ def check_constants(block: dict) -> None:
 
 
 def check_schema(block: dict) -> None:
-    sql = (ROOT / "schema.sql").read_text()
-    for table in ("melds", "replies"):
-        m = re.search(rf"CREATE TABLE IF NOT EXISTS {table} \((.*?)\n\);", sql, re.S)
-        if not m:
-            err(f"schema.sql has no {table} table")
-            continue
-        cols = tuple(line.strip().split()[0] for line in m.group(1).strip().splitlines()
-                     if line.strip() and not line.strip().startswith("--"))
-        if cols != lst(block.get(f"{table}_columns", "")):
-            err(f"drift: schema.sql {table} columns {cols} != SPEC.md")
-    code_only = "\n".join(l.split("--")[0] for l in sql.splitlines())
+    """SPEC.md §4 data model against the records the memory store actually keeps."""
+    import asyncio
+    import meld_store
+    for table, fields in (("melds", meld_store.MELD_FIELDS), ("replies", meld_store.REPLY_FIELDS)):
+        if tuple(fields) != lst(block.get(f"{table}_columns", "")):
+            err(f"drift: meld_store {table} fields {tuple(fields)} != SPEC.md")
+    st = meld_store.MemoryStore()
+    now = meld_spec.utcnow()
+
+    async def probe():
+        await st.create("probe", "n", meld_spec.ts(now), meld_spec.open_expiry(now))
+        return await st.reply("probe", "r", now)
+
+    got = asyncio.run(probe())
+    if tuple(k for k in got if k != "replies") != tuple(meld_store.MELD_FIELDS):
+        err(f"MemoryStore meld record keys {tuple(got)} != MELD_FIELDS")
+    if tuple(got["replies"][0]) != tuple(meld_store.REPLY_FIELDS):
+        err(f"MemoryStore reply record keys {tuple(got['replies'][0])} != REPLY_FIELDS")
     for banned in ("owner_token", "email", "learn", "pin"):
-        if re.search(rf"\b{banned}\b", code_only):
-            err(f"schema.sql mentions {banned}")
+        if any(banned in k for k in tuple(got) + tuple(got["replies"][0])):
+            err(f"store record has {banned}")
 
 
 def check_generated(write: bool) -> None:
@@ -114,30 +121,23 @@ def check_generated(write: bool) -> None:
     required = (f"{meld_spec.MAX_CHARS:,}", f"{meld_spec.REPLY_CAP} replies", "error 1010",
                 *(f"`{f}`" for f in meld_spec.REJECTED_FIELDS))
     for name in ("llms.txt", "agents.md", "skill.md"):
-        for memory_only in (True, False):
-            text = meld_docs.GENERATED[name](memory_only)
-            for bit in required:
-                if bit not in text:
-                    err(f"{name} does not document {bit}")
-    for name in ("llms.txt", "agents.md"):
-        if "Time Travel" not in meld_docs.GENERATED[name](False):
-            err(f"{name} (stored variant) does not state the backup window")
-        if re.search(r"Time Travel|D1", meld_docs.GENERATED[name](True)):
-            err(f"{name} (memory-only variant) mentions a store it does not use")
+        text = meld_docs.GENERATED[name]()
+        for bit in required:
+            if bit not in text:
+                err(f"{name} does not document {bit}")
+        if meld_docs.MEMORY_LINE not in text:
+            err(f"{name} does not say memory only")
+    for name, gen in meld_docs.GENERATED.items():
+        if re.search(r"Time Travel|\bD1\b|backup window", gen()):
+            err(f"{name} mentions a store or backup that no deployment uses")
     banned = re.compile(r"(?i)\blearn\b|\bmessages\b|per-minute|rate limit|upgrade\.md|stripe|checkout|/chain|/v1/|/pro\b|owner_token")
     for name, gen in meld_docs.GENERATED.items():
         hit = banned.search(gen())
         if hit:
             err(f"{name} mentions {hit.group(0)!r}, which the code does not do")
-    if meld_docs.BACKUP_LINE.count(". ") > 0:
-        err("the backup window must be one sentence")
-    mem = meld_docs.trust_md(True)
-    if meld_docs.MEMORY_LINE not in mem or meld_docs.MEMORY_CLOSING not in mem or "Time Travel" in mem:
-        err("memory-only TRUST.md must say memory-only and nothing written to disk, with no backup line")
-    if "disk" in meld_docs.trust_md(False) or "memory only" in meld_docs.trust_md(False):
-        err("stored TRUST.md must not claim memory-only")
-    if "Time Travel" not in meld_docs.trust_md(False):
-        err("TRUST.md does not state the D1 Time Travel window")
+    mem = meld_docs.trust_md()
+    if meld_docs.MEMORY_LINE not in mem or meld_docs.MEMORY_CLOSING not in mem:
+        err("TRUST.md must say memory only and nothing written to disk")
 
 
 def _walk_schemas(node, where: str) -> None:
@@ -186,13 +186,29 @@ def check_openapi(block: dict) -> dict:
     return doc
 
 
+# Anything that would put bridge data (or anything else) on disk in a shipped deployment.
+PERSISTENT = re.compile(
+    r"D1Store|d1_databases|\bD1\b|kv_namespaces|r2_buckets|\.storage\.|storage\.(put|get|sql)|"
+    r"setAlarm|sqlite3|open\([^)]*['\"][wa]|shelve|pickle\.dump|CREATE TABLE")
+SHIPPED = ("meld_app.py", "meld_store.py", "meld_spec.py", "meld_docs.py", "meld_ui.py", "pilot.py",
+           "server.py", "worker.py", "wrangler.toml.example", "Dockerfile", "docker-compose.yml")
+
+
 def check_persistence(block: dict) -> None:
-    """SPEC.md says memory-only: fail while any shipped code path stores bridges in D1."""
-    if block.get("persistence", "").startswith("memory-only"):
-        for name in ("meld_store.py", "worker.py", "wrangler.toml.example", "schema.sql"):
-            path = ROOT / name
-            if path.exists() and re.search(r"D1Store|d1_databases|\bD1\b", path.read_text()):
-                err(f"persistence drift: SPEC.md says memory-only but {name} stores bridges in D1")
+    """SPEC.md says memory-only: fail if any shipped file writes state to disk or a database."""
+    if not block.get("persistence", "").startswith("memory-only"):
+        return
+    for name in SHIPPED:
+        path = ROOT / name
+        if not path.exists():
+            continue
+        code = "\n".join(l.split("#")[0] for l in path.read_text().splitlines()
+                         if not l.lstrip().startswith(("#", '"', "'", "-")))
+        hit = PERSISTENT.search(code)
+        if hit:
+            err(f"persistence drift: SPEC.md says memory-only but {name} uses {hit.group(0)!r}")
+    if any((ROOT / f).exists() for f in ("schema.sql", "pilot_schema.sql")):
+        err("persistence drift: a SQL schema ships with a memory-only deployment")
 
 
 def check_source() -> None:
@@ -295,7 +311,7 @@ def main(argv) -> int:
         for e in errors:
             print("FAIL", e)
         return 1
-    print("ok: SPEC.md, code, schema, generated docs, OpenAPI, and live responses agree")
+    print("ok: SPEC.md, code, data model, generated docs, OpenAPI, persistence, and live responses agree")
     return 0
 
 

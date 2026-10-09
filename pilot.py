@@ -1,6 +1,7 @@
 """Pilot instrumentation for the hosted pilot. Outside SPEC.md.
 
-Daily aggregate counters in D1 table funnel_events(day, event, n). Each key is
+Daily aggregate counters (day, event, n), kept in memory only (MemoryCounters).
+A restart resets them, the same as live bridges. Each key is
 a literal from this file; a request value only selects one of them. Nothing
 here sees a note, reply, code, IP, User-Agent, or header, and nothing here can
 change a response: meld_app swallows every hook error.
@@ -54,18 +55,39 @@ def keys_for(event: str, **fields) -> list[str]:
     return []
 
 
+class MemoryCounters:
+    """Daily counts in memory only: {(day, event): n}. Keeps the last KEEP_DAYS days."""
+
+    KEEP_DAYS = 31
+
+    def __init__(self) -> None:
+        self._n: dict[tuple, int] = {}
+
+    def incr(self, day: str, event: str, n: int = 1) -> None:
+        self._n[(day, event)] = self._n.get((day, event), 0) + n
+        days = sorted({d for d, _ in self._n})
+        for old in days[:-self.KEEP_DAYS]:
+            for key in [k for k in self._n if k[0] == old]:
+                del self._n[key]
+
+    def rows(self) -> list:
+        return [{"day": d, "event": e, "n": n} for (d, e), n in sorted(self._n.items())]
+
+
 class FunnelHooks:
-    def __init__(self, db_getter) -> None:
-        self.db_getter = db_getter
+    """meld_app hooks -> counters. sink_getter returns an object with
+    `incr(day, key)` (sync or async), or None to count nothing."""
+
+    def __init__(self, sink_getter) -> None:
+        self.sink_getter = sink_getter
 
     async def event(self, name: str, **fields) -> None:
-        db = self.db_getter()
-        if db is None:
+        sink = self.sink_getter()
+        if sink is None:
             return
         day = ts(utcnow())[:10]
         fields = dict(fields, team=TEAM.get(), learn=LEARN.get())
         for key in keys_for(name, **fields):
-            await db.prepare(
-                "INSERT INTO funnel_events (day, event, n) VALUES (?, ?, 1) "
-                "ON CONFLICT(day, event) DO UPDATE SET n = n + 1"
-            ).bind(day, key).run()
+            got = sink.incr(day, key)
+            if hasattr(got, "__await__"):
+                await got

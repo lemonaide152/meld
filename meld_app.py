@@ -1,6 +1,6 @@
 """meld reference application. The self-host server and the hosted Worker both run this.
 
-Behavior is SPEC.md. Storage is pluggable (meld_store.MemoryStore or D1Store).
+Behavior is SPEC.md. Storage is pluggable: meld_store.MemoryStore, or the Worker's Durable Object store; both memory only.
 Pilot instrumentation, if any, attaches through `hooks` and cannot change a
 response: hook errors are swallowed and hooks receive no request body.
 """
@@ -264,7 +264,7 @@ def untrusted(meld: dict) -> list:
 
 
 def build_app(store, *, public_url: Optional[str] = None, hooks=None, assets: Optional[dict] = None,
-              background_sweep: bool = False, origin_from=None, memory_only: bool = False) -> Any:
+              background_sweep: bool = False, origin_from=None) -> Any:
     """The meld ASGI app.
 
     public_url    fixed origin for links (else the request's own origin)
@@ -272,8 +272,6 @@ def build_app(store, *, public_url: Optional[str] = None, hooks=None, assets: Op
     assets        {path: (bytes, media_type)} static files such as /og.png
     background_sweep  run the sweep every SWEEP_MINUTES in-process (self-host)
     origin_from   callable(request) -> origin, for hosts that read it from env
-    memory_only   True only when the store keeps nothing on disk (MemoryStore). It picks the
-                  memory-only trust copy; a stored deployment names its backup window instead.
     """
     assets = dict(assets or {})
     core = Meld(store, hooks)
@@ -350,7 +348,7 @@ def build_app(store, *, public_url: Optional[str] = None, hooks=None, assets: Op
                 return _html(meld_ui.not_found(nonce), nonce, status=NOT_FOUND_STATUS)
             return _error_response(err)
         if _wants_html(request):
-            return _html(meld_ui.bridge(meld, nonce, memory_only), nonce)
+            return _html(meld_ui.bridge(meld, nonce), nonce)
         return JSONResponse(meld)
 
     @app.get("/health")
@@ -367,12 +365,12 @@ def build_app(store, *, public_url: Optional[str] = None, hooks=None, assets: Op
             head_extra = (f'<meta property="og:title" content="meld">'
                           f'<meta property="og:description" content="{meld_ui.RULE_SHORT} Not for secrets.">'
                           f'<meta property="og:image" content="{og}"><meta name="twitter:card" content="summary_large_image">')
-        return _html(meld_ui.home(nonce, head_extra, memory_only), nonce, head=request.method == "HEAD")
+        return _html(meld_ui.home(nonce, head_extra), nonce, head=request.method == "HEAD")
 
     # Docs, all generated from meld_spec
     def doc(name: str, media: str):
         async def handler(request: Request):
-            text = meld_docs.render(meld_docs.GENERATED[name](memory_only), base(request))
+            text = meld_docs.render(meld_docs.GENERATED[name](), base(request))
             return Response(text, media_type=media, headers={"Cache-Control": "public, max-age=300"})
         return handler
 

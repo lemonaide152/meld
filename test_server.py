@@ -1,4 +1,4 @@
-"""SPEC.md behavior, run against both stores (memory self-host and a D1 double).
+"""SPEC.md behavior, run against both stores (self-host memory, and the Worker's Durable Object store).
 
     uv run --quiet --with fastapi --with pydantic --with httpx --with jsonschema python test_server.py
 """
@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,7 +18,8 @@ import meld_app
 import meld_spec
 import pilot
 from meld_app import build_app
-from meld_store import D1Store, MemoryStore
+from meld_store import MemoryStore
+import worker
 
 ROOT = Path(__file__).resolve().parent
 T0 = datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -48,42 +48,22 @@ class Clock:
         self.now = self.now + timedelta(**kw)
 
 
-# ── D1 double over sqlite3 ───────────────────────────────────────────────
-class _Stmt:
-    def __init__(self, d1, sql):
-        self.d1, self.sql, self.args = d1, sql, ()
+# ── Durable Object namespace double: real BridgeShard/MeldMeta objects in-process ──
+class FakeNS:
+    def __init__(self, cls):
+        self.cls, self.objects = cls, {}
 
-    def bind(self, *args):
-        self.args = args
-        return self
+    def getByName(self, name):
+        if name not in self.objects:
+            self.objects[name] = self.cls(None, None)
+        return self.objects[name]
 
-    async def first(self):
-        cur = self.d1.conn.execute(self.sql, self.args)
-        row = cur.fetchone()
-        return dict(row) if row else None
-
-    async def all(self):
-        return {"results": [dict(r) for r in self.d1.conn.execute(self.sql, self.args).fetchall()]}
-
-    async def run(self):
-        cur = self.d1.conn.execute(self.sql, self.args)
-        self.d1.conn.commit()
-        return {"meta": {"changes": cur.rowcount}}
+    def restart(self):
+        self.objects.clear()
 
 
-class FakeD1:
-    def __init__(self):
-        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.executescript((ROOT / "schema.sql").read_text() + (ROOT / "pilot_schema.sql").read_text())
-        self.prepared = 0
-
-    def prepare(self, sql):
-        self.prepared += 1
-        return _Stmt(self, sql)
-
-    def count(self, table):
-        return self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+TIMERS = []
+worker._Resident.timer = staticmethod(lambda cb, secs: TIMERS.append((cb, secs)) or True)
 
 
 class Hooks:
@@ -100,12 +80,12 @@ def make(kind: str, hooks=None):
     clock = Clock()
     meld_app.utcnow = clock
     if kind == "memory":
-        store, d1 = MemoryStore(), None
+        store, ns = MemoryStore(), None
     else:
-        d1 = FakeD1()
-        store = D1Store(d1)
-    client = TestClient(build_app(store, public_url="https://meld.test", hooks=hooks, memory_only=(kind == "memory")))
-    return client, clock, store, d1
+        ns = FakeNS(worker.BridgeShard)
+        store = worker.DOStore(lambda: ns)
+    client = TestClient(build_app(store, public_url="https://meld.test", hooks=hooks))
+    return client, clock, store, ns
 
 
 def create(c, **body):
@@ -231,16 +211,14 @@ def run_suite(kind: str) -> None:
     clock.advance(hours=12)
     swept = asyncio.run(c.app.meld.sweep())
     check(p + "sweep deletes expired bridges", swept >= 1, str(swept))
-    if d1 is not None:
-        live_codes = {r[0] for r in d1.conn.execute("SELECT code FROM melds")}
-        orphan = d1.conn.execute("SELECT COUNT(*) FROM replies WHERE code NOT IN (SELECT code FROM melds)").fetchone()[0]
-        check(p + "no reply rows survive their meld", orphan == 0)
-        check(p + "only live rows remain", live in live_codes and all(
-            r[0] > meld_spec.ts(clock.now) for r in d1.conn.execute("SELECT expires_at FROM melds")))
-        cols = [r[1] for r in d1.conn.execute("PRAGMA table_info(melds)")]
-        check(p + "melds columns match spec", cols == ["code", "note", "created_at", "expires_at", "reply_count"])
-        cols = [r[1] for r in d1.conn.execute("PRAGMA table_info(replies)")]
-        check(p + "replies columns match spec", cols == ["id", "code", "content", "created_at"])
+    if d1 is not None:  # the Durable Object store
+        shards = d1.objects
+        check(p + "bridges spread over the shards by code", len(shards) > 1 and set(shards) <= {f"bridges-{i}" for i in range(worker.SHARDS)}, str(list(shards)))
+        check(p + "only live bridges remain in shard memory", sum(o.store.size() for o in shards.values()) >= 1 and all(
+            m["expires_at"] > meld_spec.ts(clock.now) for o in shards.values() for m in o.store._melds.values()))
+        before = c.get(f"/api/melds/{live}").status_code
+        d1.restart()
+        check(p + "a Durable Object restart drops live links (uniform 404)", before == 200 and c.get(f"/api/melds/{live}").content == NF)
     else:
         check(p + "only live bridges remain in memory", asyncio.run(store.count()) >= 1 and all(
             m["expires_at"] > meld_spec.ts(clock.now) for m in store._melds.values()))
@@ -281,18 +259,13 @@ def run_suite(kind: str) -> None:
           and "24 hours" in r.text and "Not for secrets" in r.text)
     import meld_ui
     check(p + "home: hero text", meld_ui.HERO in t)
-    bullets = meld_ui.trust_bullets(kind == "memory")
+    bullets = meld_ui.TRUST_BULLETS
     check(p + "home: five trust bullets", all(b in t for b in bullets) and len(bullets) == 5)
     trust = c.get("/trust.md").text
-    if kind == "memory":
-        check(p + "memory-only copy: gone on restart, nothing on disk, no Time Travel",
-              meld_ui.MEMORY_LAST_BULLET in t and "The host keeps the bridge in memory only while it's live." in trust
-              and "Nothing is written to disk." in trust and "Time Travel" not in trust
-              and "Time Travel" not in c.get("/llms.txt").text)
-    else:
-        check(p + "stored copy: names the D1 backup window, no memory-only claim",
-              "Time Travel" in trust and "disk" not in trust and meld_ui.MEMORY_LAST_BULLET not in t
-              and "Time Travel" in c.get("/llms.txt").text)
+    check(p + "memory-only copy: gone on restart, nothing on disk, no Time Travel",
+          "or if the server restarts, it's gone" in bullets[-1] and "The host keeps the bridge in memory only while it's live." in trust
+          and "Nothing is written to disk." in trust and "Time Travel" not in trust
+          and "Time Travel" not in c.get("/llms.txt").text)
     check(p + "home: no learn, pilot, 429 or too-many", not re.search(r"(?i)learn|pilot|429|too many", r.text))
     check(p + "home: maxlength 100000 and counter window 5,000", 'maxlength="100000"' in r.text and "WIN=5000" in r.text)
     check(p + "home: sends note, polls read route every 10s, open-until line",
@@ -380,21 +353,25 @@ def run_hooks() -> None:
           and pilot.keys_for("replied", team=True) == ["resolved", "resolved:team"]
           and pilot.keys_for("replied") == ["resolved", "resolved:ext"]
           and pilot.keys_for("create_400", reason="<script>", path="ui") == ["create_400:other", "create_400:other:ui"])
-    d1 = FakeD1()
-    fh = pilot.FunnelHooks(lambda: d1)
+    mc = pilot.MemoryCounters()
+    fh = pilot.FunnelHooks(lambda: mc)
     asyncio.run(fh.event("created", path="mcp"))
     asyncio.run(fh.event("created", path="ui"))
-    rows = dict(d1.conn.execute("SELECT event, n FROM funnel_events").fetchall())
-    check("funnel counters write day/event/n only",
-          rows == {"created": 2, "created:ext:learn0:mcp": 1, "created:ext:learn0:ui": 1}, str(rows))
+    rows = {r["event"]: r["n"] for r in mc.rows()}
+    check("funnel counters keep day/event/n only, in memory",
+          rows == {"created": 2, "created:ext:learn0:mcp": 1, "created:ext:learn0:ui": 1}
+          and all(set(r) == {"day", "event", "n"} for r in mc.rows()), str(rows))
+    for d in range(40):
+        mc.incr(f"2026-09-{d:02d}" if d < 31 else f"2026-10-{d - 30:02d}", "created")
+    check("memory counters keep at most 31 days", len({r["day"] for r in mc.rows()}) == pilot.MemoryCounters.KEEP_DAYS)
 
 
 def run_worker() -> None:
-    import worker
-    d1 = FakeD1()
+    bridges, meta = FakeNS(worker.BridgeShard), FakeNS(worker.MeldMeta)
 
     class Env:
-        DB = d1
+        BRIDGES = bridges
+        META = meta
         SHARE_ORIGIN = "https://meld-staging.example"
 
     clock = Clock()
@@ -423,17 +400,35 @@ def run_worker() -> None:
         data = b"".join(m.get("body", b"") for m in sent[1:])
         return status, json.loads(data) if data else None
 
+    TIMERS.clear()
     s, j = asyncio.run(asgi_call("POST", "/api/melds", {"note": "hosted"}))
-    check("worker: create on D1 with SHARE_ORIGIN", s == 200 and j["url"].startswith("https://meld-staging.example/m/"), str(j))
+    check("worker: create through a Durable Object with SHARE_ORIGIN", s == 200 and j["url"].startswith("https://meld-staging.example/m/"), str(j))
     code = j["code"]
+    shard = bridges.objects[worker.shard_name(code)]
+    check("worker: bridge held in that shard's memory only", code in shard.store._melds and shard.ctx is None)
     s, j = asyncio.run(asgi_call("GET", f"/api/melds/{code}"))
     check("worker: read", s == 200 and j["note"] == "hosted")
-    check("worker: pilot counter written", d1.conn.execute("SELECT n FROM funnel_events WHERE event='created'").fetchone()[0] == 1)
-    clock.advance(hours=37)
-    n = asyncio.run(worker.scheduled_sweep(Env))
-    check("worker: scheduled sweep deletes with no traffic", n == 1 and d1.count("melds") == 0)
+    s, j = asyncio.run(asgi_call("POST", f"/api/melds/{code}/resolve", {"context": "r"}))
+    check("worker: reply", s == 200 and j["reply_count"] == 1 and j["replies"][0]["content"] == "r")
+    rows = {r["event"]: r["n"] for r in meta.objects["meta"].counters.rows()}
+    check("worker: pilot counters in MeldMeta memory", rows.get("created") == 1 and rows.get("resolved") == 1, str(rows))
+    armed = [secs for cb, secs in TIMERS]
+    check("worker: a shard holding a bridge arms one keep-alive timer", armed.count(worker.KEEPALIVE_SECONDS) >= 1 and shard._armed)
+    n_timers = len(TIMERS)
+    asyncio.run(asgi_call("GET", f"/api/melds/{code}"))
+    check("worker: an armed shard does not stack timers", sum(1 for cb, _ in TIMERS[n_timers:] if getattr(cb, "__self__", None) is shard) == 0)
+    clock.advance(hours=25)
+    tick = [cb for cb, _ in TIMERS if getattr(cb, "__self__", None) is shard][-1]
+    tick()
+    check("worker: the timer tick sweeps expired bridges with no traffic", shard.store.size() == 0 and not shard._armed)
     s, j = asyncio.run(asgi_call("GET", f"/api/melds/{code}"))
     check("worker: swept code is uniform 404", s == 404 and j == meld_spec.NOT_FOUND_BODY)
+    s, j = asyncio.run(asgi_call("POST", "/api/melds", {"note": "two"}))
+    clock.advance(hours=37)
+    n = asyncio.run(worker.scheduled_sweep(Env))
+    check("worker: scheduled sweep covers every shard", n == 1 and all(o.store.size() == 0 for o in bridges.objects.values()))
+    src = (ROOT / "worker.py").read_text()
+    check("worker: no database, KV, or storage API", not re.search(r"\.storage\b|d1|kv_namespaces|setAlarm|prepare\(", src.split('"""', 2)[2]))
 
 
 def run_spec_checks() -> None:
@@ -454,15 +449,13 @@ def run_spec_checks() -> None:
     check("check_spec fails on a mixed timestamp", bool(check_spec.errors))
     check_spec.errors.clear()
     rc = check_spec.main([])
-    others = [e for e in check_spec.errors if not e.startswith("persistence drift")]
-    check("check_spec: only the open persistence gap (D1 under memory-only) fails on this tree",
-          rc == 1 and not others and any("worker.py" in e for e in check_spec.errors), str(check_spec.errors))
+    check("check_spec passes on this tree (memory-only everywhere)", rc == 0 and not check_spec.errors, str(check_spec.errors))
     check_spec.errors.clear()
-    check_spec.check_persistence({"persistence": "memory-only (every deployment)"})
-    check("check_spec fails when D1 is used under persistence: memory-only", bool(check_spec.errors))
-    check_spec.errors.clear()
-    check_spec.check_persistence({"persistence": "d1 while live"})
-    check("check_spec persistence check is quiet when the spec allows D1", not check_spec.errors)
+    hits = [bool(check_spec.PERSISTENT.search(x)) for x in (
+        "D1Store(db)", "[[d1_databases]]", "self.ctx.storage.put('k', v)", "ctx.storage.setAlarm(t)",
+        "kv_namespaces = []", "sqlite3.connect(p)", "open('x', 'w')", "CREATE TABLE melds")]
+    quiet = [bool(check_spec.PERSISTENT.search(x)) for x in ("MemoryStore()", "setTimeout(cb, 60000)", "open(p).read()")]
+    check("check_spec persistence check catches disk and database use", all(hits) and not any(quiet), str((hits, quiet)))
     check_spec.errors.clear()
     banned = ("zero" + "-knowledge", "sk" + "_live", "wh" + "sec", "STRIPE" + "_", "price" + "_1")
     leaks = [p.name for p in ROOT.glob("*") if p.is_file() and p.suffix in (".py", ".md", ".txt", ".json", ".toml", ".sql", ".yml")
@@ -472,7 +465,7 @@ def run_spec_checks() -> None:
 
 if __name__ == "__main__":
     run_suite("memory")
-    run_suite("d1")
+    run_suite("do")
     run_hooks()
     run_worker()
     run_spec_checks()

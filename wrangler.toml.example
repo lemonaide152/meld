@@ -1,17 +1,29 @@
-# Hosted pilot on Cloudflare Workers + D1. Copy to wrangler.toml and set database_id.
-# Builds from this repo: main is worker.py at the root, which imports the same
-# meld_app.py the self-host server runs.
+# Hosted meld on Cloudflare Python Workers. Memory-only, as SPEC.md requires:
+# bridges live in Durable Object memory (worker.py BridgeShard), never on disk.
+# No database binding. Copy to wrangler.toml, then `npx wrangler deploy`.
 name = "meld"
 main = "worker.py"
 compatibility_date = "2026-09-18"
 compatibility_flags = ["python_workers"]
 workers_dev = true
 
-[[d1_databases]]
-binding = "DB"
-database_name = "meld"
-database_id = "REPLACE_ME"
+[[durable_objects.bindings]]
+name = "BRIDGES"
+class_name = "BridgeShard"
 
-# Expiry sweep: delete expired bridges every 5 minutes, with or without traffic.
+[[durable_objects.bindings]]
+name = "META"
+class_name = "MeldMeta"
+
+# The classes are declared SQLite-backed because that is the class type the
+# platform offers on every plan; worker.py never calls the storage API.
+[[migrations]]
+tag = "v1-memory"
+new_sqlite_classes = ["BridgeShard", "MeldMeta"]
+
+[vars]
+SHARE_ORIGIN = ""
+
+# Expiry sweep every 5 minutes across all shards, on top of each shard's own timer.
 [triggers]
 crons = ["*/5 * * * *"]

@@ -7,7 +7,7 @@ One capability URL between a human and an agent, or between two agents. The link
 - Unknown, expired, and over-the-reply-cap codes all return **404** `{"detail":"Meld not found"}`. No 410, no 429.
 - Host-readable while live. Anyone with the link can read and reply. **Not for secrets, credentials, or regulated data.** No AI in the loop.
 
-[SPEC.md](SPEC.md) is the source of truth. This repo is the reference implementation: the self-host server and the hosted pilot (Cloudflare Workers + D1) run the same `meld_app.py`.
+[SPEC.md](SPEC.md) is the source of truth. This repo is the reference implementation: the self-host server and the hosted pilot (Cloudflare Python Workers + Durable Objects) run the same `meld_app.py`. Every deployment is memory-only.
 
 Each party keeps its own state. If a bridge expires, either party creates a new one and shares the new link. A new bridge knows nothing about an old one.
 
@@ -54,13 +54,13 @@ Two uses only: a human writes a note on the web page and an agent replies on the
 |---|---|
 | `SPEC.md` | Behavior. The `meld-spec` block at the end is machine-checked. |
 | `meld_app.py` | The app: create, read, reply, 404, web UI, MCP, docs routes. |
-| `meld_store.py` | Memory store (self-host) and D1 store (hosted). |
+| `meld_store.py` | The memory store. Every deployment keeps bridges in memory only. |
 | `meld_spec.py` | Constants tied to SPEC.md. |
 | `meld_docs.py` | Generates `llms.txt`, `agents.md`, `skill.md`, `TRUST.md`, `openapi.json`, `mcp.json`, `agent.json`. |
 | `meld_ui.py` | The web page. |
 | `server.py` | Self-host entry (uvicorn). |
-| `worker.py`, `wrangler.toml.example`, `schema.sql` | Hosted pilot entry for Cloudflare Python Workers + D1. |
-| `pilot.py`, `pilot_schema.sql` | Hosted pilot counters (outside SPEC.md; cannot change a response). |
+| `worker.py`, `wrangler.toml.example` | Hosted entry for Cloudflare Python Workers: bridges in Durable Object memory, no database. |
+| `pilot.py` | Pilot counters, in memory only (outside SPEC.md; cannot change a response). |
 | `check_spec.py` | CI gate: drift, empty schemas, timestamps, live response validation (`--live URL`). |
 
 ## Check
@@ -74,12 +74,12 @@ python check_spec.py --write   # after changing meld_spec / meld_docs
 ## Hosted pilot
 
 ```bash
-cp wrangler.toml.example wrangler.toml   # set database_id
-npx wrangler d1 execute meld --remote --file schema.sql
-npx wrangler d1 execute meld --remote --file pilot_schema.sql
+cp wrangler.toml.example wrangler.toml   # set SHARE_ORIGIN
 npx wrangler deploy
 ```
 
-See [TRUST.md](TRUST.md) for what the host can see and how long D1 backups hold deleted rows.
+Bridges live in `BridgeShard` Durable Objects, in Python memory only: no database, no KV, no Durable Object storage. A shard that holds a live bridge keeps one pending in-memory timer, which keeps it resident and runs the sweep each minute; the 5-minute cron sweeps every shard too. A deploy, a runtime restart, or an eviction drops the links that shard held, and they return the uniform 404. Pilot counters live in one `MeldMeta` object, also in memory, and reset on restart.
+
+See [TRUST.md](TRUST.md) for what the host can see.
 
 MIT licensed.

@@ -49,21 +49,13 @@ MEMORY_LINE = (
     "it's gone, and the link returns not found, the same as a wrong code."
 )
 MEMORY_CLOSING = "meld is a disposable handoff, not a vault. Nothing is written to disk. No accounts, no archive."
-BACKUP_LINE = (
-    "The hosted pilot stores a bridge in Cloudflare D1 only while it is live; D1 Time Travel keeps restorable "
-    "past database states for up to 30 days (7 on the Workers Free plan), so a deleted bridge can remain in "
-    "those backups until that window passes."
-)
 READ_SHAPE = "`code`, `url`, `note`, `created_at`, `expires_at`, `reply_count`, and `replies` (each `content` and `created_at`)"
 
 REJECTED = ", ".join(f"`{f}`" for f in REJECTED_FIELDS)
 
 
-def _storage(memory_only: bool) -> str:
-    return MEMORY_LINE if memory_only else BACKUP_LINE
 
-
-def llms_txt(memory_only: bool = True) -> str:
+def llms_txt() -> str:
     return f"""# meld
 > One capability URL for an ephemeral context bridge. The link is the authorization.
 
@@ -85,7 +77,7 @@ Limits: {CHARS} characters per note and per reply, {REPLY_CAP} replies per meld.
 Older clients may also send `for` and `not_for`; every supplied string must be identical to the note, otherwise 400.
 {REJECTED} are rejected with 400.
 There are no rate-limit responses: no 429 and no 410.
-{_storage(memory_only)}
+{MEMORY_LINE}
 {UA_LINE}
 
 ## More
@@ -100,7 +92,7 @@ There are no rate-limit responses: no 429 and no 410.
 """
 
 
-def agents_md(memory_only: bool = True) -> str:
+def agents_md() -> str:
     return f"""# meld for agents
 
 meld is one capability URL for an ephemeral context bridge. {TRUST_LINE}
@@ -142,7 +134,7 @@ A read returns {READ_SHAPE}. It does not move the clock. Timestamps are UTC ISO 
 - {CHARS} characters per note and per reply. {REPLY_CAP} replies per meld; the next reply is the same 404.
 - {REJECTED} are rejected with 400. There is no other lifetime and no owner token.
 - There are no rate-limit responses: no 429 and no 410.
-- {SWEEP_LINE} {_storage(memory_only)}
+- {SWEEP_LINE} {MEMORY_LINE}
 - {UNTRUSTED_LINE}
 - {UA_LINE}
 
@@ -152,7 +144,7 @@ Remote MCP at `{BASE}/mcp` with tools {", ".join(f"`{t}`" for t in MCP_TOOLS)}.
 """
 
 
-def skill_md(memory_only: bool = True) -> str:
+def skill_md() -> str:
     return f"""---
 name: meld
 description: {LISTING_LINE} One capability URL between a human and an agent, or two agents.
@@ -170,7 +162,7 @@ Use meld for one of two things:
 3. Reply: `POST {BASE}/api/melds/{{code}}/resolve` with `{{"context": "..."}}`.
 4. Read: `GET {BASE}/api/melds/{{code}}`. Reads do not move the clock.
 
-{NOT_FOUND_LINE}
+{NOT_FOUND_LINE} {MEMORY_LINE}
 Limits: {CHARS} characters per note and per reply, {REPLY_CAP} replies per meld. {REJECTED} are rejected with 400.
 {UNTRUSTED_LINE}
 {NOT_SECRETS}
@@ -392,14 +384,10 @@ def _json(obj) -> str:
     return json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
 
 
-def trust_md(memory_only: bool = True) -> str:
-    first = MEMORY_LINE if memory_only else (
-        "The capability URL is the authorization. There are no accounts, logins, owner tokens, or dissolve endpoint.")
-    storage = "" if memory_only else f"- {BACKUP_LINE}\n"
-    closing = MEMORY_CLOSING if memory_only else "Use meld for ordinary, disposable handoffs only."
+def trust_md() -> str:
     return f"""# meld trust model
 
-- {first}
+- {MEMORY_LINE}
 - {TRUST_LINE}
 - The host does not summarize, rewrite, or run a model on a bridge. No AI in the loop.
 - {RULE}
@@ -407,23 +395,21 @@ def trust_md(memory_only: bool = True) -> str:
 - {SWEEP_LINE} The server keeps no record that a code existed. {NOT_FOUND_LINE}
 - Codes carry at least 128 random bits (192 today). They are not sequential.
 - Link-preview crawlers on `/m/{{code}}` get an expires-only card. The card does not include the exchange and is not a read.
-{storage}- Each party keeps its own state. If a bridge expires, either party can create a new one; a new bridge knows nothing about an old one.
+- Each party keeps its own state. If a bridge expires, either party can create a new one; a new bridge knows nothing about an old one.
 
-{closing}
+{MEMORY_CLOSING}
 """
 
 
 # Committed at the repo root. check_spec.py regenerates and diffs them.
-# Each generator takes memory_only. The committed copies are the memory-only
-# self-host variant; a deployment that stores bridges (the D1 Worker) serves
-# memory_only=False, which names its backup window instead.
+# Every deployment is memory-only (SPEC.md §2, §7), so there is one variant.
 GENERATED = {
     "llms.txt": llms_txt,
     "agents.md": agents_md,
     "skill.md": skill_md,
-    "openapi.json": lambda memory_only=True: _json(openapi()),
-    "mcp.json": lambda memory_only=True: _json(mcp_manifest()),
-    "agent.json": lambda memory_only=True: _json(agent_card()),
+    "openapi.json": lambda: _json(openapi()),
+    "mcp.json": lambda: _json(mcp_manifest()),
+    "agent.json": lambda: _json(agent_card()),
     "TRUST.md": trust_md,
 }
 
