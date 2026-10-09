@@ -45,6 +45,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The host is at its memory cap. Nothing was stored. Always this body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
@@ -138,6 +148,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NotFound"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The host is at its memory cap. Nothing was stored. Always this body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }

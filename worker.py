@@ -13,8 +13,14 @@ a self-host restart.
   each tick runs the sweep on that shard. An empty shard lets its timer lapse.
 - Sweep: every tick (KEEPALIVE_SECONDS), plus the 5-minute cron, plus a lazy
   check on each read and reply.
+- Memory guard: each shard caps its live bridges and their text bytes
+  (SHARD_MAX_BRIDGES, SHARD_MAX_BYTES). At the cap, create and reply get the
+  one 503 body and nothing is stored, instead of the isolate running out of
+  memory and dropping every link it holds.
 - Pilot counters and a deployment's extension state live in one MeldMeta
   object, in memory only. A restart resets them.
+- Logging: nothing here prints or logs. Bridge text never leaves the
+  objects except in the HTTP response to the link holder.
 """
 from __future__ import annotations
 
@@ -24,7 +30,7 @@ import json
 
 from meld_app import build_app
 from meld_spec import parse_ts, ts, utcnow
-from meld_store import MemoryStore
+from meld_store import MemoryStore, StoreFull
 from pilot import FunnelHooks, MemoryCounters
 
 try:
@@ -36,6 +42,8 @@ except ImportError:  # not on Workers (tests import this module directly)
 
 SHARDS = 4
 KEEPALIVE_SECONDS = 60
+SHARD_MAX_BRIDGES = 1000
+SHARD_MAX_BYTES = 8 * 1024 * 1024
 BRIDGES_BINDING = "BRIDGES"
 META_BINDING = "META"
 
@@ -78,12 +86,21 @@ class BridgeShard(_Resident, DurableObject):
 
     def __init__(self, ctx=None, env=None) -> None:
         super().__init__(ctx, env)
-        self.store = MemoryStore()
+        self.store = MemoryStore(max_bridges=SHARD_MAX_BRIDGES, max_bytes=SHARD_MAX_BYTES)
         self._armed = False
 
     async def op(self, payload: str) -> str:
         req = json.loads(payload)
         kind, s = req.get("op"), self.store
+        try:
+            out = await self._op(kind, req, s)
+        except StoreFull:
+            out = {"full": True}
+        if s.size():
+            self._arm()
+        return json.dumps(out)
+
+    async def _op(self, kind, req, s):
         if kind == "create":
             out = await s.create(req["code"], req["note"], req["created_at"], req["expires_at"])
         elif kind == "get":
@@ -92,13 +109,11 @@ class BridgeShard(_Resident, DurableObject):
             out = await s.reply(req["code"], req["content"], parse_ts(req["now_ts"]))
         elif kind == "sweep":
             out = s.sweep_now(req["now_ts"])
-        elif kind == "size":
-            out = s.size()
+        elif kind == "used":
+            out = s.used()
         else:
             raise ValueError("unknown op")
-        if s.size():
-            self._arm()
-        return json.dumps(out)
+        return out
 
     def holds_state(self) -> bool:
         return self.store.size() > 0
@@ -147,7 +162,10 @@ class MeldMeta(_Resident, DurableObject):
 
 
 async def _call(stub, req: dict):
-    return json.loads(str(await stub.op(json.dumps(req))))
+    out = json.loads(str(await stub.op(json.dumps(req))))
+    if isinstance(out, dict) and out.get("full") is True and len(out) == 1:
+        raise StoreFull()
+    return out
 
 
 def shard_name(code: str) -> str:
@@ -208,6 +226,13 @@ def _binding(name: str):
     return getattr(env, name, None) if env is not None else None
 
 
+def _notices(request) -> tuple:
+    """Extra trust lines from the TRUST_NOTICES var, separated by '|'."""
+    env = _env.get()
+    raw = str(getattr(env, "TRUST_NOTICES", "") or "") if env is not None else ""
+    return tuple(n.strip() for n in raw.split("|") if n.strip())
+
+
 def _origin(request) -> str:
     env = _env.get()
     return str(getattr(env, "SHARE_ORIGIN", "") or "").strip() if env is not None else ""
@@ -221,7 +246,7 @@ except ImportError:
 store = DOStore(lambda: _binding(BRIDGES_BINDING))
 meta = MetaClient(lambda: _binding(META_BINDING))
 _meld_app = build_app(store, hooks=FunnelHooks(lambda: meta if meta.available() else None),
-                      assets=ASSETS, origin_from=_origin)
+                      assets=ASSETS, origin_from=_origin, notices_from=_notices)
 _meld_app.meta = meta
 core = _meld_app.meld
 

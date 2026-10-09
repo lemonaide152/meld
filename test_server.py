@@ -431,6 +431,52 @@ def run_worker() -> None:
     check("worker: no database, KV, or storage API", not re.search(r"\.storage\b|d1|kv_namespaces|setAlarm|prepare\(", src.split('"""', 2)[2]))
 
 
+def run_capacity() -> None:
+    hooks = Hooks()
+    clock = Clock()
+    meld_app.utcnow = clock
+    store = MemoryStore(max_bridges=2, max_bytes=40)
+    c = TestClient(build_app(store, public_url="https://meld.test", hooks=hooks))
+    a = c.post("/api/melds", json={"note": "x" * 10}).json()["code"]
+    c.post("/api/melds", json={"note": "y" * 10})
+    full = c.post("/api/melds", json={"note": "z"})
+    check("capacity: bridge cap gives the one 503 body", full.status_code == 503
+          and full.json() == meld_spec.CAPACITY_BODY and full.headers.get("retry-after") == "60")
+    r = c.post(f"/api/melds/{a}/resolve", json={"context": "w" * 30})
+    check("capacity: byte cap on reply gives the same 503, nothing stored", r.status_code == 503
+          and r.content == full.content and c.get(f"/api/melds/{a}").json()["reply_count"] == 0)
+    r = c.post(f"/api/melds/unknown/resolve", json={"context": "w" * 30})
+    check("capacity: unknown code is still the uniform 404", r.status_code == 404 and r.content == NF)
+    m = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                             "params": {"name": "meld_create", "arguments": {"note": "m"}}}).json()
+    check("capacity: MCP create says 503 as a tool error", m["result"].get("isError") and "503" in m["result"]["content"][0]["text"])
+    check("capacity: counted as capacity events by path", [f.get("path") for n, f in hooks.events if n == "capacity"] == ["api", "api", "mcp"])
+    check("capacity keys are literals", pilot.keys_for("capacity", path="ui") == ["capacity_503", "capacity_503:ui"]
+          and pilot.keys_for("rate_429", path="mcp") == ["rate_429:mcp"] and pilot.keys_for("rate_429", path="x") == ["rate_429:api"])
+    clock.advance(hours=37)
+    check("capacity: expired bridges free room before a 503", c.post("/api/melds", json={"note": "after"}).status_code == 200
+          and store.used()["bridges"] == 1 and store.used()["bytes"] == 5)
+    n = TestClient(build_app(MemoryStore(), public_url="https://meld.test", notices_from=lambda r: ("Hosted notice line.",)))
+    check("notices: trust.md and the page show deployment notices", "- Hosted notice line." in n.get("/trust.md").text
+          and "Hosted notice line." in n.get("/").text)
+    check("notices: none by default", "Hosted notice line." not in c.get("/trust.md").text)
+    shard = worker.BridgeShard(None, None)
+    shard.store.max_bridges = 0
+    ds = worker.DOStore(lambda: type("NS", (), {"getByName": lambda self, name: shard})())
+    try:
+        asyncio.run(ds.create("c", "n", "2026-10-01T00:00:00.000Z", "2026-10-03T00:00:00.000Z"))
+        raised = False
+    except Exception as e:
+        raised = type(e).__name__ == "StoreFull"
+    check("worker: a full shard surfaces StoreFull through the Durable Object call", raised)
+    check("worker: shard caps are set", worker.SHARD_MAX_BRIDGES > 0 and worker.SHARD_MAX_BYTES > 0
+          and worker.BridgeShard(None, None).store.max_bytes == worker.SHARD_MAX_BYTES)
+    w = (ROOT / "wrangler.toml.example").read_text()
+    check("wrangler: Workers Logs and Logpush off", "[observability]\nenabled = false" in w and "logpush = false" in w)
+    srcs = "".join((ROOT / f).read_text() for f in ("meld_app.py", "meld_store.py", "worker.py", "pilot.py", "meld_ui.py", "meld_docs.py"))
+    check("no code path logs or prints", not re.search(r"\bprint\(|console\.|logging\.|\blogger\b", srcs))
+
+
 def run_spec_checks() -> None:
     text = (ROOT / "SPEC.md").read_text()
     usage = text.split("## Usage assumption", 1)
@@ -468,6 +514,7 @@ if __name__ == "__main__":
     run_suite("do")
     run_hooks()
     run_worker()
+    run_capacity()
     run_spec_checks()
     print(f"\n{passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)

@@ -6,6 +6,7 @@ main = "worker.py"
 compatibility_date = "2026-09-18"
 compatibility_flags = ["python_workers"]
 workers_dev = true
+logpush = false
 
 [[durable_objects.bindings]]
 name = "BRIDGES"
@@ -23,6 +24,14 @@ new_sqlite_classes = ["BridgeShard", "MeldMeta"]
 
 [vars]
 SHARE_ORIGIN = ""
+# Optional extra trust lines, separated by "|". Shown on trust.md and the page.
+TRUST_NOTICES = "Bridges live in memory only. A restart or deploy ends every live bridge, and its link returns not found."
+
+# No request logs: Workers Logs off, no Logpush. Bridge text is never logged by
+# the code, and this keeps URLs (which carry codes) out of stored logs too.
+# `wrangler tail` still streams live events to whoever runs it; worker.py logs nothing.
+[observability]
+enabled = false
 
 # Expiry sweep every 5 minutes across all shards, on top of each shard's own timer.
 [triggers]

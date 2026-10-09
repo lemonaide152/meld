@@ -16,8 +16,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 
 import meld_docs
 import meld_ui
+from meld_store import StoreFull
 from meld_spec import (
-    CREATE_FIELDS, LEGACY_FIELDS, MAX_CHARS, MAX_CODE_LEN, NOT_FOUND_BODY, NOT_FOUND_STATUS,
+    CAPACITY_BODY, CAPACITY_STATUS, CREATE_FIELDS, LEGACY_FIELDS, MAX_CHARS, MAX_CODE_LEN, NOT_FOUND_BODY, NOT_FOUND_STATUS,
     REJECTED_FIELDS, REPLY_FIELD, SWEEP_MINUTES, VERSION, new_code, open_expiry, ts, utcnow,
 )
 
@@ -58,7 +59,13 @@ def _missing() -> MeldError:
     return MeldError(NOT_FOUND_STATUS, NOT_FOUND_BODY["detail"], "not_found")
 
 
+def _full() -> MeldError:
+    return MeldError(CAPACITY_STATUS, CAPACITY_BODY["detail"], "capacity")
+
+
 def _error_response(err: MeldError) -> JSONResponse:
+    if err.status == CAPACITY_STATUS:
+        return JSONResponse(dict(CAPACITY_BODY), status_code=CAPACITY_STATUS, headers={"Retry-After": "60"})
     if err.status == NOT_FOUND_STATUS:
         return JSONResponse(dict(NOT_FOUND_BODY), status_code=NOT_FOUND_STATUS)
     return JSONResponse({"detail": err.detail}, status_code=err.status)
@@ -220,7 +227,12 @@ class Meld:
         created_at, expires_at = ts(now), open_expiry(now)
         for _ in range(4):
             code = new_code()
-            if await self.store.create(code, note, created_at, expires_at):
+            try:
+                made = await self.store.create(code, note, created_at, expires_at)
+            except StoreFull:
+                await self.emit("capacity", path=path)
+                raise _full()
+            if made:
                 await self.emit("created", path=path)
                 return {"code": code, "url": f"{base}/m/{code}", "expires_at": expires_at}
         raise MeldError(500, "Could not allocate a code", "alloc")
@@ -237,7 +249,11 @@ class Meld:
         content = validate_reply(body)  # 400 before any lookup
         if not _code_ok(code):
             raise _missing()
-        meld = await self.store.reply(code, content, utcnow())
+        try:
+            meld = await self.store.reply(code, content, utcnow())
+        except StoreFull:
+            await self.emit("capacity", path=path)
+            raise _full()
         if meld is None:
             raise _missing()
         await self.emit("replied", path=path)
@@ -264,7 +280,7 @@ def untrusted(meld: dict) -> list:
 
 
 def build_app(store, *, public_url: Optional[str] = None, hooks=None, assets: Optional[dict] = None,
-              background_sweep: bool = False, origin_from=None) -> Any:
+              background_sweep: bool = False, origin_from=None, notices_from=None) -> Any:
     """The meld ASGI app.
 
     public_url    fixed origin for links (else the request's own origin)
@@ -272,6 +288,8 @@ def build_app(store, *, public_url: Optional[str] = None, hooks=None, assets: Op
     assets        {path: (bytes, media_type)} static files such as /og.png
     background_sweep  run the sweep every SWEEP_MINUTES in-process (self-host)
     origin_from   callable(request) -> origin, for hosts that read it from env
+    notices_from  callable(request) -> tuple of extra trust lines a deployment must show
+                  (trust.md and the page), for hosts that read them from env
     """
     assets = dict(assets or {})
     core = Meld(store, hooks)
@@ -298,6 +316,14 @@ def build_app(store, *, public_url: Optional[str] = None, hooks=None, assets: Op
             if got:
                 return got.rstrip("/")
         return str(request.base_url).rstrip("/")
+
+    def notices(request: Request) -> tuple:
+        if notices_from is None:
+            return ()
+        try:
+            return tuple(n for n in notices_from(request) if n)
+        except Exception:
+            return ()
 
     async def body_of(request: Request) -> dict:
         declared = request.headers.get("content-length")
@@ -348,7 +374,7 @@ def build_app(store, *, public_url: Optional[str] = None, hooks=None, assets: Op
                 return _html(meld_ui.not_found(nonce), nonce, status=NOT_FOUND_STATUS)
             return _error_response(err)
         if _wants_html(request):
-            return _html(meld_ui.bridge(meld, nonce), nonce)
+            return _html(meld_ui.bridge(meld, nonce, notices(request)), nonce)
         return JSONResponse(meld)
 
     @app.get("/health")
@@ -365,12 +391,13 @@ def build_app(store, *, public_url: Optional[str] = None, hooks=None, assets: Op
             head_extra = (f'<meta property="og:title" content="meld">'
                           f'<meta property="og:description" content="{meld_ui.RULE_SHORT} Not for secrets.">'
                           f'<meta property="og:image" content="{og}"><meta name="twitter:card" content="summary_large_image">')
-        return _html(meld_ui.home(nonce, head_extra), nonce, head=request.method == "HEAD")
+        return _html(meld_ui.home(nonce, head_extra, notices(request)), nonce, head=request.method == "HEAD")
 
     # Docs, all generated from meld_spec
     def doc(name: str, media: str):
         async def handler(request: Request):
-            text = meld_docs.render(meld_docs.GENERATED[name](), base(request))
+            gen = meld_docs.GENERATED[name]
+            text = meld_docs.render(gen(notices(request)) if name == "TRUST.md" else gen(), base(request))
             return Response(text, media_type=media, headers={"Cache-Control": "public, max-age=300"})
         return handler
 

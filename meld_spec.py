@@ -21,6 +21,11 @@ SWEEP_MINUTES = 5
 NOT_FOUND_STATUS = 404
 NOT_FOUND_BODY = {"detail": "Meld not found"}
 
+# Memory guard (not in SPEC.md): a host at its memory cap refuses new writes
+# with this one response instead of running out of memory and dropping every link.
+CAPACITY_STATUS = 503
+CAPACITY_BODY = {"detail": "meld is at capacity. Try again later."}
+
 CREATE_FIELDS = ("note", "context")
 LEGACY_FIELDS = ("for", "not_for")
 REJECTED_FIELDS = ("ttl", "email", "pin", "prev_code")

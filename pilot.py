@@ -11,6 +11,8 @@ Keys (UTC day), continuing the #28 series:
   resolved, and exactly one of resolved:team | resolved:ext
   create_400:<reason>, create_400:<reason>:<ui|api|mcp>
   mcp_call:<meld_create|meld_resolve|meld_read|unknown>
+  capacity_503, capacity_503:<ui|api|mcp>   (memory cap hit; nothing stored)
+  rate_429:<ui|api|mcp>                     (only when a deployment's limiter is on)
 
 `ui` comes from the X-Meld-Surface header, so a caller can choose ui or api.
 Read ui+api as one web-and-REST number. `mcp` is set by the server.
@@ -49,6 +51,10 @@ def keys_for(event: str, **fields) -> list[str]:
     if event == "create_400":
         reason = fields.get("reason") if fields.get("reason") in REASONS else "other"
         return [f"create_400:{reason}"] + ([f"create_400:{reason}:{path}"] if path else [])
+    if event == "capacity":
+        return ["capacity_503"] + ([f"capacity_503:{path}"] if path else [])
+    if event == "rate_429":
+        return [f"rate_429:{path or 'api'}"]
     if event == "mcp_call":
         tool = fields.get("tool") if fields.get("tool") in TOOLS else "unknown"
         return [f"mcp_call:{tool}"]

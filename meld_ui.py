@@ -82,11 +82,12 @@ if(m.reply_count>0){clearInterval(timer);status.textContent='A reply arrived. Op
 """
 
 
-def _trust_block() -> str:
-    return '<ul class="muted">' + "".join(f"<li>{escape(b)}</li>" for b in TRUST_BULLETS) + "</ul>"
+def _trust_block(notices: tuple = ()) -> str:
+    extra = "".join(f'<p class="meta notice">{escape(n)}</p>' for n in notices)
+    return '<ul class="muted">' + "".join(f"<li>{escape(b)}</li>" for b in TRUST_BULLETS) + "</ul>" + extra
 
 
-def home(nonce: str, head_extra: str = "") -> str:
+def home(nonce: str, head_extra: str = "", notices: tuple = ()) -> str:
     body = f"""
 <h1>meld</h1>
 <p>{escape(HERO)}</p>
@@ -96,7 +97,7 @@ def home(nonce: str, head_extra: str = "") -> str:
 <p id="err"></p>
 <div id="out" hidden><p>Send this link privately:</p><input id="url" readonly><p class="meta" id="exp"></p>
 <p class="meta" id="status"></p><p><a id="open" href="#">Open the bridge</a></p></div>
-{_trust_block()}
+{_trust_block(notices)}
 <p class="meta"><a href="/agents.md">agents.md</a> · <a href="/trust.md">trust.md</a> · <a href="/openapi.json">OpenAPI</a> · MCP at /mcp</p>
 {NOT_LIVE_HTML}
 """
@@ -125,7 +126,7 @@ def _closes(meld: dict) -> str:
     return f"Closes {when} {tail}."
 
 
-def bridge(meld: dict, nonce: str) -> str:
+def bridge(meld: dict, nonce: str, notices: tuple = ()) -> str:
     code = escape(meld["code"])
     items = [f'<div class="box">{escape(meld["note"])}</div>'
              f'<p class="meta">Note · <time datetime="{escape(meld["created_at"])}">{escape(meld["created_at"])}</time></p>']
@@ -140,7 +141,7 @@ def bridge(meld: dict, nonce: str) -> str:
 <form id="f" data-code="{code}" data-count="{int(meld["reply_count"])}"><textarea id="reply" maxlength="{MAX_CHARS}" required placeholder="Reply on this link"></textarea>
 <p class="meta" id="reply-count" hidden></p>
 <button type="submit">Reply</button></form><p id="err"></p>
-{_trust_block()}
+{_trust_block(notices)}
 {NOT_LIVE_HTML}
 """
     return _page("meld — bridge", body, nonce,

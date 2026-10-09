@@ -49,6 +49,10 @@ MEMORY_LINE = (
     "it's gone, and the link returns not found, the same as a wrong code."
 )
 MEMORY_CLOSING = "meld is a disposable handoff, not a vault. Nothing is written to disk. No accounts, no archive."
+CAPACITY_LINE = (
+    "If the host is at its memory cap, create and reply return 503 with "
+    "`{\"detail\": \"meld is at capacity. Try again later.\"}` and store nothing."
+)
 READ_SHAPE = "`code`, `url`, `note`, `created_at`, `expires_at`, `reply_count`, and `replies` (each `content` and `created_at`)"
 
 REJECTED = ", ".join(f"`{f}`" for f in REJECTED_FIELDS)
@@ -77,6 +81,7 @@ Limits: {CHARS} characters per note and per reply, {REPLY_CAP} replies per meld.
 Older clients may also send `for` and `not_for`; every supplied string must be identical to the note, otherwise 400.
 {REJECTED} are rejected with 400.
 There are no rate-limit responses: no 429 and no 410.
+{CAPACITY_LINE}
 {MEMORY_LINE}
 {UA_LINE}
 
@@ -134,6 +139,7 @@ A read returns {READ_SHAPE}. It does not move the clock. Timestamps are UTC ISO 
 - {CHARS} characters per note and per reply. {REPLY_CAP} replies per meld; the next reply is the same 404.
 - {REJECTED} are rejected with 400. There is no other lifetime and no owner token.
 - There are no rate-limit responses: no 429 and no 410.
+- {CAPACITY_LINE}
 - {SWEEP_LINE} {MEMORY_LINE}
 - {UNTRUSTED_LINE}
 - {UA_LINE}
@@ -261,6 +267,8 @@ def openapi() -> dict:
           "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NotFound"}}}}
     bad = {"description": "Malformed body. Decided before any lookup, so it is not an existence oracle.",
            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+    full = {"description": "The host is at its memory cap. Nothing was stored. Always this body.",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
     code_param = {"name": "code", "in": "path", "required": True, "schema": {"type": "string"}}
     meld_ok = {"description": "The live bridge.",
                "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Meld"}}}}
@@ -278,6 +286,7 @@ def openapi() -> dict:
                     "200": {"description": "Created.", "content": {"application/json": {
                         "schema": {"$ref": "#/components/schemas/CreateResponse"}}}},
                     "400": bad,
+                    "503": full,
                 },
             }},
             "/api/melds/{code}": {"get": {
@@ -292,7 +301,7 @@ def openapi() -> dict:
                 "parameters": [code_param],
                 "requestBody": {"required": True, "content": {"application/json": {
                     "schema": {"$ref": "#/components/schemas/ReplyRequest"}}}},
-                "responses": {"200": meld_ok, "400": bad, "404": nf},
+                "responses": {"200": meld_ok, "400": bad, "404": nf, "503": full},
             }},
             "/m/{code}": {"get": {
                 "operationId": "openMeld",
@@ -384,7 +393,8 @@ def _json(obj) -> str:
     return json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
 
 
-def trust_md() -> str:
+def trust_md(notices: tuple = ()) -> str:
+    extra = "".join(f"- {n}\n" for n in notices)
     return f"""# meld trust model
 
 - {MEMORY_LINE}
@@ -395,7 +405,7 @@ def trust_md() -> str:
 - {SWEEP_LINE} The server keeps no record that a code existed. {NOT_FOUND_LINE}
 - Codes carry at least 128 random bits (192 today). They are not sequential.
 - Link-preview crawlers on `/m/{{code}}` get an expires-only card. The card does not include the exchange and is not a read.
-- Each party keeps its own state. If a bridge expires, either party can create a new one; a new bridge knows nothing about an old one.
+{extra}- Each party keeps its own state. If a bridge expires, either party can create a new one; a new bridge knows nothing about an old one.
 
 {MEMORY_CLOSING}
 """
