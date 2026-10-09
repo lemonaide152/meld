@@ -24,7 +24,6 @@ a self-host restart.
 """
 from __future__ import annotations
 
-import contextvars
 import hashlib
 import json
 
@@ -47,7 +46,23 @@ SHARD_MAX_BYTES = 8 * 1024 * 1024
 BRIDGES_BINDING = "BRIDGES"
 META_BINDING = "META"
 
-_env = contextvars.ContextVar("meld_env", default=None)
+class _EnvHolder:
+    """The Worker env. It is the same object for every request in an isolate,
+    so a plain holder is used instead of a contextvar: under Pyodide stack
+    switching, contextvars can leak between concurrent tasks."""
+
+    def __init__(self):
+        self.value = None
+
+    def get(self):
+        return self.value
+
+    def set(self, env):
+        if env is not None:
+            self.value = env
+
+
+_env = _EnvHolder()
 
 
 def _set_timer(callback, seconds: float) -> bool:
@@ -262,25 +277,47 @@ if pilot_ext is not None:
 
 
 async def app(scope, receive, send):
-    token = _env.set(scope.get("env"))
-    try:
-        await _meld_app(scope, receive, send)
-    finally:
-        _env.reset(token)
+    _env.set(scope.get("env"))
+    await _meld_app(scope, receive, send)
 
 
 async def scheduled_sweep(env) -> int:
-    token = _env.set(env)
-    try:
-        n = await core.sweep()
-        if pilot_ext is not None:
-            try:
-                await pilot_ext.sweep(env)
-            except Exception:
-                pass
-        return n
-    finally:
-        _env.reset(token)
+    _env.set(env)
+    n = await core.sweep()
+    if pilot_ext is not None:
+        try:
+            await pilot_ext.sweep(env)
+        except Exception:
+            pass
+    return n
+
+
+async def serve(asgi_app, scope: dict, body: bytes):
+    """Run one buffered HTTP request through an ASGI app inside the caller's
+    own task. Returns (status, [(name, value)], body).
+
+    The SDK adapter starts two extra asyncio tasks per request (lifespan and
+    the app). Under a concurrent burst those extra Pyodide stack switches hit
+    "Cannot enter a promising task from inside another running promising
+    task", which wedges the isolate. meld never streams and has no lifespan
+    work on Workers, so one task per request is enough."""
+    sent = {"status": 500, "headers": [], "body": []}
+    pending = [{"type": "http.request", "body": body, "more_body": False}]
+
+    async def receive():
+        if pending:
+            return pending.pop()
+        return {"type": "http.disconnect"}
+
+    async def send(msg):
+        if msg["type"] == "http.response.start":
+            sent["status"] = int(msg["status"])
+            sent["headers"] = [(k.decode("latin-1"), v.decode("latin-1")) for k, v in msg.get("headers", [])]
+        elif msg["type"] == "http.response.body":
+            sent["body"].append(bytes(msg.get("body", b"")))
+
+    await asgi_app(scope, receive, send)
+    return sent["status"], sent["headers"], b"".join(sent["body"])
 
 
 try:
@@ -289,7 +326,28 @@ except ImportError:  # not on Workers
     asgi = None
 
 if asgi is not None:
-    class Default(asgi.entrypoint(app)):
+    from workers import WorkerEntrypoint
+
+    _NULL_BODY = frozenset({101, 103, 204, 205, 304})
+
+    class Default(WorkerEntrypoint):
+        async def fetch(self, request):
+            from js import Response
+            from pyodide.ffi import create_proxy
+            from workers.utils import _to_js_headers
+
+            scope = asgi.request_to_scope(request, self.env)
+            body = b""
+            if request.method not in ("GET", "HEAD"):
+                body = (await request.buffer()).to_bytes()
+            status, headers, out = await serve(app, scope, body)
+            if status in _NULL_BODY or request.method == "HEAD" or not out:
+                return Response.new(None, status=status, headers=_to_js_headers(headers))
+            px = create_proxy(out)
+            buf = px.getBuffer()
+            px.destroy()
+            return Response.new(buf.data, status=status, headers=_to_js_headers(headers))
+
         async def scheduled(self, controller, env=None, ctx=None):
             await scheduled_sweep(self.env)
 else:

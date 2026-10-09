@@ -427,6 +427,25 @@ def run_worker() -> None:
     clock.advance(hours=37)
     n = asyncio.run(worker.scheduled_sweep(Env))
     check("worker: scheduled sweep covers every shard", n == 1 and all(o.store.size() == 0 for o in bridges.objects.values()))
+    base_scope = {"type": "http", "path": "/api/melds", "raw_path": b"/api/melds", "query_string": b"",
+                  "headers": [(b"content-type", b"application/json"), (b"host", b"x")], "env": Env,
+                  "scheme": "https", "server": ("x", 443), "client": ("1.2.3.4", 1), "root_path": "",
+                  "http_version": "1.1"}
+
+    async def served():
+        before = len(asyncio.all_tasks())
+        out = await worker.serve(worker.app, dict(base_scope, method="POST"), json.dumps({"note": "one task"}).encode())
+        return out, len(asyncio.all_tasks()) - before
+    (st, hdrs, raw), extra = asyncio.run(served())
+    check("worker: serve() runs a request in the caller's task (no extra tasks)", st == 200 and extra == 0
+          and "code" in json.loads(raw), f"{st} {extra}")
+    check("worker: serve() returns string headers", any(k.lower() == "content-type" for k, _ in hdrs))
+    st, _, raw = asyncio.run(worker.serve(worker.app, dict(base_scope, method="GET", path="/api/melds/AAAAAAAAAAAAAAAAAAAAAA",
+                                                            raw_path=b"/api/melds/AAAAAAAAAAAAAAAAAAAAAA"), b""))
+    check("worker: serve() keeps the uniform 404", st == 404 and json.loads(raw) == meld_spec.NOT_FOUND_BODY)
+    src_all = (ROOT / "worker.py").read_text()
+    check("worker: entrypoint skips the SDK lifespan and per-request tasks",
+          "asgi.entrypoint(" not in src_all and "create_task(" not in src_all and "ContextVar(" not in src_all)
     src = (ROOT / "worker.py").read_text()
     check("worker: no database, KV, or storage API", not re.search(r"\.storage\b|d1|kv_namespaces|setAlarm|prepare\(", src.split('"""', 2)[2]))
 
