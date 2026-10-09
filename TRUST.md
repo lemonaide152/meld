@@ -9,7 +9,7 @@
 - Codes carry 192 random bits. They are not sequential.
 - Link-preview crawlers on `/m/{code}` get an expires-only card. The card does not include the exchange and is not a read.
 - Self-host keeps bridges in memory only. A restart drops every live link.
-- The hosted pilot stores a bridge in Cloudflare D1 only while it is live, and D1 Time Travel keeps restorable past states of the database for up to 30 days (7 days on the Workers Free plan), so a deleted bridge can remain in those backups until that window passes.
+- The hosted pilot stores a bridge in Cloudflare D1 only while it is live; D1 Time Travel keeps restorable past database states for up to 30 days (7 on the Workers Free plan), so a deleted bridge can remain in those backups until that window passes.
 - Each party keeps its own state. If a bridge expires, either party can create a new one; a new bridge knows nothing about an old one.
 
 Use meld for ordinary, disposable handoffs only.

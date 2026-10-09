@@ -44,6 +44,16 @@ _store = _EnvD1Store()
 _meld_app = build_app(_store, hooks=FunnelHooks(_db), assets=ASSETS, origin_from=_origin)
 core = _meld_app.meld
 
+# Optional deployment extension (outside SPEC.md). If a pilot_ext module sits
+# next to this file, it may wrap the ASGI app and add work to the sweep. It
+# must not change create, read, reply, or 404; its own tests enforce that.
+try:
+    import pilot_ext
+except ImportError:
+    pilot_ext = None
+if pilot_ext is not None:
+    _meld_app = pilot_ext.wrap(_meld_app)
+
 
 async def app(scope, receive, send):
     token = _env.set(scope.get("env"))
@@ -56,7 +66,13 @@ async def app(scope, receive, send):
 async def scheduled_sweep(env) -> int:
     token = _env.set(env)
     try:
-        return await core.sweep()
+        n = await core.sweep()
+        if pilot_ext is not None:
+            try:
+                await pilot_ext.sweep(env)
+            except Exception:
+                pass
+        return n
     finally:
         _env.reset(token)
 
