@@ -20,7 +20,7 @@ Limits: 100,000 characters per note and per reply, 50 replies per meld.
 Older clients may also send `for` and `not_for`; every supplied string must be identical to the note, otherwise 400.
 `ttl`, `email`, `pin`, `prev_code` are rejected with 400.
 There are no rate-limit responses: no 429 and no 410.
-The hosted pilot stores a bridge in Cloudflare D1 only while it is live; D1 Time Travel keeps restorable past database states for up to 30 days (7 on the Workers Free plan), so a deleted bridge can remain in those backups until that window passes.
+The host keeps the bridge in memory only while it's live. When it closes, or if the server restarts, it's gone, and the link returns not found, the same as a wrong code.
 Cloudflare-hosted instances (such as workers.dev) can return 403 error 1010 to Python's default urllib User-Agent (`Python-urllib/*`) before the request reaches meld. Set any other User-Agent, such as `meld-agent/1.0`, or use curl, httpx, or requests.
 
 ## More

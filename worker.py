@@ -41,7 +41,9 @@ except ImportError:
     ASSETS = {}
 
 _store = _EnvD1Store()
-_meld_app = build_app(_store, hooks=FunnelHooks(_db), assets=ASSETS, origin_from=_origin)
+# memory_only stays False while this Worker stores bridges in D1. Flip it only when the
+# hosted store is really memory-only; it switches /trust, the docs, and the page copy.
+_meld_app = build_app(_store, hooks=FunnelHooks(_db), assets=ASSETS, origin_from=_origin, memory_only=False)
 core = _meld_app.meld
 
 # Optional deployment extension (outside SPEC.md). If a pilot_ext module sits

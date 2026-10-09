@@ -111,13 +111,19 @@ def check_generated(write: bool) -> None:
     for name in ("llms.txt", "agents.md", "skill.md"):
         if meld_docs.USES not in meld_docs.GENERATED[name]():
             err(f"{name} does not list exactly the two uses")
-    required = (f"{meld_spec.MAX_CHARS:,}", f"{meld_spec.REPLY_CAP} replies", "Time Travel", "error 1010",
+    required = (f"{meld_spec.MAX_CHARS:,}", f"{meld_spec.REPLY_CAP} replies", "error 1010",
                 *(f"`{f}`" for f in meld_spec.REJECTED_FIELDS))
     for name in ("llms.txt", "agents.md", "skill.md"):
-        text = meld_docs.GENERATED[name]()
-        for bit in required:
-            if bit not in text and not (name == "skill.md" and bit == "Time Travel"):
-                err(f"{name} does not document {bit}")
+        for memory_only in (True, False):
+            text = meld_docs.GENERATED[name](memory_only)
+            for bit in required:
+                if bit not in text:
+                    err(f"{name} does not document {bit}")
+    for name in ("llms.txt", "agents.md"):
+        if "Time Travel" not in meld_docs.GENERATED[name](False):
+            err(f"{name} (stored variant) does not state the backup window")
+        if re.search(r"Time Travel|D1", meld_docs.GENERATED[name](True)):
+            err(f"{name} (memory-only variant) mentions a store it does not use")
     banned = re.compile(r"(?i)\blearn\b|\bmessages\b|per-minute|rate limit|upgrade\.md|stripe|checkout|/chain|/v1/|/pro\b|owner_token")
     for name, gen in meld_docs.GENERATED.items():
         hit = banned.search(gen())
@@ -125,7 +131,12 @@ def check_generated(write: bool) -> None:
             err(f"{name} mentions {hit.group(0)!r}, which the code does not do")
     if meld_docs.BACKUP_LINE.count(". ") > 0:
         err("the backup window must be one sentence")
-    if "Time Travel" not in meld_docs.trust_md():
+    mem = meld_docs.trust_md(True)
+    if meld_docs.MEMORY_LINE not in mem or meld_docs.MEMORY_CLOSING not in mem or "Time Travel" in mem:
+        err("memory-only TRUST.md must say memory-only and nothing written to disk, with no backup line")
+    if "disk" in meld_docs.trust_md(False) or "memory only" in meld_docs.trust_md(False):
+        err("stored TRUST.md must not claim memory-only")
+    if "Time Travel" not in meld_docs.trust_md(False):
         err("TRUST.md does not state the D1 Time Travel window")
 
 

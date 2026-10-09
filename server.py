@@ -15,6 +15,7 @@ app = build_app(
     MemoryStore(),
     public_url=os.getenv("MELD_PUBLIC_URL", "").strip() or None,
     background_sweep=True,
+    memory_only=True,
 )
 
 

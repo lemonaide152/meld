@@ -45,6 +45,11 @@ TRUST_BULLETS = (
     f"Open {OPEN_HOURS} hours for a first reply, then {IDLE_HOURS} hours after each reply. Silence closes it.",
     "When it closes, it's deleted. The link then returns not found, the same as a wrong code.",
 )
+MEMORY_LAST_BULLET = "When it closes, or if the server restarts, it's gone. The link then returns not found, the same as a wrong code."
+
+
+def trust_bullets(memory_only: bool) -> tuple:
+    return TRUST_BULLETS[:-1] + (MEMORY_LAST_BULLET,) if memory_only else TRUST_BULLETS
 NOT_LIVE = "This link isn't live. It may have closed, or the code is wrong."
 NOT_LIVE_NEXT = "If you were mid-conversation, start a new bridge and share the new link to pick up where you left off."
 COUNTER_WINDOW = 5_000
@@ -82,11 +87,11 @@ if(m.reply_count>0){clearInterval(timer);status.textContent='A reply arrived. '+
 """
 
 
-def _trust_block() -> str:
-    return '<ul class="muted">' + "".join(f"<li>{escape(b)}</li>" for b in TRUST_BULLETS) + "</ul>"
+def _trust_block(memory_only: bool) -> str:
+    return '<ul class="muted">' + "".join(f"<li>{escape(b)}</li>" for b in trust_bullets(memory_only)) + "</ul>"
 
 
-def home(nonce: str, head_extra: str = "") -> str:
+def home(nonce: str, head_extra: str = "", memory_only: bool = True) -> str:
     body = f"""
 <h1>meld</h1>
 <p>{escape(HERO)}</p>
@@ -96,7 +101,7 @@ def home(nonce: str, head_extra: str = "") -> str:
 <p id="err"></p>
 <div id="out" hidden><p>Send this link privately:</p><input id="url" readonly><p class="meta" id="exp"></p>
 <p class="meta" id="status"></p><p><a id="open" href="#">Open the bridge</a></p></div>
-{_trust_block()}
+{_trust_block(memory_only)}
 <p class="meta"><a href="/agents.md">agents.md</a> · <a href="/trust.md">trust.md</a> · <a href="/openapi.json">OpenAPI</a> · MCP at /mcp</p>
 {NOT_LIVE_HTML}
 """
@@ -125,7 +130,7 @@ def _closes(meld: dict) -> str:
     return f"Closes {when} {tail}."
 
 
-def bridge(meld: dict, nonce: str) -> str:
+def bridge(meld: dict, nonce: str, memory_only: bool = True) -> str:
     code = escape(meld["code"])
     items = [f'<div class="box">{escape(meld["note"])}</div>'
              f'<p class="meta">Note · <time datetime="{escape(meld["created_at"])}">{escape(meld["created_at"])}</time></p>']
@@ -140,7 +145,7 @@ def bridge(meld: dict, nonce: str) -> str:
 <form id="f" data-code="{code}" data-count="{int(meld["reply_count"])}"><textarea id="reply" maxlength="{MAX_CHARS}" required placeholder="Reply on this link"></textarea>
 <p class="meta" id="reply-count" hidden></p>
 <button type="submit">Reply</button></form><p id="err"></p>
-{_trust_block()}
+{_trust_block(memory_only)}
 {NOT_LIVE_HTML}
 """
     return _page("meld — bridge", body, nonce,

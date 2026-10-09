@@ -39,6 +39,11 @@ UA_LINE = (
     "urllib User-Agent (`Python-urllib/*`) before the request reaches meld. Set any other User-Agent, "
     "such as `meld-agent/1.0`, or use curl, httpx, or requests."
 )
+MEMORY_LINE = (
+    "The host keeps the bridge in memory only while it's live. When it closes, or if the server restarts, "
+    "it's gone, and the link returns not found, the same as a wrong code."
+)
+MEMORY_CLOSING = "meld is a disposable handoff, not a vault. Nothing is written to disk. No accounts, no archive."
 BACKUP_LINE = (
     "The hosted pilot stores a bridge in Cloudflare D1 only while it is live; D1 Time Travel keeps restorable "
     "past database states for up to 30 days (7 on the Workers Free plan), so a deleted bridge can remain in "
@@ -49,7 +54,11 @@ READ_SHAPE = "`code`, `url`, `note`, `created_at`, `expires_at`, `reply_count`, 
 REJECTED = ", ".join(f"`{f}`" for f in REJECTED_FIELDS)
 
 
-def llms_txt() -> str:
+def _storage(memory_only: bool) -> str:
+    return MEMORY_LINE if memory_only else BACKUP_LINE
+
+
+def llms_txt(memory_only: bool = True) -> str:
     return f"""# meld
 > One capability URL for an ephemeral context bridge. The link is the authorization.
 
@@ -71,7 +80,7 @@ Limits: {CHARS} characters per note and per reply, {REPLY_CAP} replies per meld.
 Older clients may also send `for` and `not_for`; every supplied string must be identical to the note, otherwise 400.
 {REJECTED} are rejected with 400.
 There are no rate-limit responses: no 429 and no 410.
-{BACKUP_LINE}
+{_storage(memory_only)}
 {UA_LINE}
 
 ## More
@@ -86,7 +95,7 @@ There are no rate-limit responses: no 429 and no 410.
 """
 
 
-def agents_md() -> str:
+def agents_md(memory_only: bool = True) -> str:
     return f"""# meld for agents
 
 meld is one capability URL for an ephemeral context bridge. {TRUST_LINE}
@@ -128,7 +137,7 @@ A read returns {READ_SHAPE}. It does not move the clock. Timestamps are UTC ISO 
 - {CHARS} characters per note and per reply. {REPLY_CAP} replies per meld; the next reply is the same 404.
 - {REJECTED} are rejected with 400. There is no other lifetime and no owner token.
 - There are no rate-limit responses: no 429 and no 410.
-- A sweep every {SWEEP_MINUTES} minutes deletes expired bridges. {BACKUP_LINE}
+- A sweep every {SWEEP_MINUTES} minutes deletes expired bridges. {_storage(memory_only)}
 - {UNTRUSTED_LINE}
 - {UA_LINE}
 
@@ -138,7 +147,7 @@ Remote MCP at `{BASE}/mcp` with tools {", ".join(f"`{t}`" for t in MCP_TOOLS)}.
 """
 
 
-def skill_md() -> str:
+def skill_md(memory_only: bool = True) -> str:
     return f"""---
 name: meld
 description: One capability URL for an ephemeral context bridge between a human and an agent, or two agents. {TRUST_LINE}
@@ -376,33 +385,38 @@ def _json(obj) -> str:
     return json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
 
 
-def trust_md() -> str:
+def trust_md(memory_only: bool = True) -> str:
+    first = MEMORY_LINE if memory_only else (
+        "The capability URL is the authorization. There are no accounts, logins, owner tokens, or dissolve endpoint.")
+    storage = "" if memory_only else f"- {BACKUP_LINE}\n"
+    closing = MEMORY_CLOSING if memory_only else "Use meld for ordinary, disposable handoffs only."
     return f"""# meld trust model
 
-- The capability URL is the authorization. There are no accounts, logins, owner tokens, or dissolve endpoint.
+- {first}
 - {TRUST_LINE}
 - The host does not summarize, rewrite, or run a model on a bridge. No AI in the loop.
 - {RULE}
-- Termination is the timer only. Silence closes the bridge.
+- Termination is the timer only. Silence closes the bridge. There is no owner token and no dissolve endpoint.
 - A sweep every {SWEEP_MINUTES} minutes deletes expired bridges and their replies. The server keeps no record that a code existed. {NOT_FOUND_LINE}
 - Codes carry 192 random bits. They are not sequential.
 - Link-preview crawlers on `/m/{{code}}` get an expires-only card. The card does not include the exchange and is not a read.
-- Self-host keeps bridges in memory only. A restart drops every live link.
-- {BACKUP_LINE}
-- Each party keeps its own state. If a bridge expires, either party can create a new one; a new bridge knows nothing about an old one.
+{storage}- Each party keeps its own state. If a bridge expires, either party can create a new one; a new bridge knows nothing about an old one.
 
-Use meld for ordinary, disposable handoffs only.
+{closing}
 """
 
 
 # Committed at the repo root. check_spec.py regenerates and diffs them.
+# Each generator takes memory_only. The committed copies are the memory-only
+# self-host variant; a deployment that stores bridges (the D1 Worker) serves
+# memory_only=False, which names its backup window instead.
 GENERATED = {
     "llms.txt": llms_txt,
     "agents.md": agents_md,
     "skill.md": skill_md,
-    "openapi.json": lambda: _json(openapi()),
-    "mcp.json": lambda: _json(mcp_manifest()),
-    "agent.json": lambda: _json(agent_card()),
+    "openapi.json": lambda memory_only=True: _json(openapi()),
+    "mcp.json": lambda memory_only=True: _json(mcp_manifest()),
+    "agent.json": lambda memory_only=True: _json(agent_card()),
     "TRUST.md": trust_md,
 }
 

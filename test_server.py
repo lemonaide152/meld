@@ -104,7 +104,7 @@ def make(kind: str, hooks=None):
     else:
         d1 = FakeD1()
         store = D1Store(d1)
-    client = TestClient(build_app(store, public_url="https://meld.test", hooks=hooks))
+    client = TestClient(build_app(store, public_url="https://meld.test", hooks=hooks, memory_only=(kind == "memory")))
     return client, clock, store, d1
 
 
@@ -281,7 +281,18 @@ def run_suite(kind: str) -> None:
           and "24 hours" in r.text and "Not for secrets" in r.text)
     import meld_ui
     check(p + "home: hero text", meld_ui.HERO in t)
-    check(p + "home: five trust bullets", all(b in t for b in meld_ui.TRUST_BULLETS) and len(meld_ui.TRUST_BULLETS) == 5)
+    bullets = meld_ui.trust_bullets(kind == "memory")
+    check(p + "home: five trust bullets", all(b in t for b in bullets) and len(bullets) == 5)
+    trust = c.get("/trust.md").text
+    if kind == "memory":
+        check(p + "memory-only copy: gone on restart, nothing on disk, no Time Travel",
+              meld_ui.MEMORY_LAST_BULLET in t and "The host keeps the bridge in memory only while it's live." in trust
+              and "Nothing is written to disk." in trust and "Time Travel" not in trust
+              and "Time Travel" not in c.get("/llms.txt").text)
+    else:
+        check(p + "stored copy: names the D1 backup window, no memory-only claim",
+              "Time Travel" in trust and "disk" not in trust and meld_ui.MEMORY_LAST_BULLET not in t
+              and "Time Travel" in c.get("/llms.txt").text)
     check(p + "home: no learn, pilot, 429 or too-many", not re.search(r"(?i)learn|pilot|429|too many", r.text))
     check(p + "home: maxlength 100000 and counter window 5,000", 'maxlength="100000"' in r.text and "WIN=5000" in r.text)
     check(p + "home: sends note, polls read route every 10s, open-until line",
