@@ -6,3 +6,9 @@ __pycache__/
 
 # Local site name and public URL. Copy from .env.example.
 .env
+
+# Hosted pilot: local wrangler config and build output.
+wrangler.toml
+.wrangler/
+node_modules/
+python_modules/

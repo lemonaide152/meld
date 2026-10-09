@@ -1,17 +1,15 @@
-# meld — trust model
+# meld trust model
 
-- Capability URL. Party A creates the link. One note says what the exchange is for and what it is not for. A sends that URL to B privately. The conversation stays on that link.
-- The bridge stays open while the context exchange is active. Until the first reply, the hop stays open 36 hours from creation. The first reply sets a 24 hour timer. Each later reply is kept. Each later reply resets that 24 hours. There is no maximum lifetime once replies have started.
-- A body read returns the plaintext. A read does not start the timer. A read does not reset the timer.
-- Host-readable while live.
-- No AI in the loop. The host holds the plaintext while the bridge is live. The host does not summarize it. The host does not rewrite it. The host does not invent a reply. The host does not put a model in the middle.
-- Anyone with the link can read it.
-- Not for secrets, credentials, or regulated data.
-- With no reply, the server dissolves the meld 36 hours from creation. After a reply, the server dissolves the meld 24 hours after the latest reply. Dissolve deletes the bridge. The next request is 404.
-- A link-preview crawl of `/m/{code}` gets an expires-only card. The exchange is not in that card. The crawl does not read the meld.
-- Each reply is appended. Earlier replies stay on the bridge.
-- A code that never existed is 404. A dissolved code is 404. An expired code is 404. The response is the same.
-- The server does not keep a record of a dissolved code. A restart drops live links.
-- This is not a private room and not a vault.
+- The capability URL is the authorization. There are no accounts, logins, owner tokens, or dissolve endpoint.
+- The host can read a live bridge. Anyone with the link can read and reply. Not for secrets, credentials, or regulated data.
+- The host does not summarize, rewrite, or run a model on a bridge. No AI in the loop.
+- Open 36 hours from creation until the first reply. The first reply sets 24 hours. Each later reply resets that 24 hours. There is no maximum lifetime once replies have started. Reads do not move the clock.
+- Termination is the timer only. Silence closes the bridge.
+- A sweep every 5 minutes deletes expired bridges and their replies. The server keeps no record that a code existed. Unknown, expired, and over-the-reply-cap codes all return 404 with {"detail":"Meld not found"}. There is no 410 and no 429.
+- Codes carry 192 random bits. They are not sequential.
+- Link-preview crawlers on `/m/{code}` get an expires-only card. The card does not include the exchange and is not a read.
+- Self-host keeps bridges in memory only. A restart drops every live link.
+- The hosted pilot stores a bridge in Cloudflare D1 only while it is live, and D1 Time Travel keeps restorable past states of the database for up to 30 days (7 days on the Workers Free plan), so a deleted bridge can remain in those backups until that window passes.
+- Each party keeps its own state. If a bridge expires, either party can create a new one; a new bridge knows nothing about an old one.
 
-The server holds ordinary context in memory while the bridge is live. It deletes that context on dissolve. There are no accounts. There is no archive. Use meld for ordinary, disposable handoffs only.
+Use meld for ordinary, disposable handoffs only.

@@ -1,0 +1,17 @@
+# Hosted pilot on Cloudflare Workers + D1. Copy to wrangler.toml and set database_id.
+# Builds from this repo: main is worker.py at the root, which imports the same
+# meld_app.py the self-host server runs.
+name = "meld"
+main = "worker.py"
+compatibility_date = "2026-09-18"
+compatibility_flags = ["python_workers"]
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "meld"
+database_id = "REPLACE_ME"
+
+# Expiry sweep: delete expired bridges every 5 minutes, with or without traffic.
+[triggers]
+crons = ["*/5 * * * *"]

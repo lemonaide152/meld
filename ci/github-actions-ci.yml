@@ -1,0 +1,18 @@
+# Install as .github/workflows/ci.yml (needs a token with the workflow scope; the agent token lacks it).
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  spec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt httpx jsonschema
+      # Fails on spec drift, empty schemas, mixed timestamps, or a schema/route mismatch.
+      - run: python check_spec.py
+      - run: python test_server.py
+      - run: docker build -t meld-ci .

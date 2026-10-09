@@ -1,87 +1,85 @@
 # meld — ephemeral context bridge
 
-**Don't meet. Meld.**
+One capability URL between a human and an agent, or between two agents. The link is the authorization. No accounts, no logins.
 
-Put working context on a capability URL. Neither side pastes the block. Party A creates the link. One note says what the exchange is for and what it is not for. A sends that URL to B privately. The conversation stays on that link.
+- Open **36 hours** from creation until the first reply. The first reply sets **24 hours**. Each later reply resets that 24 hours. No maximum lifetime once replies have started. Reads do not move the clock.
+- Silence closes the bridge. There is no dissolve endpoint and no owner token.
+- Unknown, expired, and over-the-reply-cap codes all return **404** `{"detail":"Meld not found"}`. No 410, no 429.
+- Host-readable while live. Anyone with the link can read and reply. **Not for secrets, credentials, or regulated data.** No AI in the loop.
 
-The bridge stays open while the exchange is active. Until the first reply, the hop stays open **36 hours** from creation. The first reply sets a **24 hour** timer. Each later reply is kept. Each later reply resets that 24 hours. There is no maximum lifetime once replies have started. A read does not start the timer. A read does not reset the timer.
+[SPEC.md](SPEC.md) is the source of truth. This repo is the reference implementation: the self-host server and the hosted pilot (Cloudflare Workers + D1) run the same `meld_app.py`.
 
-When the window ends, the host dissolves the meld. Dissolve deletes the bridge. The next request for that code is **404**. A code that never existed is **404**. An expired code is **404**. The response is the same.
+Each party keeps its own state. If a bridge expires, either party creates a new one and shares the new link. A new bridge knows nothing about an old one.
 
-Host-readable while live. Anyone with the link can read it. **Not for secrets.** No accounts. No plaintext archive.
+## Run it
 
-**No AI in the loop.** The host holds what you pour while the bridge is live. The host does not summarize the exchange. The host does not rewrite it. The host does not invent a reply. The host does not run a model on it.
-
-Self-host is the path. This repository is the server, Caddy, and Docker setup.
-
-## Get started
-
-```bash
-git clone https://github.com/lemonaide152/meld.git && cd meld && docker build -t meld . && docker run --rm -p 8080:8080 -e MELD_PUBLIC_URL=http://127.0.0.1:8080 meld
-```
-
-Then:
+Plain Python:
 
 ```bash
-curl -s -X POST http://127.0.0.1:8080/api/melds \
-  -H "Content-Type: application/json" \
-  -d '{"note":"For a design review. Not for passwords or customer data."}'
+pip install -r requirements.txt && python server.py   # http://127.0.0.1:8080
 ```
 
-A sends the `url` to B privately. B replies with `POST /api/melds/{code}/resolve`. Keep talking on that same link.
+Docker:
 
-### Compose (local)
+```bash
+docker build -t meld . && docker run --rm -p 8080:8080 -e MELD_PUBLIC_URL=http://127.0.0.1:8080 meld
+```
+
+Compose, local or with Caddy for public TLS:
 
 ```bash
 cp .env.example .env
-docker compose up -d --build
+docker compose up -d --build                    # local
+docker compose --profile tls up -d --build      # set MELD_SITE and MELD_PUBLIC_URL first
 ```
 
-Same API on http://127.0.0.1:8080.
+Self-host is memory-only. A restart drops every live link. A sweep runs every 5 minutes in-process, and every read or reply also treats an expired bridge as gone.
 
-### Compose + Caddy (public TLS)
-
-Set `MELD_SITE` and `MELD_PUBLIC_URL` in `.env`, point DNS at the machine, open 80/443:
+## Use it
 
 ```bash
-docker compose --profile tls up -d --build
+curl -s -X POST http://127.0.0.1:8080/api/melds -H 'content-type: application/json' \
+  -d '{"note":"For a design review. Not for passwords or customer data."}'
+# {"code":"...","url":"http://127.0.0.1:8080/m/...","expires_at":"..."}
+curl -s -X POST http://127.0.0.1:8080/api/melds/CODE/resolve -H 'content-type: application/json' \
+  -d '{"context":"Reply"}'
+curl -s http://127.0.0.1:8080/api/melds/CODE
 ```
 
-### Python (no Docker)
+Two uses only: a human writes a note on the web page and an agent replies on the link, or two agents talk on one URL. MCP (streamable HTTP, JSON mode) is at `/mcp` with `meld_create`, `meld_resolve`, `meld_read`.
+
+## Files
+
+| File | What it is |
+|---|---|
+| `SPEC.md` | Behavior. The `meld-spec` block at the end is machine-checked. |
+| `meld_app.py` | The app: create, read, reply, 404, web UI, MCP, docs routes. |
+| `meld_store.py` | Memory store (self-host) and D1 store (hosted). |
+| `meld_spec.py` | Constants tied to SPEC.md. |
+| `meld_docs.py` | Generates `llms.txt`, `agents.md`, `skill.md`, `TRUST.md`, `openapi.json`, `mcp.json`, `agent.json`. |
+| `meld_ui.py` | The web page. |
+| `server.py` | Self-host entry (uvicorn). |
+| `worker.py`, `wrangler.toml.example`, `schema.sql` | Hosted pilot entry for Cloudflare Python Workers + D1. |
+| `pilot.py`, `pilot_schema.sql` | Hosted pilot counters (outside SPEC.md; cannot change a response). |
+| `check_spec.py` | CI gate: drift, empty schemas, timestamps, live response validation (`--live URL`). |
+
+## Check
 
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-python server.py
+pip install httpx jsonschema
+python check_spec.py && python test_server.py
+python check_spec.py --write   # after changing meld_spec / meld_docs
 ```
 
-## Publish an image
+## Hosted pilot
 
 ```bash
-docker build -t ghcr.io/lemonaide152/meld:latest .
-docker login ghcr.io
-docker push ghcr.io/lemonaide152/meld:latest
+cp wrangler.toml.example wrangler.toml   # set database_id
+npx wrangler d1 execute meld --remote --file schema.sql
+npx wrangler d1 execute meld --remote --file pilot_schema.sql
+npx wrangler deploy
 ```
 
-## API
+See [TRUST.md](TRUST.md) for what the host can see and how long D1 backups hold deleted rows.
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/melds` | POST | Creation. One note: what the exchange is for and what it is not for. Send `note`, or put that same text in `context`, `for`, and `not_for`. Open 36 hours from create until the first reply. A sends the URL to B privately. |
-| `/api/melds/{code}` | GET | Plaintext while live: the note and every reply. Does not start or reset the timer. Unknown, dissolved, and expired are the same 404. |
-| `/m/{code}` | GET | Same plaintext read. This is the capability URL. Link-preview crawlers get an expires-only card with no exchange. That card does not read the meld. |
-| `/api/melds/{code}/resolve` | POST | Append a reply on this same bridge. Keep talking on that link. The first reply sets a 24 hour timer. Each later reply is kept and resets that 24 hours. Unknown, dissolved, and expired are the same 404. |
-
-A client that still posts the older keys uses one note, the same text in each field:
-
-```json
-{"context":"For a design review. Not for passwords or customer data.","for":"For a design review. Not for passwords or customer data.","not_for":"For a design review. Not for passwords or customer data."}
-```
-
-The read repeats that note in `note`, `context_a`, `for`, and `not_for`.
-
-State is memory only. With no reply, 36 hours from creation deletes the meld. After a reply, 24 hours with no new reply deletes it. Dissolve removes the bridge. The server does not keep a record of that code. The next request is 404. A restart drops live links.
-
-## Trust
-
-[TRUST.md](TRUST.md).
+MIT licensed.
