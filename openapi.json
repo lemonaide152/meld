@@ -1,0 +1,439 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "meld",
+    "version": "2.0.0",
+    "description": "The host can read a live bridge. Anyone with the link can read and reply. Not for secrets, credentials, or regulated data. Open 36 hours from creation until the first reply. The first reply sets 24 hours. Each later reply resets that 24 hours. There is no maximum lifetime once replies have started. Reads do not move the clock."
+  },
+  "servers": [
+    {
+      "url": "{base}"
+    }
+  ],
+  "paths": {
+    "/api/melds": {
+      "post": {
+        "operationId": "createMeld",
+        "summary": "Create a bridge from one note.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body. Decided before any lookup, so it is not an existence oracle.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The host is at its memory cap. Nothing was stored. Always this body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/melds/{code}": {
+      "get": {
+        "operationId": "readMeld",
+        "summary": "Read the note and every reply. Does not move the clock.",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The live bridge.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Meld"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown, expired, swept, or over the reply cap. Always this body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFound"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/melds/{code}/resolve": {
+      "post": {
+        "operationId": "replyMeld",
+        "summary": "Append a reply. Sets or resets 24 hours.",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The live bridge.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Meld"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body. Decided before any lookup, so it is not an existence oracle.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown, expired, swept, or over the reply cap. Always this body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFound"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The host is at its memory cap. Nothing was stored. Always this body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/m/{code}": {
+      "get": {
+        "operationId": "openMeld",
+        "summary": "The capability URL. JSON for API clients, HTML for browsers, an expires-only card for link-preview crawlers.",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The live bridge.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Meld"
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown, expired, swept, or over the reply cap. Always this body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFound"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "summary": "Liveness only. No meld data.",
+        "responses": {
+          "200": {
+            "description": "Alive.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CreateRequest": {
+        "type": "object",
+        "description": "Send note or context. Older clients may also send for and not_for; every supplied string must be identical, otherwise 400. ttl, email, pin, prev_code are rejected with 400.",
+        "properties": {
+          "note": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100000
+          },
+          "context": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100000
+          },
+          "for": {
+            "type": "string",
+            "deprecated": true
+          },
+          "not_for": {
+            "type": "string",
+            "deprecated": true
+          }
+        },
+        "anyOf": [
+          {
+            "required": [
+              "note"
+            ]
+          },
+          {
+            "required": [
+              "context"
+            ]
+          }
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "ttl"
+              ]
+            },
+            {
+              "required": [
+                "email"
+              ]
+            },
+            {
+              "required": [
+                "pin"
+              ]
+            },
+            {
+              "required": [
+                "prev_code"
+              ]
+            }
+          ]
+        }
+      },
+      "CreateResponse": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 22
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "description": "UTC ISO 8601 with milliseconds and Z."
+          }
+        },
+        "required": [
+          "code",
+          "url",
+          "expires_at"
+        ],
+        "additionalProperties": false
+      },
+      "ReplyRequest": {
+        "type": "object",
+        "properties": {
+          "context": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100000
+          }
+        },
+        "required": [
+          "context"
+        ]
+      },
+      "Reply": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "description": "UTC ISO 8601 with milliseconds and Z."
+          }
+        },
+        "required": [
+          "content",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "Meld": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "note": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "description": "UTC ISO 8601 with milliseconds and Z."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "description": "UTC ISO 8601 with milliseconds and Z."
+          },
+          "reply_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 50
+          },
+          "replies": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "$ref": "#/components/schemas/Reply"
+            }
+          }
+        },
+        "required": [
+          "code",
+          "url",
+          "note",
+          "created_at",
+          "expires_at",
+          "reply_count",
+          "replies"
+        ],
+        "additionalProperties": false
+      },
+      "NotFound": {
+        "type": "object",
+        "properties": {
+          "detail": {
+            "type": "string",
+            "const": "Meld not found"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "additionalProperties": false
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "detail": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "additionalProperties": false
+      },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

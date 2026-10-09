@@ -1,0 +1,38 @@
+# Hosted meld on Cloudflare Python Workers. Memory-only, as SPEC.md requires:
+# bridges live in Durable Object memory (worker.py BridgeShard), never on disk.
+# No database binding. Copy to wrangler.toml, then `npx wrangler deploy`.
+name = "meld"
+main = "worker.py"
+compatibility_date = "2026-09-18"
+compatibility_flags = ["python_workers"]
+workers_dev = true
+logpush = false
+
+[[durable_objects.bindings]]
+name = "BRIDGES"
+class_name = "BridgeShard"
+
+[[durable_objects.bindings]]
+name = "META"
+class_name = "MeldMeta"
+
+# The classes are declared SQLite-backed because that is the class type the
+# platform offers on every plan; worker.py never calls the storage API.
+[[migrations]]
+tag = "v1-memory"
+new_sqlite_classes = ["BridgeShard", "MeldMeta"]
+
+[vars]
+SHARE_ORIGIN = ""
+# Optional extra trust lines, separated by "|". Shown on trust.md and the page.
+TRUST_NOTICES = "Bridges live in memory only. A restart or deploy ends every live bridge, and its link returns not found."
+
+# No request logs: Workers Logs off, no Logpush. Bridge text is never logged by
+# the code, and this keeps URLs (which carry codes) out of stored logs too.
+# `wrangler tail` still streams live events to whoever runs it; worker.py logs nothing.
+[observability]
+enabled = false
+
+# Expiry sweep every 5 minutes across all shards, on top of each shard's own timer.
+[triggers]
+crons = ["*/5 * * * *"]

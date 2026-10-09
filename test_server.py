@@ -1,595 +1,539 @@
-"""Base-case server: one bridge, kept replies, silence timer, public-tree hygiene."""
+"""SPEC.md behavior, run against both stores (self-host memory, and the Worker's Durable Object store).
 
+    uv run --quiet --with fastapi --with pydantic --with httpx --with jsonschema python test_server.py
+"""
 from __future__ import annotations
 
-import os
+import asyncio
+import json
 import re
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-import server
+import check_spec
+import meld_app
+import meld_spec
+import pilot
+from meld_app import build_app
+from meld_store import MemoryStore
+import worker
 
 ROOT = Path(__file__).resolve().parent
 T0 = datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
-
-# Assembled so this file does not contain prod ids or secret-shaped literals.
-BANNED = (
-    "zero" + "-knowledge",
-    "zero " + "knowledge",
-    "sk" + "_",
-    "wh" + "sec",
-    "FAC" + "ILITATOR",
-    "pay" + "To",
-    "STRIPE" + "_",
-    "x" + "402",
-    "price" + "_",
-)
-
-
-def fail(message: str) -> None:
-    print(f"FAIL {message}")
-    raise SystemExit(1)
+NF = json.dumps(meld_spec.NOT_FOUND_BODY, separators=(",", ":")).encode()
+passed = failed = 0
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
+    global passed, failed
     if cond:
+        passed += 1
         print(f"ok {name}")
-        return
-    fail(f"{name} {detail}")
+    else:
+        failed += 1
+        print(f"FAIL {name} {detail}")
 
 
-def reset(clock: dict) -> None:
-    server._melds.clear()
-    server._now = lambda: clock["t"]
+class Clock:
+    def __init__(self):
+        self.now = T0
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, **kw):
+        self.now = self.now + timedelta(**kw)
 
 
-READ_KEYS = {
-    "code",
-    "resolved",
-    "resolved_at",
-    "expires_at",
-    "seconds_remaining",
-    "note",
-    "context_a",
-    "for",
-    "not_for",
-    "replies",
-}
+# ── Durable Object namespace double: real BridgeShard/MeldMeta objects in-process ──
+class FakeNS:
+    def __init__(self, cls):
+        self.cls, self.objects = cls, {}
+
+    def getByName(self, name):
+        if name not in self.objects:
+            self.objects[name] = self.cls(None, None)
+        return self.objects[name]
+
+    def restart(self):
+        self.objects.clear()
 
 
-def pour(note, **extra):
-    """One note. The older wire keys carry that same text."""
-    body = {"context": note, "for": note, "not_for": note}
-    body.update(extra)
-    return body
+TIMERS = []
+worker._Resident.timer = staticmethod(lambda cb, secs: TIMERS.append((cb, secs)) or True)
 
 
-def test_create_resolve_read() -> None:
-    clock = {"t": T0}
-    reset(clock)
-    with TestClient(server.app) as client:
-        created = client.post("/api/melds", json=pour("side a"))
-        check("create 200", created.status_code == 200, created.text)
-        body = created.json()
-        code = body["code"]
-        check(
-            "one note on the wire",
-            body["note"] == "side a"
-            and body["context_a"] == "side a"
-            and body["for"] == "side a"
-            and body["not_for"] == "side a",
-        )
-        check("36h from create", datetime.fromisoformat(body["expires_at"]) == T0 + timedelta(seconds=server.OPEN_SECONDS))
-        check("capability url", body["url"].endswith(f"/m/{code}"))
-        check("creation fields", set(body) == READ_KEYS | {"url"})
-        same = client.get(f"/m/{code}")
-        api = client.get(f"/api/melds/{code}")
-        check("capability read", same.status_code == 200 and same.json()["context_a"] == "side a")
-        check("api read matches", api.json() == same.json())
-        check("GET does not move the 36h window", same.json()["expires_at"] == body["expires_at"])
-        check("no replies yet", api.json()["replies"] == [] and api.json()["resolved"] is False)
-        resolved = client.post(f"/api/melds/{code}/resolve", json={"context": "side b"})
-        check("resolve", resolved.status_code == 200 and resolved.json()["resolved"] is True and set(resolved.json()) == READ_KEYS, resolved.text)
-        first_exp = datetime.fromisoformat(resolved.json()["expires_at"])
-        check("first reply sets 24 hours", first_exp == T0 + timedelta(seconds=server.TTL_SECONDS))
-        check("first reply kept", resolved.json()["replies"] == ["side b"])
-        clock["t"] = T0 + timedelta(minutes=10)
-        peeked = client.get(f"/api/melds/{code}").json()
-        check("read shows the thread", peeked["context_a"] == "side a" and peeked["replies"] == ["side b"])
-        check("read does not reset 24 hours", peeked["expires_at"] == resolved.json()["expires_at"])
-        check("read fields", set(peeked) == READ_KEYS)
-        later = client.post(f"/api/melds/{code}/resolve", json={"context": "side c"})
-        check("later reply appends", later.status_code == 200 and later.json()["replies"] == ["side b", "side c"], later.text)
-        later_exp = datetime.fromisoformat(later.json()["expires_at"])
-        check("later reply resets 24 hours", later_exp == clock["t"] + timedelta(seconds=server.TTL_SECONDS))
-        stored = client.get(f"/api/melds/{code}").json()
-        check("stored thread", stored["context_a"] == "side a" and stored["replies"] == ["side b", "side c"])
+class Hooks:
+    def __init__(self, boom=False):
+        self.events, self.boom = [], boom
+
+    async def event(self, name, **fields):
+        self.events.append((name, fields))
+        if self.boom:
+            raise RuntimeError("instrumentation down")
 
 
-def test_public_url() -> None:
-    clock = {"t": T0}
-    reset(clock)
-    os.environ["MELD_PUBLIC_URL"] = "https://example.test/"
-    try:
-        with TestClient(server.app) as client:
-            created = client.post("/api/melds", json=pour("named host")).json()
-            check("public url", created["url"].startswith("https://example.test/m/"))
-    finally:
-        os.environ.pop("MELD_PUBLIC_URL", None)
+def make(kind: str, hooks=None):
+    clock = Clock()
+    meld_app.utcnow = clock
+    if kind == "memory":
+        store, ns = MemoryStore(), None
+    else:
+        ns = FakeNS(worker.BridgeShard)
+        store = worker.DOStore(lambda: ns)
+    client = TestClient(build_app(store, public_url="https://meld.test", hooks=hooks))
+    return client, clock, store, ns
 
 
-def test_ttl_lock() -> None:
-    clock = {"t": T0}
-    reset(clock)
-    check("windows are 36h then 24h", server.OPEN_SECONDS == 36 * 60 * 60 and server.TTL_SECONDS == 24 * 60 * 60)
-    with TestClient(server.app) as client:
-        opened = client.post("/api/melds", json=pour("a"))
-        check("create opens 36 hours", opened.status_code == 200, opened.text)
-        check(
-            "create expiry is 36 hours",
-            datetime.fromisoformat(opened.json()["expires_at"]) == T0 + timedelta(hours=36),
-        )
-        for bad in ("1hr", "24h", "36h", "1d", "3m", "60", 3600):
-            got = client.post("/api/melds", json=pour("a", ttl=bad))
-            check(f"reject ttl {bad!r}", got.status_code == 400 and "36 hours" in got.text and "24 hour" in got.text, got.text)
-        empty = client.post("/api/melds", json=pour("   "))
-        check("blank note", empty.status_code == 400 and "note" in empty.text.lower(), empty.text)
-        missing = client.get("/api/melds/no-such-code")
-        check("unknown 404", missing.status_code == 404, missing.text)
+def create(c, **body):
+    return c.post("/api/melds", json=body or {"note": "design review notes"})
 
 
-def test_silence_closes_same_bridge() -> None:
-    """24h of silence closes the bridge. A reply on the same link resets 24h."""
-    clock = {"t": T0}
-    reset(clock)
-    with TestClient(server.app) as client:
-        stale = client.post("/api/melds", json=pour("stale-body")).json()
-        live = client.post("/api/melds", json=pour("live-body")).json()
-        client.post(f"/api/melds/{stale['code']}/resolve", json={"context": "stale-reply"})
-        client.post(f"/api/melds/{live['code']}/resolve", json={"context": "live-reply"})
-        clock["t"] = T0 + timedelta(minutes=30)
-        again = client.post(f"/api/melds/{live['code']}/resolve", json={"context": "live-again"})
-        check("same bridge", again.status_code == 200 and again.json()["code"] == live["code"], again.text)
-        check("both replies kept", again.json()["replies"] == ["live-reply", "live-again"])
-        reset_exp = datetime.fromisoformat(again.json()["expires_at"])
-        check("reply resets 24h", reset_exp == clock["t"] + timedelta(seconds=server.TTL_SECONDS))
-        clock["t"] = T0 + timedelta(hours=23)
-        check("still open inside 24h", client.get(f"/api/melds/{stale['code']}").status_code == 200)
-        nxt = client.post("/api/melds", json=pour("nope", prev_code=live["code"]))
-        check("stays on this bridge", nxt.status_code == 400 and "stays on this bridge" in nxt.text, nxt.text)
-        check("same links only", len(server._melds) == 2)
+def run_suite(kind: str) -> None:
+    p = f"[{kind}] "
+    c, clock, store, d1 = make(kind)
 
-        clock["t"] = T0 + timedelta(hours=24, seconds=1)
-        unknown_reply = client.post("/api/melds/missing-code/resolve", json={"context": "x"})
-        late = client.post(f"/api/melds/{stale['code']}/resolve", json={"context": "too late"})
-        check("reply on quiet bridge is 404", late.status_code == 404, late.text)
-        check("quiet reply matches unknown", late.text == unknown_reply.text)
-        check("quiet plaintext absent", "stale-body" not in late.text and "stale-reply" not in late.text)
-        quiet = client.get(f"/api/melds/{stale['code']}")
-        unknown_get = client.get("/api/melds/missing-code")
-        check("quiet bridge is 404", quiet.status_code == 404 and quiet.text == unknown_get.text, quiet.text)
-        still = client.get(f"/api/melds/{live['code']}")
-        check("reset bridge still live", still.status_code == 200, still.text)
-        check("live thread intact", still.json()["replies"] == ["live-reply", "live-again"])
+    # create
+    r = create(c)
+    j = r.json()
+    check(p + "create 200", r.status_code == 200, r.text)
+    check(p + "create returns exactly code, url, expires_at", set(j) == {"code", "url", "expires_at"}, str(j))
+    check(p + "create url is /m/{code}", j["url"] == f"https://meld.test/m/{j['code']}")
+    check(p + "open window is 36h", j["expires_at"] == meld_spec.ts(T0 + timedelta(hours=36)), j["expires_at"])
+    check(p + "no token anywhere", "token" not in r.text)
+    codes = {create(c).json()["code"] for _ in range(100)}
+    check(p + "codes unique", len(codes) == 100)
+    check(p + "code >= 128 bits", all(len(x) >= 22 for x in codes) and meld_spec.code_bits() >= 128)
+    r = c.post("/api/melds", json={"context": "via context"})
+    check(p + "context accepted", r.status_code == 200)
+    check(p + "context stored as note", c.get(f"/api/melds/{r.json()['code']}").json()["note"] == "via context")
+    r = c.post("/api/melds", json={"note": "same", "context": "same", "for": "same", "not_for": "same"})
+    check(p + "identical note/context/for/not_for accepted", r.status_code == 200)
 
-        clock["t"] = reset_exp + timedelta(seconds=1)
-        closed = client.get(f"/m/{live['code']}")
-        unknown_cap = client.get("/m/missing-code")
-        check("quiet after reset is 404", closed.status_code == 404 and closed.text == unknown_cap.text, closed.text)
-        check("live plaintext not kept", "live-body" not in closed.text and "live-again" not in closed.text)
-        check("row deleted", live["code"] not in server._melds and stale["code"] not in server._melds)
-        check("resolve unknown is 404", unknown_reply.status_code == 404, unknown_reply.text)
-
-
-def test_dissolved_matches_unknown() -> None:
-    """A dissolved code and an unknown code return the same 404."""
-    clock = {"t": T0}
-    reset(clock)
-    with TestClient(server.app) as client:
-        purged = client.post("/api/melds", json=pour("purge-me")).json()
-        client.post(f"/api/melds/{purged['code']}/resolve", json={"context": "purge-reply"})
-        clock["t"] = T0 + timedelta(hours=24, seconds=1)
-        fresh = client.post("/api/melds", json=pour("still-here"))
-        check("create after expiry", fresh.status_code == 200, fresh.text)
-        check("purge removed the row", purged["code"] not in server._melds)
-        closed = client.get(f"/api/melds/{purged['code']}")
-        missing = client.get("/api/melds/never-existed")
-        check("purged code 404", closed.status_code == 404, closed.text)
-        check("purge body has no plaintext", "purge-me" not in closed.text and "purge-reply" not in closed.text)
-        check("dissolved matches unknown", closed.text == missing.text and closed.status_code == missing.status_code)
-        closed_cap = client.get(f"/m/{purged['code']}")
-        missing_cap = client.get("/m/never-existed")
-        check("capability matches unknown", closed_cap.status_code == 404 and closed_cap.text == missing_cap.text)
-        closed_reply = client.post(f"/api/melds/{purged['code']}/resolve", json={"context": "b"})
-        missing_reply = client.post("/api/melds/never-existed/resolve", json={"context": "b"})
-        check("resolve matches unknown", closed_reply.status_code == 404 and closed_reply.text == missing_reply.text)
-        live = client.get(f"/api/melds/{fresh.json()['code']}")
-        check("live path unchanged", live.status_code == 200 and live.json()["context_a"] == "still-here")
-        check(
-            "fresh create is 36 hours",
-            datetime.fromisoformat(live.json()["expires_at"]) == clock["t"] + timedelta(hours=36),
-        )
-        check("no record of the dead code", purged["code"] not in server._melds)
-
-
-def test_dissolve_keeps_no_record() -> None:
-    """Each dissolve deletes that bridge. A later create still works."""
-    clock = {"t": T0}
-    reset(clock)
-    with TestClient(server.app) as client:
-        rows = [client.post("/api/melds", json=pour(label)).json() for label in ("first", "second", "third")]
-        for row in rows:
-            client.post(f"/api/melds/{row['code']}/resolve", json={"context": "reply"})
-        clock["t"] = T0 + timedelta(hours=24, seconds=1)
-        unknown = client.get("/api/melds/never-existed-xx")
-        for row in rows:
-            got = client.get(f"/api/melds/{row['code']}")
-            check(f"{row['context_a']} is 404", got.status_code == 404 and got.text == unknown.text, got.text)
-            check(f"{row['context_a']} plaintext absent", row["context_a"] not in got.text and "reply" not in got.text)
-            check(f"{row['context_a']} row deleted", row["code"] not in server._melds)
-            cap = client.get(f"/m/{row['code']}")
-            check(f"{row['context_a']} capability matches unknown", cap.text == client.get("/m/never-existed-xx").text)
-            reply = client.post(f"/api/melds/{row['code']}/resolve", json={"context": "x"})
-            other = client.post("/api/melds/never-existed-xx/resolve", json={"context": "x"})
-            check(f"{row['context_a']} reply matches unknown", reply.status_code == 404 and reply.text == other.text)
-        live = client.post("/api/melds", json=pour("live-after"))
-        check("live create", live.status_code == 200, live.text)
-        check(
-            "live path after dissolve",
-            client.get(f"/m/{live.json()['code']}").status_code == 200
-            and client.get(f"/m/{live.json()['code']}").json()["context_a"] == "live-after",
-        )
-        check("only the live row remains", set(server._melds) == {live.json()["code"]})
-
-
-def test_thread_and_clock_reset() -> None:
-    """Replies accumulate. Each one resets 24h. A read does not."""
-    clock = {"t": T0}
-    reset(clock)
-    with TestClient(server.app) as client:
-        created = client.post("/api/melds", json=pour("opening")).json()
-        code = created["code"]
-        opened = created["expires_at"]
-        clock["t"] = T0 + timedelta(hours=5)
-        waiting = client.get(f"/api/melds/{code}")
-        check("still open inside 36 hours", waiting.status_code == 200 and waiting.json()["expires_at"] == opened)
-        check("read did not move the 36h window", server._melds[code]["expires_at"] == datetime.fromisoformat(opened))
-
-        preview = client.get(
-            f"/m/{code}",
-            headers={"User-Agent": "Slackbot-LinkExpanding 1.0", "Accept": "application/json"},
-        )
-        check("slack preview", preview.status_code == 200 and "opening" not in preview.text, preview.text)
-        check("slack did not move the timer", server._melds[code]["expires_at"] == datetime.fromisoformat(opened))
-        check("head is not a body read", client.head(f"/m/{code}").status_code == 405)
-        check("head did not move the timer", server._melds[code]["expires_at"] == datetime.fromisoformat(opened))
-
-        first = client.post(f"/api/melds/{code}/resolve", json={"context": "one"})
-        check("first reply", first.status_code == 200 and first.json()["replies"] == ["one"], first.text)
-        first_exp = datetime.fromisoformat(first.json()["expires_at"])
-        check("first reply sets 24 hours", first_exp == clock["t"] + timedelta(seconds=server.TTL_SECONDS))
-
-        clock["t"] = clock["t"] + timedelta(minutes=20)
-        peeked = client.get(f"/m/{code}", headers={"User-Agent": "Mozilla/5.0"})
-        check("body read returns the thread", peeked.status_code == 200 and peeked.json()["replies"] == ["one"])
-        check("body read does not reset", peeked.json()["expires_at"] == first.json()["expires_at"])
-
-        # Keep talking. Each reply resets 24h. There is no maximum lifetime.
-        replies = ["one"]
-        expected = first_exp
-        for minute, text in ((50, "two"), (100, "three"), (150, "four")):
-            clock["t"] = T0 + timedelta(hours=5, minutes=minute)
-            got = client.post(f"/api/melds/{code}/resolve", json={"context": text})
-            replies.append(text)
-            check(f"reply {text} kept", got.status_code == 200 and got.json()["replies"] == replies, got.text)
-            expected = clock["t"] + timedelta(seconds=server.TTL_SECONDS)
-            check(
-                f"reply {text} resets 24h",
-                datetime.fromisoformat(got.json()["expires_at"]) == expected,
-                got.json()["expires_at"],
-            )
-            check(f"reply {text} extends past the first 24h", expected > first_exp)
-        seen = client.get(f"/api/melds/{code}").json()
-        check("full thread", seen["context_a"] == "opening" and seen["replies"] == replies)
-        check("read after resets does not move the timer", seen["expires_at"] == expected.isoformat())
-
-        clock["t"] = expected + timedelta(seconds=1)
-        closed = client.get(f"/api/melds/{code}")
-        unknown = client.get("/api/melds/never-existed")
-        check("24h of silence closes it", closed.status_code == 404 and closed.text == unknown.text, closed.text)
-        check("thread plaintext is deleted", "opening" not in closed.text and "four" not in closed.text)
-        check("unknown stays 404", unknown.status_code == 404)
-
-
-def test_36h_until_first_reply_then_24h() -> None:
-    """No reply closes at 36 hours from create. The first reply sets 24 hours."""
-    clock = {"t": T0}
-    reset(clock)
-    with TestClient(server.app) as client:
-        quiet = client.post("/api/melds", json=pour("quiet-body")).json()
-        active = client.post("/api/melds", json=pour("active-body")).json()
-        check(
-            "create stores one note",
-            active["note"] == "active-body"
-            and active["context_a"] == "active-body"
-            and active["for"] == "active-body"
-            and active["not_for"] == "active-body",
-        )
-        check("create window is 36 hours", quiet["expires_at"] == active["expires_at"])
-        clock["t"] = T0 + timedelta(hours=10)
-        seen = client.get(f"/api/melds/{active['code']}").json()
-        check("read does not start or reset", seen["expires_at"] == active["expires_at"])
-        check("read fields during the open window", set(seen) == READ_KEYS)
-        clock["t"] = T0 + timedelta(hours=30)
-        first = client.post(f"/api/melds/{active['code']}/resolve", json={"context": "from B"})
-        first_exp = datetime.fromisoformat(first.json()["expires_at"])
-        check("B's first reply sets 24 hours", first_exp == clock["t"] + timedelta(hours=24), first.text)
-        check("24h sliding passes the 36h mark", first_exp > datetime.fromisoformat(active["expires_at"]))
-        clock["t"] = T0 + timedelta(hours=36, seconds=1)
-        closed = client.get(f"/api/melds/{quiet['code']}")
-        unknown = client.get("/api/melds/no-such-quiet")
-        check(
-            "no reply closes at 36 hours",
-            closed.status_code == 404 and closed.text == unknown.text and "quiet-body" not in closed.text,
-            closed.text,
-        )
-        check("replied bridge stays open past 36 hours", client.get(f"/api/melds/{active['code']}").status_code == 200)
-        clock["t"] = first_exp - timedelta(minutes=30)
-        again = client.post(f"/api/melds/{active['code']}/resolve", json={"context": "more"})
-        check("later replies are kept", again.status_code == 200 and again.json()["replies"] == ["from B", "more"], again.text)
-        reset_at = clock["t"] + timedelta(hours=24)
-        check("later reply resets 24 hours", datetime.fromisoformat(again.json()["expires_at"]) == reset_at)
-        held = again.json()["expires_at"]
-        clock["t"] = clock["t"] + timedelta(hours=2)
-        check("another read does not reset", client.get(f"/m/{active['code']}").json()["expires_at"] == held)
-
-
-def test_preview_does_not_change_404() -> None:
-    clock = {"t": T0}
-    reset(clock)
-    with TestClient(server.app) as client:
-        row = client.post("/api/melds", json=pour("hidden-secret")).json()
-        client.post(f"/api/melds/{row['code']}/resolve", json={"context": "hidden-reply"})
-        clock["t"] = T0 + timedelta(hours=24, seconds=1)
-        dissolved = client.get(f"/api/melds/{row['code']}")
-        unknown = client.get("/api/melds/never-existed")
-        check("dissolve on read", dissolved.status_code == 404 and dissolved.text == unknown.text, dissolved.text)
-        preview = client.get(f"/m/{row['code']}", headers={"User-Agent": "Twitterbot/1.0"})
-        check(
-            "preview of a dissolved code",
-            preview.status_code == 200 and "hidden-secret" not in preview.text and "hidden-reply" not in preview.text,
-            preview.text,
-        )
-        still = client.get(f"/m/{row['code']}")
-        unknown_cap = client.get("/m/never-existed")
-        check("dissolved stays 404", still.status_code == 404 and still.text == unknown_cap.text and "hidden-secret" not in still.text, still.text)
-        missing_preview = client.get("/m/never-existed", headers={"User-Agent": "facebookexternalhit/1.1"})
-        check(
-            "preview of an unknown code",
-            missing_preview.status_code == 200 and missing_preview.text == preview.text and "never-existed" not in missing_preview.text,
-            missing_preview.text,
-        )
-        check("unknown still 404", client.get("/api/melds/never-existed").text == unknown.text)
-        check("unknown capability still 404", client.get("/m/never-existed").text == unknown_cap.text)
-        check("preview did not create a row", "never-existed" not in server._melds)
-        check("dissolve left no record", row["code"] not in server._melds)
-
-
-def test_one_note_create_body() -> None:
-    """Creation is one note. The clock is 36 hours from create, and a read does not extend it."""
-    clock = {"t": T0}
-    reset(clock)
-    note = "For a design review. Not for passwords or customer data."
-    with TestClient(server.app) as client:
-        only = client.post("/api/melds", json={"note": note})
-        check("note field creates", only.status_code == 200, only.text)
-        body = only.json()
-        check(
-            "note is the only text",
-            body["note"] == note
-            and body["context_a"] == note
-            and body["for"] == note
-            and body["not_for"] == note,
-        )
-        opened = datetime.fromisoformat(body["expires_at"])
-        check("note opens 36 hours", opened == T0 + timedelta(hours=36))
-        check("note is not a 1 hour link", opened != T0 + timedelta(hours=1))
-        clock["t"] = T0 + timedelta(hours=35)
-        peeked = client.get(f"/api/melds/{body['code']}")
-        check("read inside 36 hours", peeked.status_code == 200 and peeked.json()["expires_at"] == body["expires_at"], peeked.text)
-        check("read did not extend the clock", peeked.json()["seconds_remaining"] == 60 * 60)
-        clock["t"] = T0 + timedelta(hours=36, seconds=1)
-        closed = client.get(f"/api/melds/{body['code']}")
-        unknown = client.get("/api/melds/no-such-note")
-        check("quiet note is 404", closed.status_code == 404 and closed.text == unknown.text, closed.text)
-        check("quiet note plaintext absent", note not in closed.text)
-
-        wire = client.post("/api/melds", json={"context": note, "for": note, "not_for": note})
-        check("same text on the wire", wire.status_code == 200 and wire.json()["note"] == note, wire.text)
-        check(
-            "wire echoes one note",
-            wire.json()["context_a"] == note and wire.json()["for"] == note and wire.json()["not_for"] == note,
-        )
-
-        context_only = client.post("/api/melds", json={"context": note})
-        check(
-            "context alone is the note",
-            context_only.status_code == 200
-            and context_only.json()["note"] == note
-            and context_only.json()["for"] == note
-            and context_only.json()["not_for"] == note,
-            context_only.text,
-        )
-
-        mismatch = client.post(
-            "/api/melds",
-            json={"context": "the working dump", "for": "a handoff", "not_for": "secrets"},
-        )
-        check("split fields are rejected", mismatch.status_code == 400 and "same text" in mismatch.text, mismatch.text)
-        absent = client.post("/api/melds", json={})
-        check("note is required", absent.status_code == 400 and "note" in absent.text.lower(), absent.text)
-        long_note = "For the review. Not for secrets. " + ("detail " * 400)
-        check("long note is still one field", len(long_note) > 2000)
-        long = client.post("/api/melds", json={"note": long_note})
-        check("long note accepted", long.status_code == 200 and long.json()["for"] == long_note, long.text)
-        huge = client.post("/api/melds", json={"note": "x" * (server.MAX_CONTEXT + 1)})
-        check("note cap", huge.status_code == 400, huge.text)
-        extra = client.post("/api/melds", json={"note": note, "learn": True})
-        check("learn is not a self-host field", extra.status_code == 200 and "learn" not in extra.json(), extra.text)
-
-
-def test_surface() -> None:
-    clock = {"t": T0}
-    reset(clock)
-    with TestClient(server.app) as client:
-        home = client.get("/")
-        check("home", home.status_code == 200 and "Not for secrets" in home.text, home.text)
-        check(
-            "home one note",
-            "one note" in home.text.lower()
-            and "what the exchange is for and what it is not for" in home.text,
-            home.text,
-        )
-        check(
-            "root says 36 hours then 24 hours",
-            "36 hours from create" in home.text
-            and "sets a 24 hour timer" in home.text
-            and "resets that 24 hours" in home.text,
-            home.text,
-        )
-        lowered_home = home.text.lower()
-        check(
-            "home has no zk",
-            ("zero" + "-knowledge") not in lowered_home and ("zero " + "knowledge") not in lowered_home,
-        )
-        check("health", client.get("/health").json() == {"ok": True})
-        for path in ("/api/stripe/webhook", "/v1/melds", "/api/checkout"):
-            got = client.post(path, json={})
-            check(f"{path} absent", got.status_code == 404, got.text)
-
-
-def test_public_tree() -> None:
-    allowed = {
-        ".dockerignore",
-        ".env.example",
-        ".gitignore",
-        "Caddyfile",
-        "Dockerfile",
-        "LICENSE",
-        "README.md",
-        "TRUST.md",
-        "docker-compose.yml",
-        "requirements.txt",
-        "server.py",
-        "test_server.py",
-    }
-    skip = {".git", "__pycache__", ".venv", ".pytest_cache", ".env"}
-    present = {path.name for path in ROOT.iterdir() if path.name not in skip}
-    check("root is the self-host set", present == allowed, str(sorted(present ^ allowed)))
-    check("no deploy directory", not (ROOT / "deploy").exists())
-    caddy = (ROOT / "Caddyfile").read_text()
-    compose = (ROOT / "docker-compose.yml").read_text()
-    check("caddy proxies the server", "reverse_proxy meld:8080" in caddy)
-    check("compose image name", "ghcr.io/lemonaide152/meld:latest" in compose)
-    check("compose runs caddy", "caddy:2" in compose)
-    readme = (ROOT / "README.md").read_text()
-    trust = (ROOT / "TRUST.md").read_text()
-    check("readme has no hosted try-now", "workers.dev" not in readme and "Hosted try-now" not in readme)
-    check("readme self-host", "python server.py" in readme and "docker compose up" in readme and "docker run" in readme)
-    check("readme publish", "ghcr.io/lemonaide152/meld:latest" in readme and "docker push" in readme)
-    check("readme host-readable", "Host-readable while live." in readme)
-    check("readme not for secrets", "Not for secrets" in readme)
-    check("readme says 36h then 24h", "36 hours" in readme and "24 hours" in readme and "privately" in readme)
-    check("trust says 36h then 24h", "36 hours" in trust and "24 hours" in trust and "privately" in trust)
-    check("trust host-readable", "Host-readable while live." in trust)
-    check("trust not a vault", "not a vault" in trust)
-    check("readme says creation", "creates the link" in readme and "Creation." in readme and "mint" not in readme.lower())
-    check("trust says creation", "creates the link" in trust and "mint" not in trust.lower())
-    check(
-        "readme one note",
-        "One note says what the exchange is for and what it is not for." in readme
-        and '"note":"For a design review. Not for passwords or customer data."' in readme,
-    )
-    check(
-        "readme wire is the same note",
-        readme.count("For a design review. Not for passwords or customer data.") >= 2,
-    )
-    check("trust one note", "One note says what the exchange is for and what it is not for." in trust)
-    check("readme no split declaration", "The declaration says what the bridge is for." not in readme)
-    check("trust no split declaration", "The declaration says what the bridge is for." not in trust)
-    server_text = (ROOT / "server.py").read_text()
-    check("server says creation", "creates a link" in server_text and "mint" not in server_text.lower())
-    check("server one note", "def _one_note" in server_text and "MAX_DECLARATION" not in server_text)
-    check("server clock defaults", "OPEN_SECONDS = 36 * 60 * 60" in server_text and "TTL_SECONDS = 24 * 60 * 60" in server_text)
-    check("server has no 1hr default", "1hr" not in server_text and "one hour" not in server_text.lower() and "1 hour" not in server_text.lower())
-    for label, text in (
-        ("readme", readme),
-        ("trust", trust),
-        ("caddy", caddy),
-        ("compose", compose),
-        ("dockerfile", (ROOT / "Dockerfile").read_text()),
-        ("env", (ROOT / ".env.example").read_text()),
+    for body, why in (
+        ({"note": "a", "for": "b"}, "for differs"),
+        ({"note": "a", "not_for": "b"}, "not_for differs"),
+        ({"note": "a", "context": "b"}, "note and context differ"),
+        ({"for": "a", "not_for": "a"}, "for/not_for without note"),
+        ({}, "empty body"),
+        ({"note": 5}, "non-string note"),
+        ({"note": "a", "for": 5}, "non-string for"),
+        ({"note": "   "}, "blank note"),
+        ({"note": "x" * (meld_spec.MAX_CHARS + 1)}, "note over 100k"),
+        ({"note": "a", "ttl": "24hr"}, "ttl"),
+        ({"note": "a", "ttl": None}, "ttl null"),
+        ({"note": "a", "email": "a@b.c"}, "email"),
+        ({"note": "a", "pin": "1234"}, "pin"),
+        ({"note": "a", "prev_code": "abc"}, "prev_code"),
     ):
-        lowered = text.lower()
-        check(f"{label} has no mint", "mint" not in lowered)
-        check(f"{label} has no one hour", "one hour" not in lowered and "1 hour" not in lowered)
-        check(f"{label} has no workers.dev", "workers.dev" not in lowered)
-    owner_token = "owner" + "_token"
-    for blob in (server_text, readme, trust, caddy, compose):
-        lowered = blob.lower()
-        if owner_token in lowered or "x-owner" in lowered:
-            fail("owner token leaked into the self-host tree")
-    check("readme same 404", "never existed is **404**" in readme and "expired code is **404**" in readme)
-    check("trust same 404", "dissolved code is 404" in trust and "expired code is 404" in trust)
-    dead_status = "41" + "0"
-    dead_word = "tomb" + "stone"
-    closed_word = "go" + "ne"
-    for path in ROOT.rglob("*"):
-        if not path.is_file():
-            continue
-        if any(part in {".git", ".venv", "__pycache__"} for part in path.parts):
-            continue
-        text = path.read_text(errors="replace")
-        lowered = text.lower()
-        if dead_status in text or dead_word in lowered or closed_word in lowered:
-            fail(f"{path.relative_to(ROOT)} keeps a dead-code promise")
-    for path in ROOT.rglob("*"):
-        if not path.is_file():
-            continue
-        if path.name == "test_server.py":
-            continue
-        if any(part in {".git", ".venv", "__pycache__"} for part in path.parts):
-            continue
-        text = path.read_text(errors="replace")
-        lowered = text.lower()
-        for banned in BANNED:
-            if banned.lower() in lowered:
-                fail(f"{path.relative_to(ROOT)} contains {banned}")
-        for found in re.findall(
-            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-            text,
-        ):
-            fail(f"{path.relative_to(ROOT)} contains unexpected id {found}")
-    print("ok public tree")
+        r = c.post("/api/melds", json=body)
+        check(p + f"400 on {why}", r.status_code == 400 and r.json().get("detail"), f"{r.status_code} {r.text[:120]}")
+    r = c.post("/api/melds", content=b"not json", headers={"content-type": "application/json"})
+    check(p + "400 on non-JSON", r.status_code == 400)
+    r = c.post("/api/melds", json=["a"])
+    check(p + "400 on JSON array", r.status_code == 400)
+    r = c.post("/api/melds", json={"note": "x" * meld_spec.MAX_CHARS})
+    check(p + "exactly 100,000 chars accepted", r.status_code == 200)
+    r = c.post("/api/melds", json={"note": "a", "learn": True})
+    check(p + "learn is not part of create (ignored, same response shape)",
+          r.status_code == 200 and set(r.json()) == {"code", "url", "expires_at"})
+
+    # clock
+    code = create(c).json()["code"]
+    created = c.get(f"/api/melds/{code}").json()
+    clock.advance(hours=10)
+    for _ in range(5):
+        c.get(f"/api/melds/{code}")
+        c.get(f"/m/{code}")
+    check(p + "reads do not move the clock", c.get(f"/api/melds/{code}").json()["expires_at"] == created["expires_at"])
+    r = c.post(f"/api/melds/{code}/resolve", json={"context": "first reply"})
+    j = r.json()
+    check(p + "reply 200", r.status_code == 200, r.text)
+    check(p + "first reply sets 24h from now", j["expires_at"] == meld_spec.ts(clock.now + timedelta(hours=24)))
+    check(p + "reply listed with timestamp",
+          j["replies"] == [{"content": "first reply", "created_at": meld_spec.ts(clock.now)}] and j["reply_count"] == 1)
+    clock.advance(hours=23)
+    j = c.post(f"/api/melds/{code}/resolve", json={"context": "second"}).json()
+    check(p + "later reply resets 24h", j["expires_at"] == meld_spec.ts(clock.now + timedelta(hours=24)))
+    for _ in range(6):  # no max lifetime: keep it alive for 6 more days
+        clock.advance(hours=23)
+        c.post(f"/api/melds/{code}/resolve", json={"context": "still here"})
+    check(p + "no max lifetime once replies started", c.get(f"/api/melds/{code}").status_code == 200)
+    check(p + "every reply kept", c.get(f"/api/melds/{code}").json()["reply_count"] == 8)
+    clock.advance(hours=24)
+    r = c.get(f"/api/melds/{code}")
+    check(p + "24h of silence closes it (uniform 404)", r.status_code == 404 and r.content == NF, r.text)
+
+    # open window without replies
+    code2 = create(c).json()["code"]
+    clock.advance(hours=35, minutes=59)
+    check(p + "live at 35h59m", c.get(f"/api/melds/{code2}").status_code == 200)
+    clock.advance(minutes=1)
+    check(p + "closed at 36h", c.get(f"/api/melds/{code2}").content == NF)
+    r = c.post(f"/api/melds/{code2}/resolve", json={"context": "late"})
+    check(p + "reply to expired is the same 404", r.status_code == 404 and r.content == NF)
+
+    # uniform not-found
+    bodies = set()
+    statuses = set()
+    for path in ("/api/melds/never-existed", "/m/never-existed", f"/api/melds/{'a' * 200}"):
+        r = c.get(path)
+        bodies.add(r.content)
+        statuses.add(r.status_code)
+    r = c.post("/api/melds/never-existed/resolve", json={"context": "x"})
+    bodies.add(r.content)
+    statuses.add(r.status_code)
+    check(p + "unknown codes: one status, one body", statuses == {404} and bodies == {NF}, f"{statuses} {bodies}")
+    rs = [c.get("/api/melds/never-existed").status_code for _ in range(80)]
+    rs += [c.post("/api/melds/never-existed/resolve", json={"context": "x"}).status_code for _ in range(40)]
+    check(p + "no 429 or 410 under repeated misses", set(rs) == {404})
+    r_live = c.post(f"/api/melds/{create(c).json()['code']}/resolve", json={"context": 5})
+    r_dead = c.post("/api/melds/never-existed/resolve", json={"context": 5})
+    check(p + "malformed reply is 400 on live and unknown alike (not an oracle)",
+          r_live.status_code == r_dead.status_code == 400 and r_live.content == r_dead.content)
+    r = c.post(f"/api/melds/{create(c).json()['code']}/resolve", json={"context": "x" * (meld_spec.MAX_CHARS + 1)})
+    check(p + "reply over 100k is 400", r.status_code == 400)
+
+    # reply cap
+    capped = create(c).json()["code"]
+    oks = [c.post(f"/api/melds/{capped}/resolve", json={"context": f"r{i}"}).status_code for i in range(meld_spec.REPLY_CAP)]
+    check(p + "50 replies accepted", set(oks) == {200})
+    r = c.post(f"/api/melds/{capped}/resolve", json={"context": "one too many"})
+    check(p + "51st reply is the uniform 404", r.status_code == 404 and r.content == NF)
+    check(p + "capped bridge still readable while live", c.get(f"/api/melds/{capped}").json()["reply_count"] == 50)
+
+    # sweep
+    live = create(c).json()["code"]
+    c.post(f"/api/melds/{live}/resolve", json={"context": "keep"})
+    clock.advance(hours=12)
+    swept = asyncio.run(c.app.meld.sweep())
+    check(p + "sweep deletes expired bridges", swept >= 1, str(swept))
+    if d1 is not None:  # the Durable Object store
+        shards = d1.objects
+        check(p + "bridges spread over the shards by code", len(shards) > 1 and set(shards) <= {f"bridges-{i}" for i in range(worker.SHARDS)}, str(list(shards)))
+        check(p + "only live bridges remain in shard memory", sum(o.store.size() for o in shards.values()) >= 1 and all(
+            m["expires_at"] > meld_spec.ts(clock.now) for o in shards.values() for m in o.store._melds.values()))
+        before = c.get(f"/api/melds/{live}").status_code
+        d1.restart()
+        check(p + "a Durable Object restart drops live links (uniform 404)", before == 200 and c.get(f"/api/melds/{live}").content == NF)
+    else:
+        check(p + "only live bridges remain in memory", asyncio.run(store.count()) >= 1 and all(
+            m["expires_at"] > meld_spec.ts(clock.now) for m in store._melds.values()))
+    clock.advance(hours=13)
+    asyncio.run(c.app.meld.sweep())
+    check(p + "swept code is the uniform 404", c.get(f"/api/melds/{live}").content == NF)
+
+    # capability URL representations
+    code3 = create(c, note="<b>hello</b> & bye").json()["code"]
+    r = c.get(f"/m/{code3}", headers={"user-agent": "Slackbot-LinkExpanding 1.0"})
+    r_unknown = c.get("/m/unknown-code", headers={"user-agent": "Slackbot-LinkExpanding 1.0"})
+    check(p + "preview card is the same for live and unknown", r.status_code == r_unknown.status_code == 200
+          and r.text == r_unknown.text)
+    check(p + "preview card has no exchange", "hello" not in r.text and "expires" in r.text)
+    browser = {"accept": "text/html,application/xhtml+xml,*/*;q=0.8", "user-agent": "Mozilla/5.0 Chrome/130",
+               "sec-fetch-dest": "document"}
+    r = c.get(f"/m/{code3}", headers=browser)
+    check(p + "browser gets the bridge page", r.status_code == 200 and "&lt;b&gt;hello&lt;/b&gt; &amp; bye" in r.text)
+    check(p + "bridge page shows 36/24 and not for secrets", "36 hours" in r.text and "Not for secrets" in r.text)
+    check(p + "bridge page: closes line before first reply", "unless someone replies" in r.text and "dissolve" not in r.text)
+    check(p + "bridge page polls the spec read route, not /chain", "/api/melds/" in r.text and "/chain" not in r.text)
+    check(p + "bridge page has nonce CSP", "nonce-" in r.headers.get("content-security-policy", ""))
+    r = c.get("/m/unknown-code", headers=browser)
+    check(p + "browser not-found is 404 with the not-live screen", r.status_code == 404
+          and "This link isn't live. It may have closed, or the code is wrong." in r.text.replace("&#x27;", "'")
+          and "Start a new bridge" in r.text and "doesn't exist" not in r.text)
+    c.post(f"/api/melds/{code3}/resolve", json={"context": "r"})
+    r = c.get(f"/m/{code3}", headers=browser)
+    check(p + "bridge page: closes line after a reply", "if no one replies" in r.text)
+    r = c.get(f"/m/{code3}", headers={"accept": "text/html", "user-agent": "curl/8"})
+    check(p + "non-browser gets JSON on /m", r.json()["note"] == "<b>hello</b> & bye")
+
+    # web UI
+    r = c.get("/")
+    t = r.text.replace("&#x27;", "'")
+    check(p + "home: one note, create link, 36/24, not for secrets",
+          r.text.count("<textarea") == 1 and "Create link" in r.text and "36 hours" in r.text
+          and "24 hours" in r.text and "Not for secrets" in r.text)
+    import meld_ui
+    check(p + "home: hero text", meld_ui.HERO in t)
+    bullets = meld_ui.TRUST_BULLETS
+    check(p + "home: five trust bullets", all(b in t for b in bullets) and len(bullets) == 5)
+    trust = c.get("/trust.md").text
+    check(p + "memory-only copy: gone on restart, nothing on disk, no Time Travel",
+          "or if the server restarts, it's gone" in bullets[-1] and "The host keeps the bridge in memory only while it's live." in trust
+          and "Nothing is written to disk." in trust and "Time Travel" not in trust
+          and "Time Travel" not in c.get("/llms.txt").text)
+    check(p + "home: no learn, pilot, 429 or too-many", not re.search(r"(?i)learn|pilot|429|too many", r.text))
+    check(p + "home: maxlength 100000 and counter window 5,000", 'maxlength="100000"' in r.text and "WIN=5000" in r.text)
+    check(p + "home: sends note, polls read route every 10s, open-until line",
+          "JSON.stringify({note})" in r.text and "10000" in r.text and "for a first reply." in r.text)
+
+    # MCP
+    r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    tools = r.json()["result"]["tools"]
+    check(p + "MCP tools are exactly the three", [t["name"] for t in tools] == list(meld_spec.MCP_TOOLS))
+    check(p + "MCP has no ttl or token argument",
+          not any(k in t["inputSchema"]["properties"] for t in tools for k in ("ttl", "token", "owner_token")))
+
+    def call(name, args):
+        return c.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                    "params": {"name": name, "arguments": args}}).json()["result"]
+
+    res = call("meld_create", {"note": "from mcp"})
+    check(p + "meld_create returns code/url/expires_at", set(res["structuredContent"]) == {"code", "url", "expires_at"})
+    mcode = res["structuredContent"]["code"]
+    res = call("meld_create", {"note": "x", "ttl": "1h"})
+    check(p + "meld_create with ttl is an error", res.get("isError") is True and "ttl" in res["content"][0]["text"])
+    res = call("meld_resolve", {"code": mcode, "context": "agent reply"})
+    check(p + "meld_resolve appends and returns untrusted_content",
+          res["structuredContent"]["untrusted_content"] == ["from mcp", "agent reply"])
+    res = call("meld_read", {"code": mcode})
+    check(p + "meld_read returns the thread", res["structuredContent"]["reply_count"] == 1)
+    res = call("meld_read", {"code": "nope"})
+    check(p + "meld_read unknown is the not-found error", res.get("isError") and "Meld not found" in res["content"][0]["text"])
+    r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 9, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}})
+    check(p + "MCP initialize", r.json()["result"]["serverInfo"]["name"] == "meld")
+    r = c.post("/mcp", json=[{"jsonrpc": "2.0", "id": i, "method": "ping"} for i in range(11)])
+    check(p + "MCP batch over 10 is 400", r.status_code == 400)
+    r = c.post("/mcp", json=[{"jsonrpc": "2.0", "id": i, "method": "ping"} for i in range(10)])
+    check(p + "MCP batch of 10 is fine", r.status_code == 200 and len(r.json()) == 10)
+    r = c.post("/mcp", content=b"x" * (meld_app.MAX_BODY_BYTES + 1), headers={"content-type": "application/json"})
+    check(p + "MCP body over MAX_BODY_BYTES is 413", r.status_code == 413)
+    res = call("meld_create", {"context": "via context"})
+    check(p + "meld_create accepts context too", "code" in res["structuredContent"])
+    res = call("meld_create", {"note": "a", "pin": "1"})
+    check(p + "meld_create with pin is an error", res.get("isError") is True)
+    r = c.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"})
+    check(p + "MCP notification 202", r.status_code == 202)
+
+    # health and docs
+    r = c.get("/health")
+    check(p + "health is liveness only", r.json() == {"ok": True})
+    for path in ("/llms.txt", "/agents.md", "/skill.md", "/trust.md", "/openapi.json",
+                 "/.well-known/mcp.json", "/.well-known/agent.json"):
+        r = c.get(path)
+        check(p + f"{path} served with real origin", r.status_code == 200 and "{base}" not in r.text
+              and ("https://meld.test" in r.text or path == "/trust.md"))
+    r = c.options("/api/melds")
+    check(p + "CORS preflight", r.status_code == 204 and r.headers.get("access-control-allow-origin") == "*")
+
+    # timestamps
+    j = c.get(f"/api/melds/{mcode}").json()
+    stamps = [j["created_at"], j["expires_at"]] + [x["created_at"] for x in j["replies"]]
+    check(p + "every timestamp is UTC ISO 8601 ms Z", all(meld_spec.TS_RE.match(s) for s in stamps), str(stamps))
 
 
-def main() -> None:
-    test_create_resolve_read()
-    test_public_url()
-    test_ttl_lock()
-    test_one_note_create_body()
-    test_silence_closes_same_bridge()
-    test_dissolved_matches_unknown()
-    test_dissolve_keeps_no_record()
-    test_thread_and_clock_reset()
-    test_36h_until_first_reply_then_24h()
-    test_preview_does_not_change_404()
-    test_surface()
-    test_public_tree()
-    print("all passed")
+def run_hooks() -> None:
+    hooks = Hooks()
+    c, clock, store, d1 = make("memory", hooks)
+    code = create(c).json()["code"]
+    c.post("/api/melds", json={"for": "x"}, headers={"x-meld-surface": "ui"})
+    c.post(f"/api/melds/{code}/resolve", json={"context": "r"})
+    c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                         "params": {"name": "meld_create", "arguments": {"note": "m"}}})
+    names = [(n, f.get("path") or f.get("tool")) for n, f in hooks.events]
+    check("hooks see created/api, create_400/ui, replied, mcp_call, created/mcp",
+          names == [("created", "api"), ("create_400", "ui"), ("replied", "api"),
+                    ("mcp_call", "meld_create"), ("created", "mcp")], str(names))
+    check("hooks get no note text", "design review" not in repr(hooks.events) and "context_missing" in repr(hooks.events))
+    plain, _, _, _ = make("memory")
+    boom, _, _, _ = make("memory", Hooks(boom=True))
+    a, b = plain.post("/api/melds", json={"note": "n"}), boom.post("/api/melds", json={"note": "n"})
+    check("a failing hook does not change the response", a.status_code == b.status_code == 200 and set(a.json()) == set(b.json()))
+    a, b = plain.post("/api/melds", json={"note": "n", "ttl": "x"}), boom.post("/api/melds", json={"note": "n", "ttl": "x"})
+    check("a failing hook does not change a 400", a.content == b.content)
+    check("pilot keys are literals",
+          pilot.keys_for("create_400", reason="context_missing", path="mcp") == ["create_400:context_missing", "create_400:context_missing:mcp"]
+          and pilot.keys_for("created", path="evil'); DROP") == ["created", "created:ext:learn0:api"]
+          and pilot.keys_for("created", path="mcp", learn=True) == ["created", "created:ext:learn1:mcp"]
+          and pilot.keys_for("created", path="ui", team=True) == ["created", "created:team"]
+          and pilot.keys_for("replied", team=True) == ["resolved", "resolved:team"]
+          and pilot.keys_for("replied") == ["resolved", "resolved:ext"]
+          and pilot.keys_for("create_400", reason="<script>", path="ui") == ["create_400:other", "create_400:other:ui"])
+    mc = pilot.MemoryCounters()
+    fh = pilot.FunnelHooks(lambda: mc)
+    asyncio.run(fh.event("created", path="mcp"))
+    asyncio.run(fh.event("created", path="ui"))
+    rows = {r["event"]: r["n"] for r in mc.rows()}
+    check("funnel counters keep day/event/n only, in memory",
+          rows == {"created": 2, "created:ext:learn0:mcp": 1, "created:ext:learn0:ui": 1}
+          and all(set(r) == {"day", "event", "n"} for r in mc.rows()), str(rows))
+    for d in range(40):
+        mc.incr(f"2026-09-{d:02d}" if d < 31 else f"2026-10-{d - 30:02d}", "created")
+    check("memory counters keep at most 31 days", len({r["day"] for r in mc.rows()}) == pilot.MemoryCounters.KEEP_DAYS)
+
+
+def run_worker() -> None:
+    bridges, meta = FakeNS(worker.BridgeShard), FakeNS(worker.MeldMeta)
+
+    class Env:
+        BRIDGES = bridges
+        META = meta
+        SHARE_ORIGIN = "https://meld-staging.example"
+
+    clock = Clock()
+    meld_app.utcnow = clock
+
+    async def asgi_call(method, path, body=None):
+        sent = []
+        payload = json.dumps(body).encode() if body is not None else b""
+        scope = {"type": "http", "method": method, "path": path, "raw_path": path.encode(), "query_string": b"",
+                 "headers": [(b"content-type", b"application/json"), (b"host", b"x")], "env": Env,
+                 "scheme": "https", "server": ("x", 443), "client": ("1.2.3.4", 1), "root_path": "",
+                 "http_version": "1.1"}
+        done = False
+
+        async def receive():
+            nonlocal done
+            if done:
+                return {"type": "http.disconnect"}
+            done = True
+            return {"type": "http.request", "body": payload, "more_body": False}
+
+        async def send(m):
+            sent.append(m)
+        await worker.app(scope, receive, send)
+        status = sent[0]["status"]
+        data = b"".join(m.get("body", b"") for m in sent[1:])
+        return status, json.loads(data) if data else None
+
+    TIMERS.clear()
+    s, j = asyncio.run(asgi_call("POST", "/api/melds", {"note": "hosted"}))
+    check("worker: create through a Durable Object with SHARE_ORIGIN", s == 200 and j["url"].startswith("https://meld-staging.example/m/"), str(j))
+    code = j["code"]
+    shard = bridges.objects[worker.shard_name(code)]
+    check("worker: bridge held in that shard's memory only", code in shard.store._melds and shard.ctx is None)
+    s, j = asyncio.run(asgi_call("GET", f"/api/melds/{code}"))
+    check("worker: read", s == 200 and j["note"] == "hosted")
+    s, j = asyncio.run(asgi_call("POST", f"/api/melds/{code}/resolve", {"context": "r"}))
+    check("worker: reply", s == 200 and j["reply_count"] == 1 and j["replies"][0]["content"] == "r")
+    rows = {r["event"]: r["n"] for r in meta.objects["meta"].counters.rows()}
+    check("worker: pilot counters in MeldMeta memory", rows.get("created") == 1 and rows.get("resolved") == 1, str(rows))
+    armed = [secs for cb, secs in TIMERS]
+    check("worker: a shard holding a bridge arms one keep-alive timer", armed.count(worker.KEEPALIVE_SECONDS) >= 1 and shard._armed)
+    n_timers = len(TIMERS)
+    asyncio.run(asgi_call("GET", f"/api/melds/{code}"))
+    check("worker: an armed shard does not stack timers", sum(1 for cb, _ in TIMERS[n_timers:] if getattr(cb, "__self__", None) is shard) == 0)
+    clock.advance(hours=25)
+    tick = [cb for cb, _ in TIMERS if getattr(cb, "__self__", None) is shard][-1]
+    tick()
+    check("worker: the timer tick sweeps expired bridges with no traffic", shard.store.size() == 0 and not shard._armed)
+    s, j = asyncio.run(asgi_call("GET", f"/api/melds/{code}"))
+    check("worker: swept code is uniform 404", s == 404 and j == meld_spec.NOT_FOUND_BODY)
+    s, j = asyncio.run(asgi_call("POST", "/api/melds", {"note": "two"}))
+    clock.advance(hours=37)
+    n = asyncio.run(worker.scheduled_sweep(Env))
+    check("worker: scheduled sweep covers every shard", n == 1 and all(o.store.size() == 0 for o in bridges.objects.values()))
+    base_scope = {"type": "http", "path": "/api/melds", "raw_path": b"/api/melds", "query_string": b"",
+                  "headers": [(b"content-type", b"application/json"), (b"host", b"x")], "env": Env,
+                  "scheme": "https", "server": ("x", 443), "client": ("1.2.3.4", 1), "root_path": "",
+                  "http_version": "1.1"}
+
+    async def served():
+        before = len(asyncio.all_tasks())
+        out = await worker.serve(worker.app, dict(base_scope, method="POST"), json.dumps({"note": "one task"}).encode())
+        return out, len(asyncio.all_tasks()) - before
+    (st, hdrs, raw), extra = asyncio.run(served())
+    check("worker: serve() runs a request in the caller's task (no extra tasks)", st == 200 and extra == 0
+          and "code" in json.loads(raw), f"{st} {extra}")
+    check("worker: serve() returns string headers", any(k.lower() == "content-type" for k, _ in hdrs))
+    st, _, raw = asyncio.run(worker.serve(worker.app, dict(base_scope, method="GET", path="/api/melds/AAAAAAAAAAAAAAAAAAAAAA",
+                                                            raw_path=b"/api/melds/AAAAAAAAAAAAAAAAAAAAAA"), b""))
+    check("worker: serve() keeps the uniform 404", st == 404 and json.loads(raw) == meld_spec.NOT_FOUND_BODY)
+    src_all = (ROOT / "worker.py").read_text()
+    check("worker: entrypoint skips the SDK lifespan and per-request tasks",
+          "asgi.entrypoint(" not in src_all and "create_task(" not in src_all and "ContextVar(" not in src_all)
+    src = (ROOT / "worker.py").read_text()
+    check("worker: no database, KV, or storage API", not re.search(r"\.storage\b|d1|kv_namespaces|setAlarm|prepare\(", src.split('"""', 2)[2]))
+
+
+def run_capacity() -> None:
+    hooks = Hooks()
+    clock = Clock()
+    meld_app.utcnow = clock
+    store = MemoryStore(max_bridges=2, max_bytes=40)
+    c = TestClient(build_app(store, public_url="https://meld.test", hooks=hooks))
+    a = c.post("/api/melds", json={"note": "x" * 10}).json()["code"]
+    c.post("/api/melds", json={"note": "y" * 10})
+    full = c.post("/api/melds", json={"note": "z"})
+    check("capacity: bridge cap gives the one 503 body", full.status_code == 503
+          and full.json() == meld_spec.CAPACITY_BODY and full.headers.get("retry-after") == "60")
+    r = c.post(f"/api/melds/{a}/resolve", json={"context": "w" * 30})
+    check("capacity: byte cap on reply gives the same 503, nothing stored", r.status_code == 503
+          and r.content == full.content and c.get(f"/api/melds/{a}").json()["reply_count"] == 0)
+    r = c.post(f"/api/melds/unknown/resolve", json={"context": "w" * 30})
+    check("capacity: unknown code is still the uniform 404", r.status_code == 404 and r.content == NF)
+    m = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                             "params": {"name": "meld_create", "arguments": {"note": "m"}}}).json()
+    check("capacity: MCP create says 503 as a tool error", m["result"].get("isError") and "503" in m["result"]["content"][0]["text"])
+    check("capacity: counted as capacity events by path", [f.get("path") for n, f in hooks.events if n == "capacity"] == ["api", "api", "mcp"])
+    check("capacity keys are literals", pilot.keys_for("capacity", path="ui") == ["capacity_503", "capacity_503:ui"]
+          and pilot.keys_for("rate_429", path="mcp") == ["rate_429:mcp"] and pilot.keys_for("rate_429", path="x") == ["rate_429:api"])
+    clock.advance(hours=37)
+    check("capacity: expired bridges free room before a 503", c.post("/api/melds", json={"note": "after"}).status_code == 200
+          and store.used()["bridges"] == 1 and store.used()["bytes"] == 5)
+    n = TestClient(build_app(MemoryStore(), public_url="https://meld.test", notices_from=lambda r: ("Hosted notice line.",)))
+    check("notices: trust.md and the page show deployment notices", "- Hosted notice line." in n.get("/trust.md").text
+          and "Hosted notice line." in n.get("/").text)
+    check("notices: none by default", "Hosted notice line." not in c.get("/trust.md").text)
+    shard = worker.BridgeShard(None, None)
+    shard.store.max_bridges = 0
+    ds = worker.DOStore(lambda: type("NS", (), {"getByName": lambda self, name: shard})())
+    try:
+        asyncio.run(ds.create("c", "n", "2026-10-01T00:00:00.000Z", "2026-10-03T00:00:00.000Z"))
+        raised = False
+    except Exception as e:
+        raised = type(e).__name__ == "StoreFull"
+    check("worker: a full shard surfaces StoreFull through the Durable Object call", raised)
+    check("worker: shard caps are set", worker.SHARD_MAX_BRIDGES > 0 and worker.SHARD_MAX_BYTES > 0
+          and worker.BridgeShard(None, None).store.max_bytes == worker.SHARD_MAX_BYTES)
+    w = (ROOT / "wrangler.toml.example").read_text()
+    check("wrangler: Workers Logs and Logpush off", "[observability]\nenabled = false" in w and "logpush = false" in w)
+    srcs = "".join((ROOT / f).read_text() for f in ("meld_app.py", "meld_store.py", "worker.py", "pilot.py", "meld_ui.py", "meld_docs.py"))
+    check("no code path logs or prints", not re.search(r"\bprint\(|console\.|logging\.|\blogger\b", srcs))
+
+
+def run_spec_checks() -> None:
+    text = (ROOT / "SPEC.md").read_text()
+    usage = text.split("## Usage assumption", 1)
+    check("SPEC.md has Usage assumption right after Purpose",
+          len(usage) == 2 and "## 1. Purpose" in usage[0] and usage[1].lstrip().startswith("Each party keeps its own state.")
+          and usage[1].index("## 2. Canonical spec") > 0)
+    check_spec.errors.clear()
+    block = check_spec.spec_block()
+    check_spec.check_constants(dict(block, open_hours="35"))
+    check("check_spec fails on drift", any("open_hours" in e for e in check_spec.errors))
+    check_spec.errors.clear()
+    check_spec._walk_schemas({"x": {"schema": {}}}, "#")
+    check("check_spec fails on empty schema", bool(check_spec.errors))
+    check_spec.errors.clear()
+    check_spec._check_ts({"created_at": "2026-10-01T12:00:00+00:00"}, "x")
+    check("check_spec fails on a mixed timestamp", bool(check_spec.errors))
+    check_spec.errors.clear()
+    rc = check_spec.main([])
+    check("check_spec passes on this tree (memory-only everywhere)", rc == 0 and not check_spec.errors, str(check_spec.errors))
+    check_spec.errors.clear()
+    hits = [bool(check_spec.PERSISTENT.search(x)) for x in (
+        "D1Store(db)", "[[d1_databases]]", "self.ctx.storage.put('k', v)", "ctx.storage.setAlarm(t)",
+        "kv_namespaces = []", "sqlite3.connect(p)", "open('x', 'w')", "CREATE TABLE melds")]
+    quiet = [bool(check_spec.PERSISTENT.search(x)) for x in ("MemoryStore()", "setTimeout(cb, 60000)", "open(p).read()")]
+    check("check_spec persistence check catches disk and database use", all(hits) and not any(quiet), str((hits, quiet)))
+    check_spec.errors.clear()
+    banned = ("zero" + "-knowledge", "sk" + "_live", "wh" + "sec", "STRIPE" + "_", "price" + "_1")
+    leaks = [p.name for p in ROOT.glob("*") if p.is_file() and p.suffix in (".py", ".md", ".txt", ".json", ".toml", ".sql", ".yml")
+             and p.name != "test_server.py" and any(b in p.read_text(errors="ignore") for b in banned)]
+    check("public tree has no payment or secret-shaped strings", not leaks, str(leaks))
 
 
 if __name__ == "__main__":
-    main()
+    run_suite("memory")
+    run_suite("do")
+    run_hooks()
+    run_worker()
+    run_capacity()
+    run_spec_checks()
+    print(f"\n{passed} passed, {failed} failed")
+    sys.exit(1 if failed else 0)

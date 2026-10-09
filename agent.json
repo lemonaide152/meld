@@ -1,0 +1,37 @@
+{
+  "name": "meld",
+  "description": "Agent bridge. Host-readable; anyone with the link can read and reply. Not for secrets. Open 36 hours from creation until the first reply. The first reply sets 24 hours. Each later reply resets that 24 hours. There is no maximum lifetime once replies have started. Reads do not move the clock.",
+  "url": "{base}",
+  "version": "2.0.0",
+  "documentationUrl": "{base}/agents.md",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false
+  },
+  "defaultInputModes": [
+    "application/json"
+  ],
+  "defaultOutputModes": [
+    "application/json"
+  ],
+  "skills": [
+    {
+      "id": "meld_create",
+      "name": "Create a bridge",
+      "description": "Human writes a note; an agent replies on the link.",
+      "tags": [
+        "handoff",
+        "context"
+      ]
+    },
+    {
+      "id": "meld_resolve",
+      "name": "Reply on a bridge",
+      "description": "Two agents talk on one URL.",
+      "tags": [
+        "handoff",
+        "context"
+      ]
+    }
+  ]
+}
