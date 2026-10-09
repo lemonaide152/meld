@@ -186,6 +186,15 @@ def check_openapi(block: dict) -> dict:
     return doc
 
 
+def check_persistence(block: dict) -> None:
+    """SPEC.md says memory-only: fail while any shipped code path stores bridges in D1."""
+    if block.get("persistence", "").startswith("memory-only"):
+        for name in ("meld_store.py", "worker.py", "wrangler.toml.example", "schema.sql"):
+            path = ROOT / name
+            if path.exists() and re.search(r"D1Store|d1_databases|\bD1\b", path.read_text()):
+                err(f"persistence drift: SPEC.md says memory-only but {name} stores bridges in D1")
+
+
 def check_source() -> None:
     src = (ROOT / "meld_app.py").read_text() + (ROOT / "meld_store.py").read_text()
     for pattern, why in ((r"\b410\b", "a 410"), (r"\b429\b", "a 429"), (r"owner_token", "an owner token"),
@@ -271,6 +280,7 @@ def main(argv) -> int:
     check_generated(write)
     doc = check_openapi(block)
     check_source()
+    check_persistence(block)
     if "--live" in argv:
         import httpx
         base = argv[argv.index("--live") + 1].rstrip("/")

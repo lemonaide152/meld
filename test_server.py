@@ -323,6 +323,16 @@ def run_suite(kind: str) -> None:
     check(p + "meld_read unknown is the not-found error", res.get("isError") and "Meld not found" in res["content"][0]["text"])
     r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 9, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}})
     check(p + "MCP initialize", r.json()["result"]["serverInfo"]["name"] == "meld")
+    r = c.post("/mcp", json=[{"jsonrpc": "2.0", "id": i, "method": "ping"} for i in range(11)])
+    check(p + "MCP batch over 10 is 400", r.status_code == 400)
+    r = c.post("/mcp", json=[{"jsonrpc": "2.0", "id": i, "method": "ping"} for i in range(10)])
+    check(p + "MCP batch of 10 is fine", r.status_code == 200 and len(r.json()) == 10)
+    r = c.post("/mcp", content=b"x" * (meld_app.MAX_BODY_BYTES + 1), headers={"content-type": "application/json"})
+    check(p + "MCP body over MAX_BODY_BYTES is 413", r.status_code == 413)
+    res = call("meld_create", {"context": "via context"})
+    check(p + "meld_create accepts context too", "code" in res["structuredContent"])
+    res = call("meld_create", {"note": "a", "pin": "1"})
+    check(p + "meld_create with pin is an error", res.get("isError") is True)
     r = c.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"})
     check(p + "MCP notification 202", r.status_code == 202)
 
@@ -364,14 +374,19 @@ def run_hooks() -> None:
     check("a failing hook does not change a 400", a.content == b.content)
     check("pilot keys are literals",
           pilot.keys_for("create_400", reason="context_missing", path="mcp") == ["create_400:context_missing", "create_400:context_missing:mcp"]
-          and pilot.keys_for("created", path="evil'); DROP") == ["created"]
+          and pilot.keys_for("created", path="evil'); DROP") == ["created", "created:ext:learn0:api"]
+          and pilot.keys_for("created", path="mcp", learn=True) == ["created", "created:ext:learn1:mcp"]
+          and pilot.keys_for("created", path="ui", team=True) == ["created", "created:team"]
+          and pilot.keys_for("replied", team=True) == ["resolved", "resolved:team"]
+          and pilot.keys_for("replied") == ["resolved", "resolved:ext"]
           and pilot.keys_for("create_400", reason="<script>", path="ui") == ["create_400:other", "create_400:other:ui"])
     d1 = FakeD1()
     fh = pilot.FunnelHooks(lambda: d1)
     asyncio.run(fh.event("created", path="mcp"))
     asyncio.run(fh.event("created", path="ui"))
     rows = dict(d1.conn.execute("SELECT event, n FROM funnel_events").fetchall())
-    check("funnel counters write day/event/n only", rows == {"created": 2, "created:mcp": 1, "created:ui": 1}, str(rows))
+    check("funnel counters write day/event/n only",
+          rows == {"created": 2, "created:ext:learn0:mcp": 1, "created:ext:learn0:ui": 1}, str(rows))
 
 
 def run_worker() -> None:
@@ -438,7 +453,17 @@ def run_spec_checks() -> None:
     check_spec._check_ts({"created_at": "2026-10-01T12:00:00+00:00"}, "x")
     check("check_spec fails on a mixed timestamp", bool(check_spec.errors))
     check_spec.errors.clear()
-    check("check_spec passes on this tree", check_spec.main([]) == 0)
+    rc = check_spec.main([])
+    others = [e for e in check_spec.errors if not e.startswith("persistence drift")]
+    check("check_spec: only the open persistence gap (D1 under memory-only) fails on this tree",
+          rc == 1 and not others and any("worker.py" in e for e in check_spec.errors), str(check_spec.errors))
+    check_spec.errors.clear()
+    check_spec.check_persistence({"persistence": "memory-only (every deployment)"})
+    check("check_spec fails when D1 is used under persistence: memory-only", bool(check_spec.errors))
+    check_spec.errors.clear()
+    check_spec.check_persistence({"persistence": "d1 while live"})
+    check("check_spec persistence check is quiet when the spec allows D1", not check_spec.errors)
+    check_spec.errors.clear()
     banned = ("zero" + "-knowledge", "sk" + "_live", "wh" + "sec", "STRIPE" + "_", "price" + "_1")
     leaks = [p.name for p in ROOT.glob("*") if p.is_file() and p.suffix in (".py", ".md", ".txt", ".json", ".toml", ".sql", ".yml")
              and p.name != "test_server.py" and any(b in p.read_text(errors="ignore") for b in banned)]

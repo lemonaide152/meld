@@ -23,6 +23,7 @@ from meld_spec import (
 
 # Four 100,000-character strings with \\uXXXX escapes, plus an envelope.
 MAX_BODY_BYTES = MAX_CHARS * 6 * 4 + 8192
+MCP_MAX_BATCH = 10
 MCP_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
 LINK_PREVIEW_BOTS = (
@@ -448,12 +449,25 @@ def build_app(store, *, public_url: Optional[str] = None, hooks=None, assets: Op
         return None
 
     async def mcp(request: Request):
+        # Size and batch limits come before parsing tools, so before any lookup.
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+            return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Body too large"}},
+                                status_code=413)
+        raw = await request.body()
+        if len(raw) > MAX_BODY_BYTES:
+            return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Body too large"}},
+                                status_code=413)
         try:
-            payload = json.loads((await request.body()).decode("utf-8"))
+            payload = json.loads(raw.decode("utf-8"))
         except Exception:
             return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
                                 status_code=400)
         batch = payload if isinstance(payload, list) else [payload]
+        if len(batch) > MCP_MAX_BATCH:
+            return JSONResponse({"jsonrpc": "2.0", "id": None,
+                                 "error": {"code": -32600, "message": f"Batch too large (max {MCP_MAX_BATCH})"}},
+                                status_code=400)
         if not batch:
             return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request"}},
                                 status_code=400)

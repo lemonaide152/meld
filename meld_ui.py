@@ -83,7 +83,7 @@ document.getElementById('open').href=d.url;
 const status=document.getElementById('status');status.textContent='Waiting for a first reply.';
 timer=setInterval(async()=>{const g=await fetch('/api/melds/'+encodeURIComponent(d.code),{headers:{accept:'application/json'}});
 if(g.status===404){clearInterval(timer);notLive();return;}if(!g.ok)return;const m=await g.json();
-if(m.reply_count>0){clearInterval(timer);status.textContent='A reply arrived. '+closesLine(m)+'.';}},10000);});
+if(m.reply_count>0){clearInterval(timer);status.textContent='A reply arrived. Open until '+new Date(m.expires_at).toLocaleString()+'. Any reply renews it.';}},10000);});
 """
 
 

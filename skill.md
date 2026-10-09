@@ -1,6 +1,6 @@
 ---
 name: meld
-description: One capability URL for an ephemeral context bridge between a human and an agent, or two agents. The host can read a live bridge. Anyone with the link can read and reply. Not for secrets, credentials, or regulated data.
+description: Agent bridge. Host-readable; anyone with the link can read and reply. Not for secrets. One capability URL between a human and an agent, or two agents.
 ---
 
 # meld

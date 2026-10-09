@@ -20,9 +20,14 @@ RULE = (
     f"The first reply sets {IDLE_HOURS} hours. Each later reply resets that {IDLE_HOURS} hours. "
     "There is no maximum lifetime once replies have started. Reads do not move the clock."
 )
+# Product's listings line, word for word. Used in the MCP manifest, agent card, and skill.
+LISTING_LINE = "Agent bridge. Host-readable; anyone with the link can read and reply. Not for secrets."
 TRUST_LINE = (
     "The host can read a live bridge. Anyone with the link can read and reply. "
     "Not for secrets, credentials, or regulated data."
+)
+SWEEP_LINE = (
+    f"A sweep every {SWEEP_MINUTES} minutes removes expired bridges, and a request for an expired code also removes it."
 )
 NOT_FOUND_LINE = (
     f"Unknown, expired, and over-the-reply-cap codes all return 404 with "
@@ -137,7 +142,7 @@ A read returns {READ_SHAPE}. It does not move the clock. Timestamps are UTC ISO 
 - {CHARS} characters per note and per reply. {REPLY_CAP} replies per meld; the next reply is the same 404.
 - {REJECTED} are rejected with 400. There is no other lifetime and no owner token.
 - There are no rate-limit responses: no 429 and no 410.
-- A sweep every {SWEEP_MINUTES} minutes deletes expired bridges. {_storage(memory_only)}
+- {SWEEP_LINE} {_storage(memory_only)}
 - {UNTRUSTED_LINE}
 - {UA_LINE}
 
@@ -150,7 +155,7 @@ Remote MCP at `{BASE}/mcp` with tools {", ".join(f"`{t}`" for t in MCP_TOOLS)}.
 def skill_md(memory_only: bool = True) -> str:
     return f"""---
 name: meld
-description: One capability URL for an ephemeral context bridge between a human and an agent, or two agents. {TRUST_LINE}
+description: {LISTING_LINE} One capability URL between a human and an agent, or two agents.
 ---
 
 # meld
@@ -178,7 +183,7 @@ def _mcp_tools() -> list:
         {
             "name": "meld_create",
             "description": (
-                "Create a bridge from one note. Returns code, url, and expires_at. "
+                "Create a bridge from one note, sent as note or context. Returns code, url, and expires_at. "
                 f"{RULE} Send the url privately. {NOT_SECRETS} {UNTRUSTED_LINE}"
             ),
             "inputSchema": {
@@ -186,8 +191,10 @@ def _mcp_tools() -> list:
                 "properties": {
                     "note": {"type": "string", "maxLength": MAX_CHARS,
                              "description": "The note that opens the bridge."},
+                    "context": {"type": "string", "maxLength": MAX_CHARS,
+                                "description": "Same as note, for older clients. If both are sent they must be identical."},
                 },
-                "required": ["note"],
+                "anyOf": [{"required": ["note"]}, {"required": ["context"]}],
             },
         },
         {
@@ -228,7 +235,7 @@ def mcp_manifest() -> dict:
     return {
         "name": "meld",
         "version": VERSION,
-        "description": f"Ephemeral context bridge on one capability URL. {TRUST_LINE}",
+        "description": LISTING_LINE,
         "transport": {"type": "streamable-http", "url": f"{BASE}/mcp"},
         "tools": MCP_TOOL_LIST,
     }
@@ -237,7 +244,7 @@ def mcp_manifest() -> dict:
 def agent_card() -> dict:
     return {
         "name": "meld",
-        "description": f"Ephemeral context bridge on one capability URL. {TRUST_LINE} {RULE}",
+        "description": f"{LISTING_LINE} {RULE}",
         "url": BASE,
         "version": VERSION,
         "documentationUrl": f"{BASE}/agents.md",
@@ -397,8 +404,8 @@ def trust_md(memory_only: bool = True) -> str:
 - The host does not summarize, rewrite, or run a model on a bridge. No AI in the loop.
 - {RULE}
 - Termination is the timer only. Silence closes the bridge. There is no owner token and no dissolve endpoint.
-- A sweep every {SWEEP_MINUTES} minutes deletes expired bridges and their replies. The server keeps no record that a code existed. {NOT_FOUND_LINE}
-- Codes carry 192 random bits. They are not sequential.
+- {SWEEP_LINE} The server keeps no record that a code existed. {NOT_FOUND_LINE}
+- Codes carry at least 128 random bits (192 today). They are not sequential.
 - Link-preview crawlers on `/m/{{code}}` get an expires-only card. The card does not include the exchange and is not a read.
 {storage}- Each party keeps its own state. If a bridge expires, either party can create a new one; a new bridge knows nothing about an old one.
 
