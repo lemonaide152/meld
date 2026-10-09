@@ -10,7 +10,7 @@ Meld is an ephemeral context bridge. Two parties exchange ordinary working conte
 
 In scope: create, read, reply, expiry, uniform 404, MCP endpoint, OpenAPI spec, self-host and hosted pilot from the same code.
 
-Out of scope: encryption, accounts, private rooms, owner tokens, dissolve endpoints, email capture, learn flags in the core spec, AI in the loop, rate-limit status codes that leak existence.
+Out of scope: encryption, accounts, private rooms, owner tokens, email capture, learn flags in the core spec, AI in the loop, rate-limit status codes that leak existence.
 
 ## Usage assumption
 
@@ -26,8 +26,8 @@ Locked behavior:
 - Open window: 36 hours from creation until the first reply.
 - Idle window: the first reply sets 24 hours. Each later reply resets that 24 hours. There is no maximum lifetime once replies have started.
 - Reads do not move the clock.
-- Termination is the timer only. No dissolve endpoint. No owner credential. Silence closes the bridge.
-- Uniform not-found: expired, unknown, and over-cap codes return the same status and the same body. An observer cannot tell them apart.
+- Termination: the timer, or dissolve. Either side can dissolve the bridge at any time from its own end, with no permission from the other side. The URL is the only credential; there is no owner token. Dissolve deletes the bridge from memory at once, and the next request is the uniform 404. Silence still closes the bridge when the timer runs out.
+- Uniform not-found: expired, dissolved, unknown, and over-cap codes return the same status and the same body. An observer cannot tell them apart.
 - Host-readable while live. The operator can read plaintext on a live bridge. The host does not summarize, rewrite, or run a model on it.
 - Not for secrets, credentials, or regulated data. This is a constraint, not a feature to work around.
 - No accounts. No archive. No persistence: every deployment, self-host and hosted, keeps bridges in memory only and writes nothing to disk. A restart of any deployment drops live links.
@@ -52,6 +52,10 @@ Link-preview crawlers on /m/{code} get an expires-only card. That card does not 
 
 Body: context (the reply). Appends the reply. The first reply switches the window to 24 hours from now. Each later reply resets that 24 hours.
 
+### POST /api/melds/{code}/dissolve
+
+No body. Either side, holding the URL, ends the bridge now. The note and every reply are deleted from memory immediately. Returns 204 when a live bridge was dissolved, and the uniform 404 otherwise. Afterward every request for the code is the uniform 404. No record of the dissolve is kept.
+
 ### GET /health
 
 Liveness only. No meld data.
@@ -59,7 +63,7 @@ Liveness only. No meld data.
 ### Errors
 
 - Malformed body: 400, with a validation message. This is not an existence oracle.
-- Unknown, expired, dissolved-by-sweep, or over the reply cap: 404 and {"detail":"Meld not found"}. Same status, same body, every time.
+- Unknown, expired, dissolved, or over the reply cap: 404 and {"detail":"Meld not found"}. Same status, same body, every time.
 - No 410. No 429. Do not rate-limit in a way that changes the status code for a missing code.
 
 Content limit: 100,000 characters per note and per reply.
@@ -100,7 +104,7 @@ No backup or time-travel window exists, because nothing is written to disk. trus
 ## 6. Surfaces that must match the spec
 
 - Web UI: one note, create link, show the 36/24 rule, "not for secrets."
-- MCP tools: meld_create, meld_resolve, meld_read. No ttl argument. No owner token.
+- MCP tools: meld_create, meld_resolve, meld_read, meld_dissolve. No ttl argument. No owner token.
 - OpenAPI: real request and response schemas, including the 404 body. Empty schemas are a defect.
 - Agent docs: two uses only — human writes a note and an agent replies on the link; or two agents talk on one URL.
 
@@ -129,7 +133,7 @@ Stop the pilot if MCP calls stay under 10 percent of creates, or if replies per 
 
 ## 10. Non-goals
 
-Do not add encryption, accounts, private rooms, owner tokens, dissolve, email, or a model in the middle. The trust model is the product: a host-readable, timed, capability URL for ordinary disposable handoffs.
+Do not add encryption, accounts, private rooms, owner tokens, email, or a model in the middle. The trust model is the product: a host-readable, timed, capability URL for ordinary disposable handoffs.
 
 ## Appendix: machine-checked constants
 
@@ -148,8 +152,8 @@ create_fields: note, context
 legacy_fields: for, not_for
 rejected_fields: ttl, email, pin, prev_code
 reply_field: context
-mcp_tools: meld_create, meld_resolve, meld_read
-routes: POST /api/melds, GET /api/melds/{code}, POST /api/melds/{code}/resolve, GET /m/{code}, GET /health
+mcp_tools: meld_create, meld_resolve, meld_read, meld_dissolve
+routes: POST /api/melds, GET /api/melds/{code}, POST /api/melds/{code}/resolve, POST /api/melds/{code}/dissolve, GET /m/{code}, GET /health
 melds_columns: code, note, created_at, expires_at, reply_count
 replies_columns: id, code, content, created_at
 timestamp_format: YYYY-MM-DDTHH:MM:SS.mmmZ
