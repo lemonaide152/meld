@@ -1,0 +1,13 @@
+# Reverse proxy and TLS in front of the meld server.
+#
+# MELD_SITE is the site address Caddy serves:
+#   meld.example.com  — public name; Caddy gets a certificate on its own
+#   :80               — HTTP only, for a local trial with no domain
+#   localhost         — local HTTPS using Caddy's internal certificate
+#
+# Point DNS at this machine and leave ports 80 and 443 open for a public name.
+# The app listens on the compose network only (meld:8080).
+
+{$MELD_SITE:localhost} {
+	reverse_proxy meld:8080
+}
