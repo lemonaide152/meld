@@ -282,12 +282,17 @@ def run_suite(kind: str) -> None:
     check(p + "home: network failure shows the offline line in #err",
           "Couldn't reach meld. Try again." in t and "catch(_){return null;}" in r.text
           and "if(!r){busy(btn,false,'','Create link');err.textContent=OFFLINE;return;}" in r.text)
+    check(p + "home and bridge polls go through send(), no bare fetch on the poll",
+          "const g=await send('/api/melds/'+encodeURIComponent(d.code)" in r.text and "if(!g)return;" in r.text
+          and r.text.count("await fetch(") == 1)
     check(p + "home: note textarea has aria-label", '<textarea id="note" aria-label="Note"' in r.text)
     br = c.get(f"/m/{code3}", headers={"accept": "text/html", "user-agent": "Mozilla/5.0"}).text
     check(p + "bridge: Reply disabled while in flight, Sending…, offline line, aria-label",
           '<button type="submit" id="send">Reply</button>' in br and "busy(btn,true,'Sending…','Reply')" in br
           and "if(!r){busy(btn,false,'','Reply');err.textContent=OFFLINE;return;}" in br
           and '<textarea id="reply" aria-label="Reply"' in br)
+    check(p + "bridge: poll goes through send()",
+          "const g=await send('/api/melds/'+encodeURIComponent(code)" in br and br.count("await fetch(") == 1)
 
     # MCP
     r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})

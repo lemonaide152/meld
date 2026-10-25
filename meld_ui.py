@@ -87,8 +87,8 @@ f.hidden=true;out.hidden=false;const u=document.getElementById('url');u.value=d.
 document.getElementById('exp').textContent='Open until '+new Date(d.expires_at).toLocaleString()+' for a first reply.';
 document.getElementById('open').href=d.url;
 const status=document.getElementById('status');status.textContent='Waiting for a first reply.';
-timer=setInterval(async()=>{const g=await fetch('/api/melds/'+encodeURIComponent(d.code),{headers:{accept:'application/json'}});
-if(g.status===404){clearInterval(timer);notLive();return;}if(!g.ok)return;const m=await g.json();
+timer=setInterval(async()=>{const g=await send('/api/melds/'+encodeURIComponent(d.code),{headers:{accept:'application/json'}});
+if(!g)return;if(g.status===404){clearInterval(timer);notLive();return;}if(!g.ok)return;const m=await g.json().catch(()=>null);if(!m)return;
 if(m.reply_count>0){clearInterval(timer);status.textContent='A reply arrived. Open until '+new Date(m.expires_at).toLocaleString()+'. Any reply renews it.';}},10000);});
 """
 
@@ -128,8 +128,8 @@ if(!r){busy(btn,false,'','Reply');err.textContent=OFFLINE;return;}
 if(r.ok){location.reload();return;}if(r.status===404){notLive();return;}
 const d=await r.json().catch(()=>({}));busy(btn,false,'','Reply');err.textContent=d.detail||'Error';});
 setInterval(async()=>{if(document.getElementById('reply').value)return;
-const g=await fetch('/api/melds/'+encodeURIComponent(code),{headers:{accept:'application/json'}});
-if(g.status===404){notLive();return;}if(!g.ok)return;const m=await g.json();if(m.reply_count!==seen)location.reload();},10000);
+const g=await send('/api/melds/'+encodeURIComponent(code),{headers:{accept:'application/json'}});
+if(!g)return;if(g.status===404){notLive();return;}if(!g.ok)return;const m=await g.json().catch(()=>null);if(!m)return;if(m.reply_count!==seen)location.reload();},10000);
 """
 
 
