@@ -45,10 +45,10 @@ UA_LINE = (
     "such as `meld-agent/1.0`, or use curl, httpx, or requests."
 )
 MEMORY_LINE = (
-    "The host keeps the bridge in memory only while it's live. When it closes, or if the server restarts, "
-    "it's gone, and the link returns not found, the same as a wrong code."
+    "The host keeps the bridge in memory only while it's live and never writes it to disk. When it closes, "
+    "or if the server restarts, it's gone, and the link returns not found, the same as a wrong code."
 )
-MEMORY_CLOSING = "meld is a disposable handoff, not a vault. Nothing is written to disk. No accounts, no archive."
+MEMORY_CLOSING = "meld is a disposable handoff, not a vault. This version never writes a bridge to disk. No accounts, no archive."
 CAPACITY_LINE = (
     "If the host is at its memory cap, create and reply return 503 with "
     "`{\"detail\": \"meld is at capacity. Try again later.\"}` and store nothing."

@@ -262,14 +262,32 @@ def run_suite(kind: str) -> None:
     bullets = meld_ui.TRUST_BULLETS
     check(p + "home: five trust bullets", all(b in t for b in bullets) and len(bullets) == 5)
     trust = c.get("/trust.md").text
-    check(p + "memory-only copy: gone on restart, nothing on disk, no Time Travel",
-          "or if the server restarts, it's gone" in bullets[-1] and "The host keeps the bridge in memory only while it's live." in trust
-          and "Nothing is written to disk." in trust and "Time Travel" not in trust
+    check(p + "memory-only copy: gone on restart, never written to disk, no Time Travel",
+          "restarts, it's gone" in bullets[-1] and "never writes them to disk" in bullets[-1]
+          and "The host keeps the bridge in memory only while it's live and never writes it to disk." in trust
+          and "This version never writes a bridge to disk." in trust and "Nothing is written to disk" not in trust
+          and "Time Travel" not in trust
           and "Time Travel" not in c.get("/llms.txt").text)
     check(p + "home: no learn, pilot, 429 or too-many", not re.search(r"(?i)learn|pilot|429|too many", r.text))
     check(p + "home: maxlength 100000 and counter window 5,000", 'maxlength="100000"' in r.text and "WIN=5000" in r.text)
     check(p + "home: sends note, polls read route every 10s, open-until line",
           "JSON.stringify({note})" in r.text and "10000" in r.text and "for a first reply." in r.text)
+
+    check(p + "home: Copy link button next to the link, Copied for 2s",
+          '<input id="url" readonly aria-label="Bridge link"><button type="button" id="copy">Copy link</button>' in r.text
+          and "cp.textContent='Copied'" in r.text and "2000" in r.text)
+    check(p + "home: Create disabled while in flight, Creating…",
+          '<button type="submit" id="create">' in r.text and "if(btn.disabled)return" in r.text
+          and "busy(btn,true,'Creating…','Create link')" in r.text and "b.disabled=on" in r.text)
+    check(p + "home: network failure shows the offline line in #err",
+          "Couldn't reach meld. Try again." in t and "catch(_){return null;}" in r.text
+          and "if(!r){busy(btn,false,'','Create link');err.textContent=OFFLINE;return;}" in r.text)
+    check(p + "home: note textarea has aria-label", '<textarea id="note" aria-label="Note"' in r.text)
+    br = c.get(f"/m/{code3}", headers={"accept": "text/html", "user-agent": "Mozilla/5.0"}).text
+    check(p + "bridge: Reply disabled while in flight, Sending…, offline line, aria-label",
+          '<button type="submit" id="send">Reply</button>' in br and "busy(btn,true,'Sending…','Reply')" in br
+          and "if(!r){busy(btn,false,'','Reply');err.textContent=OFFLINE;return;}" in br
+          and '<textarea id="reply" aria-label="Reply"' in br)
 
     # MCP
     r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})

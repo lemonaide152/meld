@@ -21,7 +21,7 @@ Older clients may also send `for` and `not_for`; every supplied string must be i
 `ttl`, `email`, `pin`, `prev_code` are rejected with 400.
 There are no rate-limit responses: no 429 and no 410.
 If the host is at its memory cap, create and reply return 503 with `{"detail": "meld is at capacity. Try again later."}` and store nothing.
-The host keeps the bridge in memory only while it's live. When it closes, or if the server restarts, it's gone, and the link returns not found, the same as a wrong code.
+The host keeps the bridge in memory only while it's live and never writes it to disk. When it closes, or if the server restarts, it's gone, and the link returns not found, the same as a wrong code.
 Cloudflare-hosted instances (such as workers.dev) can return 403 error 1010 to Python's default urllib User-Agent (`Python-urllib/*`) before the request reaches meld. Set any other User-Agent, such as `meld-agent/1.0`, or use curl, httpx, or requests.
 
 ## More

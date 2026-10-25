@@ -19,7 +19,8 @@ textarea{width:100%;min-height:160px;background:var(--panel);color:var(--ink);bo
 button{margin-top:12px;background:var(--accent);color:#fff;border:0;border-radius:8px;padding:10px 18px;font:inherit;cursor:pointer}
 .box{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0;white-space:pre-wrap;word-break:break-word}
 .meta{font-size:13px;color:var(--muted)}input{width:100%;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px;font:inherit}
-#err{color:#f87171}
+#err{color:#f87171}button:disabled{opacity:.6;cursor:wait}
+.copyrow{display:flex;gap:8px;align-items:center}.copyrow input{flex:1}.copyrow button{margin-top:0;white-space:nowrap}
 """
 
 
@@ -43,7 +44,8 @@ TRUST_BULLETS = (
     "Anyone with the link can read and reply while it's live. Send it privately.",
     "Not for secrets, credentials, or regulated data.",
     f"Open {OPEN_HOURS} hours for a first reply, then {IDLE_HOURS} hours after each reply. Silence closes it.",
-    "When it closes, or if the server restarts, it's gone. The link then returns not found, the same as a wrong code.",
+    "This version keeps bridges in memory only and never writes them to disk. When one closes, or if the server "
+    "restarts, it's gone. The link then returns not found, the same as a wrong code.",
 )
 NOT_LIVE = "This link isn't live. It may have closed, or the code is wrong."
 NOT_LIVE_NEXT = "If you were mid-conversation, start a new bridge and share the new link to pick up where you left off."
@@ -55,6 +57,9 @@ const MAX={MAX_CHARS},WIN={COUNTER_WINDOW};
 function counter(t){{const c=document.getElementById(t.id+'-count');const upd=()=>{{const left=MAX-t.value.length;
 c.hidden=left>WIN;c.textContent=left.toLocaleString()+' characters left';}};t.addEventListener('input',upd);upd();}}
 function notLive(){{document.querySelector('main').innerHTML=document.getElementById('notlive').innerHTML;}}
+const OFFLINE="Couldn't reach meld. Try again.";
+async function send(url,opts){{try{{return await fetch(url,opts);}}catch(_){{return null;}}}}
+function busy(b,on,label,idle){{b.disabled=on;b.textContent=on?label:idle;}}
 function closesLine(d){{const t=new Date(d.expires_at).toLocaleString();
 return d.reply_count>0?('Closes '+t+' if no one replies'):('Closes '+t+' unless someone replies');}}
 """
@@ -68,10 +73,16 @@ HOME_JS = COMMON_JS + """
 const f=document.getElementById('f'),out=document.getElementById('out'),err=document.getElementById('err');
 counter(document.getElementById('note'));
 let timer=null;
+const cp=document.getElementById('copy');
+cp.addEventListener('click',async()=>{const u=document.getElementById('url');let ok=false;
+try{await navigator.clipboard.writeText(u.value);ok=true;}catch(_){u.select();try{ok=document.execCommand('copy');}catch(_){}}
+if(ok){cp.textContent='Copied';setTimeout(()=>{cp.textContent='Copy link';},2000);}});
 f.addEventListener('submit',async e=>{e.preventDefault();err.textContent='';
-const note=document.getElementById('note').value;
-const r=await fetch('/api/melds',{method:'POST',headers:{'content-type':'application/json','x-meld-surface':'ui'},body:JSON.stringify({note})});
-const d=await r.json().catch(()=>({}));if(!r.ok){err.textContent=d.detail||'Error';return;}
+const btn=document.getElementById('create');if(btn.disabled)return;
+const note=document.getElementById('note').value;busy(btn,true,'Creating\u2026','Create link');
+const r=await send('/api/melds',{method:'POST',headers:{'content-type':'application/json','x-meld-surface':'ui'},body:JSON.stringify({note})});
+if(!r){busy(btn,false,'','Create link');err.textContent=OFFLINE;return;}
+const d=await r.json().catch(()=>({}));if(!r.ok){busy(btn,false,'','Create link');err.textContent=d.detail||'Error';return;}
 f.hidden=true;out.hidden=false;const u=document.getElementById('url');u.value=d.url;u.select();
 document.getElementById('exp').textContent='Open until '+new Date(d.expires_at).toLocaleString()+' for a first reply.';
 document.getElementById('open').href=d.url;
@@ -91,11 +102,11 @@ def home(nonce: str, head_extra: str = "", notices: tuple = ()) -> str:
     body = f"""
 <h1>meld</h1>
 <p>{escape(HERO)}</p>
-<form id="f"><textarea id="note" maxlength="{MAX_CHARS}" required placeholder="What this exchange is for. No passwords, keys, or customer data."></textarea>
+<form id="f"><textarea id="note" aria-label="Note" maxlength="{MAX_CHARS}" required placeholder="What this exchange is for. No passwords, keys, or customer data."></textarea>
 <p class="meta" id="note-count" hidden></p>
-<button type="submit">Create link</button></form>
+<button type="submit" id="create">Create link</button></form>
 <p id="err"></p>
-<div id="out" hidden><p>Send this link privately:</p><input id="url" readonly><p class="meta" id="exp"></p>
+<div id="out" hidden><p>Send this link privately:</p><div class="copyrow"><input id="url" readonly aria-label="Bridge link"><button type="button" id="copy">Copy link</button></div><p class="meta" id="exp"></p>
 <p class="meta" id="status"></p><p><a id="open" href="#">Open the bridge</a></p></div>
 {_trust_block(notices)}
 <p class="meta"><a href="/agents.md">agents.md</a> · <a href="/trust.md">trust.md</a> · <a href="/openapi.json">OpenAPI</a> · MCP at /mcp</p>
@@ -110,10 +121,12 @@ counter(document.getElementById('reply'));
 for(const t of document.querySelectorAll('time')){t.textContent=new Date(t.dateTime).toLocaleString();}
 const code=f.dataset.code,seen=Number(f.dataset.count);
 f.addEventListener('submit',async e=>{e.preventDefault();err.textContent='';
-const context=document.getElementById('reply').value;
-const r=await fetch('/api/melds/'+encodeURIComponent(code)+'/resolve',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({context})});
+const btn=document.getElementById('send');if(btn.disabled)return;
+const context=document.getElementById('reply').value;busy(btn,true,'Sending\u2026','Reply');
+const r=await send('/api/melds/'+encodeURIComponent(code)+'/resolve',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({context})});
+if(!r){busy(btn,false,'','Reply');err.textContent=OFFLINE;return;}
 if(r.ok){location.reload();return;}if(r.status===404){notLive();return;}
-const d=await r.json().catch(()=>({}));err.textContent=d.detail||'Error';});
+const d=await r.json().catch(()=>({}));busy(btn,false,'','Reply');err.textContent=d.detail||'Error';});
 setInterval(async()=>{if(document.getElementById('reply').value)return;
 const g=await fetch('/api/melds/'+encodeURIComponent(code),{headers:{accept:'application/json'}});
 if(g.status===404){notLive();return;}if(!g.ok)return;const m=await g.json();if(m.reply_count!==seen)location.reload();},10000);
@@ -138,9 +151,9 @@ def bridge(meld: dict, nonce: str, notices: tuple = ()) -> str:
 <p class="meta">{_closes(meld)}</p>
 <p class="warn">{escape(SECRETS)}</p>
 {''.join(items)}
-<form id="f" data-code="{code}" data-count="{int(meld["reply_count"])}"><textarea id="reply" maxlength="{MAX_CHARS}" required placeholder="Reply on this link"></textarea>
+<form id="f" data-code="{code}" data-count="{int(meld["reply_count"])}"><textarea id="reply" aria-label="Reply" maxlength="{MAX_CHARS}" required placeholder="Reply on this link"></textarea>
 <p class="meta" id="reply-count" hidden></p>
-<button type="submit">Reply</button></form><p id="err"></p>
+<button type="submit" id="send">Reply</button></form><p id="err"></p>
 {_trust_block(notices)}
 {NOT_LIVE_HTML}
 """
