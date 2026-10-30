@@ -100,6 +100,22 @@ def _reject_ttl_picker(value) -> None:
     )
 
 
+# meld verifies no signatures, so it neither accepts nor returns signature
+# evidence: an unverified public key next to a reply would read as proof of
+# authorship. Create and reply answer either field with 400 before any lookup.
+SIGNATURE_FIELDS = ("responder_pubkey", "signature")
+
+
+def _reject_signature_fields(body: dict) -> None:
+    for field in SIGNATURE_FIELDS:
+        if field in body:
+            raise HTTPException(
+                400,
+                f"{field} is not accepted. meld does not verify signatures, so it does not "
+                "store or return them. Speaker labels are unverified.",
+            )
+
+
 def _one_note(body: dict) -> str:
     """Creation is one note.
 
@@ -319,6 +335,7 @@ async def health():
 @app.post("/api/melds")
 async def create_meld(request: Request):
     body = await _body(request)
+    _reject_signature_fields(body)
     if body.get("prev_code") not in (None, ""):
         raise HTTPException(400, "The conversation stays on this bridge.")
     _reject_ttl_picker(body.get("ttl"))
@@ -364,6 +381,7 @@ async def get_meld(code: str, request: Request):
 async def resolve_meld(code: str, request: Request):
     """Append a reply. The first reply sets 24 hours. Each later reply resets that 24 hours."""
     body = await _body(request)
+    _reject_signature_fields(body)
     context = _require_context(body.get("context", ""))
     now = _now()
     with _lock:
