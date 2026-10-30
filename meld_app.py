@@ -19,7 +19,7 @@ import meld_ui
 from meld_store import StoreFull
 from meld_spec import (
     CAPACITY_BODY, CAPACITY_STATUS, CREATE_FIELDS, LEGACY_FIELDS, MAX_CHARS, MAX_CODE_LEN, NOT_FOUND_BODY, NOT_FOUND_STATUS,
-    REJECTED_FIELDS, REPLY_FIELD, SWEEP_MINUTES, VERSION, new_code, open_expiry, ts, utcnow,
+    REJECTED_FIELDS, REPLY_FIELD, SIGNATURE_FIELDS, SWEEP_MINUTES, VERSION, new_code, open_expiry, ts, utcnow,
 )
 
 # Four 100,000-character strings with \\uXXXX escapes, plus an envelope.
@@ -95,12 +95,21 @@ def _text(value: Any, field: str, reason_prefix: str) -> str:
     return value
 
 
-def validate_create(body: dict) -> str:
-    """The one note from a create body. Raises a 400 MeldError otherwise."""
+def _reject_fields(body: dict) -> None:
+    """400 for any rejected field, on create and on reply, before any lookup."""
     for field in REJECTED_FIELDS:
         if field in body:
+            if field in SIGNATURE_FIELDS:
+                raise _bad(f"{field}_rejected",
+                           f"{field} is not accepted. meld does not verify signatures, so it does not "
+                           "store or return them. Speaker labels are unverified.")
             raise _bad(f"{field}_rejected",
                        f"{field} is not accepted. A bridge is one note on a fixed clock with no other options.")
+
+
+def validate_create(body: dict) -> str:
+    """The one note from a create body. Raises a 400 MeldError otherwise."""
+    _reject_fields(body)
     supplied = {k: body[k] for k in CREATE_FIELDS + LEGACY_FIELDS if body.get(k) is not None}
     for key, value in supplied.items():
         if not isinstance(value, str):
@@ -114,6 +123,7 @@ def validate_create(body: dict) -> str:
 
 
 def validate_reply(body: dict) -> str:
+    _reject_fields(body)
     if body.get(REPLY_FIELD) is None:
         raise _bad("context_missing", "Send the reply as a string in context")
     return _text(body[REPLY_FIELD], "context", "context")

@@ -28,7 +28,10 @@ CAPACITY_BODY = {"detail": "meld is at capacity. Try again later."}
 
 CREATE_FIELDS = ("note", "context")
 LEGACY_FIELDS = ("for", "not_for")
-REJECTED_FIELDS = ("ttl", "email", "pin", "prev_code")
+REJECTED_FIELDS = ("ttl", "email", "pin", "prev_code", "responder_pubkey", "signature")
+# meld verifies no signatures, so it neither accepts nor returns signature
+# evidence: an unverified pubkey next to a reply would read as proof of authorship.
+SIGNATURE_FIELDS = ("responder_pubkey", "signature")
 REPLY_FIELD = "context"
 MCP_TOOLS = ("meld_create", "meld_resolve", "meld_read")
 

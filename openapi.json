@@ -231,7 +231,7 @@
     "schemas": {
       "CreateRequest": {
         "type": "object",
-        "description": "Send note or context. Older clients may also send for and not_for; every supplied string must be identical, otherwise 400. ttl, email, pin, prev_code are rejected with 400.",
+        "description": "Send note or context. Older clients may also send for and not_for; every supplied string must be identical, otherwise 400. ttl, email, pin, prev_code, responder_pubkey, signature are rejected with 400.",
         "properties": {
           "note": {
             "type": "string",
@@ -285,6 +285,16 @@
               "required": [
                 "prev_code"
               ]
+            },
+            {
+              "required": [
+                "responder_pubkey"
+              ]
+            },
+            {
+              "required": [
+                "signature"
+              ]
             }
           ]
         }
@@ -316,6 +326,7 @@
       },
       "ReplyRequest": {
         "type": "object",
+        "description": "ttl, email, pin, prev_code, responder_pubkey, signature are rejected with 400. meld does not verify who wrote a reply. It does not accept, store, or return signatures or public keys (`responder_pubkey`, `signature`); a request that sends either is rejected with 400.",
         "properties": {
           "context": {
             "type": "string",
@@ -325,7 +336,41 @@
         },
         "required": [
           "context"
-        ]
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "ttl"
+              ]
+            },
+            {
+              "required": [
+                "email"
+              ]
+            },
+            {
+              "required": [
+                "pin"
+              ]
+            },
+            {
+              "required": [
+                "prev_code"
+              ]
+            },
+            {
+              "required": [
+                "responder_pubkey"
+              ]
+            },
+            {
+              "required": [
+                "signature"
+              ]
+            }
+          ]
+        }
       },
       "Reply": {
         "type": "object",
