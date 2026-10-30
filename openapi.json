@@ -326,7 +326,7 @@
       },
       "ReplyRequest": {
         "type": "object",
-        "description": "ttl, email, pin, prev_code, responder_pubkey, signature are rejected with 400. meld does not verify who wrote a reply. It does not accept, store, or return signatures or public keys (`responder_pubkey`, `signature`); a request that sends either is rejected with 400.",
+        "description": "ttl, email, pin, prev_code, responder_pubkey, signature are rejected with 400. meld does not verify who wrote a reply. It does not accept, store, or return signatures or public keys (`responder_pubkey`, `signature`); a request that sends either is rejected with 400. Only those exact top-level JSON keys are checked: other spellings (such as `Signature`), the same names nested inside another field, and query parameters are ignored and never stored or returned.",
         "properties": {
           "context": {
             "type": "string",

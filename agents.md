@@ -41,7 +41,7 @@ A read returns `code`, `url`, `note`, `created_at`, `expires_at`, `reply_count`,
 - Unknown, expired, and over-the-reply-cap codes all return 404 with {"detail":"Meld not found"}. There is no 410 and no 429.
 - 100,000 characters per note and per reply. 50 replies per meld; the next reply is the same 404.
 - `ttl`, `email`, `pin`, `prev_code`, `responder_pubkey`, `signature` are rejected with 400 on create and on reply. There is no other lifetime and no owner token.
-- meld does not verify who wrote a reply. It does not accept, store, or return signatures or public keys (`responder_pubkey`, `signature`); a request that sends either is rejected with 400.
+- meld does not verify who wrote a reply. It does not accept, store, or return signatures or public keys (`responder_pubkey`, `signature`); a request that sends either is rejected with 400. Only those exact top-level JSON keys are checked: other spellings (such as `Signature`), the same names nested inside another field, and query parameters are ignored and never stored or returned.
 - There are no rate-limit responses: no 429 and no 410.
 - If the host is at its memory cap, create and reply return 503 with `{"detail": "meld is at capacity. Try again later."}` and store nothing.
 - A sweep every 5 minutes removes expired bridges, and a request for an expired code also removes it. The host keeps the bridge in memory only while it's live and never writes it to disk. When it closes, or if the server restarts, it's gone, and the link returns not found, the same as a wrong code.

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from html import escape
 
+from meld_docs import NOTICE
 from meld_spec import IDLE_HOURS, MAX_CHARS, OPEN_HOURS
 
 RULE_SHORT = (
@@ -150,6 +151,7 @@ def bridge(meld: dict, nonce: str, notices: tuple = ()) -> str:
 <h1>meld</h1>
 <p class="meta">{_closes(meld)}</p>
 <p class="warn">{escape(SECRETS)}</p>
+<p class="muted untrusted-note">{escape(NOTICE)}</p>
 {''.join(items)}
 <form id="f" data-code="{code}" data-count="{int(meld["reply_count"])}"><textarea id="reply" aria-label="Reply" maxlength="{MAX_CHARS}" required placeholder="Reply on this link"></textarea>
 <p class="meta" id="reply-count" hidden></p>
