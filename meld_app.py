@@ -200,6 +200,8 @@ class _Headers:
                     b"referrer-policy": b"no-referrer",
                     b"access-control-allow-origin": b"*",
                 }
+                if b"cache-control" not in names:  # bridge text and capability links are never cached
+                    extra[b"cache-control"] = b"no-store"
                 if b"content-security-policy" not in names:
                     extra[b"content-security-policy"] = b"default-src 'none'; frame-ancestors 'none'"
                 for k, v in extra.items():

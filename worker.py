@@ -8,9 +8,12 @@ a self-host restart.
 
 - Routing: a code picks one of SHARDS objects by SHA-256. Changing SHARDS
   remaps codes, which drops live links the same way a restart does.
-- Residency: while a shard holds a live bridge it keeps one pending in-memory
-  timer (setTimeout). A pending timer keeps a Durable Object in memory, and
-  each tick runs the sweep on that shard. An empty shard lets its timer lapse.
+- Residency: while an object holds state it keeps one pending in-memory timer
+  (setTimeout). A pending timer alone does not keep a Durable Object in memory:
+  an object with no incoming calls is evicted after a minute or two. So each
+  tick also sends the object one "touch" call through its own stub, an
+  incoming call with no payload, and runs the sweep. An empty object lets its
+  timer lapse and is evicted as before. No storage API and no alarm.
 - Sweep: every tick (KEEPALIVE_SECONDS), plus the 5-minute cron, plus a lazy
   check on each read and reply.
 - Memory guard: each shard caps its live bridges and their text bytes
@@ -40,7 +43,7 @@ except ImportError:  # not on Workers (tests import this module directly)
             self.ctx, self.env = ctx, env
 
 SHARDS = 4
-KEEPALIVE_SECONDS = 60
+KEEPALIVE_SECONDS = 30
 SHARD_MAX_BRIDGES = 1000
 SHARD_MAX_BYTES = 8 * 1024 * 1024
 BRIDGES_BINDING = "BRIDGES"
@@ -76,10 +79,39 @@ def _set_timer(callback, seconds: float) -> bool:
     return True
 
 
+def _spawn(coro) -> None:
+    """Run a coroutine from a timer callback; nothing is awaited or kept."""
+    try:
+        import asyncio
+        asyncio.ensure_future(coro)
+    except Exception:
+        coro.close()
+
+
 class _Resident:
-    """Keep the object in memory while it holds state, using a pending timer only."""
+    """Keep the object in memory while it holds state: a pending timer plus one
+    incoming touch call per tick through the object's own stub. Memory only."""
 
     timer = staticmethod(_set_timer)  # tests swap this
+    spawn = staticmethod(_spawn)  # tests swap this
+
+    def own_namespace(self):
+        return None
+
+    def _own_stub(self):
+        ns = self.own_namespace()
+        ctx = getattr(self, "ctx", None)
+        if ns is None or ctx is None:
+            return None
+        return ns.get(ctx.id)
+
+    async def _touch(self) -> None:
+        try:
+            stub = self._own_stub()
+            if stub is not None:
+                await stub.op('{"op": "touch"}')
+        except Exception:
+            pass
 
     def _arm(self) -> None:
         if getattr(self, "_armed", False):
@@ -94,6 +126,7 @@ class _Resident:
             pass
         if self.holds_state():
             self._arm()
+            self.spawn(self._touch())
 
 
 class BridgeShard(_Resident, DurableObject):
@@ -126,12 +159,17 @@ class BridgeShard(_Resident, DurableObject):
             out = s.sweep_now(req["now_ts"])
         elif kind == "used":
             out = s.used()
+        elif kind == "touch":
+            out = None
         else:
             raise ValueError("unknown op")
         return out
 
     def holds_state(self) -> bool:
         return self.store.size() > 0
+
+    def own_namespace(self):
+        return getattr(self.env, "BRIDGES", None) if self.env is not None else None
 
     def on_tick(self) -> None:
         self.store.sweep_now(ts(utcnow()))
@@ -163,14 +201,24 @@ class MeldMeta(_Resident, DurableObject):
             got = self.sets.get(req["name"], {})
             for key in req["keys"]:
                 got.pop(key, None)
+            if not got:
+                self.sets.pop(req["name"], None)
+            out = None
+        elif kind == "touch":
             out = None
         else:
             raise ValueError("unknown op")
-        self._arm()
+        if self.holds_state():
+            self._arm()
         return json.dumps(out)
 
     def holds_state(self) -> bool:
-        return True
+        """Only extension state (sets) holds the object. Counters alone do not:
+        an idle object with only counters is evicted and they reset."""
+        return any(self.sets.values())
+
+    def own_namespace(self):
+        return getattr(self.env, "META", None) if self.env is not None else None
 
     def on_tick(self) -> None:
         pass
@@ -249,8 +297,7 @@ def _notices(request) -> tuple:
 
 
 def _origin(request) -> str:
-    env = _env.get()
-    return str(getattr(env, "SHARE_ORIGIN", "") or "").strip() if env is not None else ""
+    return _origin_of(_env.get())
 
 
 try:  # optional static card image; bytes only, no behavior
@@ -320,6 +367,58 @@ async def serve(asgi_app, scope: dict, body: bytes):
     return sent["status"], sent["headers"], b"".join(sent["body"])
 
 
+def valid_origin(origin: str) -> bool:
+    """SHARE_ORIGIN must be a bare https origin (scheme and host, no path,
+    port, user info, query, or fragment). Without one the Worker answers 503
+    instead of minting links from the request's Host header."""
+    if not origin.startswith("https://"):
+        return False
+    host = origin[len("https://"):]
+    if not host or len(host) > 253 or host.startswith(".") or host.endswith(".") or ".." in host:
+        return False
+    return all(c.isascii() and (c.isalnum() or c in ".-") for c in host) and host.lower() == host
+
+
+def _origin_of(env) -> str:
+    return str(getattr(env, "SHARE_ORIGIN", "") or "").strip() if env is not None else ""
+
+
+def _unavailable():
+    body = json.dumps({"error": "unavailable", "message": "Service unavailable"}).encode()
+    return 503, [("content-type", "application/json"), ("cache-control", "no-store"),
+                 ("x-content-type-options", "nosniff")], body
+
+
+async def _read_capped(request) -> bytes:
+    """Read a request body, never holding more than MAX_BODY_BYTES + 1 bytes.
+    A declared Content-Length over the cap is not read at all: the app sees
+    the header and answers its own 400/413. A chunked body over the cap is cut
+    at cap + 1 bytes, which the app also rejects."""
+    from meld_app import MAX_BODY_BYTES
+    declared = request.headers.get("content-length")
+    if declared is not None and str(declared).isdigit() and int(str(declared)) > MAX_BODY_BYTES:
+        return b""
+    stream = request.js_object.body
+    if stream is None:
+        return b""
+    reader = stream.getReader()
+    parts, got = [], 0
+    try:
+        while got <= MAX_BODY_BYTES:
+            chunk = await reader.read()
+            if chunk.done:
+                break
+            data = chunk.value.to_bytes()
+            parts.append(data)
+            got += len(data)
+    finally:
+        try:
+            reader.cancel()
+        except Exception:
+            pass
+    return b"".join(parts)[: MAX_BODY_BYTES + 1]
+
+
 try:
     from workers import asgi
 except ImportError:  # not on Workers
@@ -337,10 +436,13 @@ if asgi is not None:
             from workers.utils import _to_js_headers
 
             scope = asgi.request_to_scope(request, self.env)
-            body = b""
-            if request.method not in ("GET", "HEAD"):
-                body = (await request.buffer()).to_bytes()
-            status, headers, out = await serve(app, scope, body)
+            if not valid_origin(_origin_of(self.env)):
+                status, headers, out = _unavailable()
+            else:
+                body = b""
+                if request.method not in ("GET", "HEAD"):
+                    body = await _read_capped(request)
+                status, headers, out = await serve(app, scope, body)
             if status in _NULL_BODY or request.method == "HEAD" or not out:
                 return Response.new(None, status=status, headers=_to_js_headers(headers))
             px = create_proxy(out)
