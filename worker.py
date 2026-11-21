@@ -98,7 +98,7 @@ class _Resident:
 
     def _own_stub(self):
         ns = self.own_namespace()
-        ctx = getattr(self, "ctx", None)
+        ctx = self.ctx
         if ns is None or ctx is None:
             return None
         return ns.get(ctx.id)
@@ -167,7 +167,7 @@ class BridgeShard(_Resident, DurableObject):
         return self.store.size() > 0
 
     def own_namespace(self):
-        return getattr(self.env, "BRIDGES", None) if self.env is not None else None
+        return self.env.BRIDGES if self.env is not None else None
 
     def on_tick(self) -> None:
         self.store.sweep_now(ts(utcnow()))
@@ -216,7 +216,7 @@ class MeldMeta(_Resident, DurableObject):
         return any(self.sets.values())
 
     def own_namespace(self):
-        return getattr(self.env, "META", None) if self.env is not None else None
+        return self.env.META if self.env is not None else None
 
     def on_tick(self) -> None:
         pass
@@ -383,7 +383,12 @@ def valid_origin(origin: str) -> bool:
 
 
 def _origin_of(env) -> str:
-    return str(getattr(env, "SHARE_ORIGIN", "") or "").strip() if env is not None else ""
+    if env is None:
+        return ""
+    try:
+        return str(env.SHARE_ORIGIN or "").strip()
+    except AttributeError:
+        return ""
 
 
 def _unavailable():

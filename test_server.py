@@ -268,7 +268,7 @@ def run_suite(kind: str) -> None:
           and "This version never writes a bridge to disk." in trust and "Nothing is written to disk" not in trust
           and "Time Travel" not in trust
           and "Time Travel" not in c.get("/llms.txt").text)
-    check(p + "home: no learn, pilot, 429 or too-many", not re.search(r"(?i)learn|pilot|429|too many", r.text))
+    check(p + "home: no learn, pilot, 429 or too-many", not re.search(r"(?i)learn|pilot|429|too many", re.sub(r'nonce(="|-)[^"\']+', "", r.text)))
     check(p + "home: maxlength 100000 and counter window 5,000", 'maxlength="100000"' in r.text and "WIN=5000" in r.text)
     check(p + "home: sends note, polls read route every 10s, open-until line",
           "JSON.stringify({note})" in r.text and "10000" in r.text and "for a first reply." in r.text)
