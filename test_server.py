@@ -735,6 +735,10 @@ def run_residency_and_edges() -> None:
     got = asyncio.run(worker._read_capped(r2))
     check("body cap: a chunked body stops at cap + 1 bytes", len(got) == cap + 1 and rd2.reads < len(big) and rd2.cancelled,
           f"{len(got)} {rd2.reads}")
+    nobody = type("R", (), {"headers": {}, "js_object": type("J", (), {"body": None})()})()
+    check("body cap: a request with no body stream reads as empty", asyncio.run(worker._read_capped(nobody)) == b"")
+    src = (ROOT / "worker.py").read_text()
+    check("worker: GET, HEAD and OPTIONS never read a body", '("GET", "HEAD", "OPTIONS")' in src)
     r3, _ = req({"content-length": "5"}, [b"ab", b"cde"])
     check("body cap: a small body reads in full", asyncio.run(worker._read_capped(r3)) == b"abcde")
 

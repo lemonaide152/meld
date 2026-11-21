@@ -428,7 +428,7 @@ async def _read_capped(request) -> bytes:
     if declared is not None and str(declared).isdigit() and int(str(declared)) > MAX_BODY_BYTES:
         return b""
     stream = request.js_object.body
-    if stream is None:
+    if not stream:  # None, or JS null (no body, e.g. OPTIONS)
         return b""
     reader = stream.getReader()
     parts, got = [], 0
@@ -469,7 +469,7 @@ if asgi is not None:
                 status, headers, out = _unavailable()
             else:
                 body = b""
-                if request.method not in ("GET", "HEAD"):
+                if request.method not in ("GET", "HEAD", "OPTIONS"):
                     body = await _read_capped(request)
                 status, headers, out = await serve(app, scope, body)
             if status in _NULL_BODY or request.method == "HEAD" or not out:
