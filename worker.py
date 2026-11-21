@@ -26,8 +26,15 @@ a self-host restart.
   (SHARD_MAX_BRIDGES, SHARD_MAX_BYTES). At the cap, create and reply get the
   one 503 body and nothing is stored, instead of the isolate running out of
   memory and dropping every link it holds.
+- Per-client byte quota (hosted layer): the bridge shard also keeps a ledger
+  of text bytes written per client key (an HMAC the hosted layer computes;
+  never an IP), each charge expiring after the longest bridge lifetime
+  (op "charge"). It lives in the same object as the bridges it covers, so an
+  eviction drops both together. LEDGER_SHARD is the only shard while SHARDS is 1.
 - Pilot counters and a deployment's extension state live in one MeldMeta
-  object, in memory only. A restart or an idle eviction resets them.
+  object, in memory only. A restart or an idle eviction resets them. Its
+  "take_all" op checks every request-budget key in one call, all or nothing,
+  and counts a refusal in the same call, so a 429 costs one object call.
 - Logging: nothing here prints or logs. Bridge text never leaves the
   objects except in the HTTP response to the link holder.
 """
@@ -37,7 +44,7 @@ import hashlib
 import json
 
 from meld_app import build_app
-from meld_spec import parse_ts, ts, utcnow
+from meld_spec import HOSTED_SHARE_ORIGINS, IDLE_HOURS, OPEN_HOURS, parse_ts, ts, utcnow
 from meld_store import MemoryStore, StoreFull
 from pilot import FunnelHooks, MemoryCounters
 
@@ -52,6 +59,9 @@ SHARDS = 1
 KEEPALIVE_SECONDS = 30
 SHARD_MAX_BRIDGES = 1000
 SHARD_MAX_BYTES = 8 * 1024 * 1024
+LEDGER_SHARD = "bridges-0"  # holds the byte-quota ledger; the only shard while SHARDS is 1
+LEDGER_MAX_KEYS = 20000
+LEDGER_TTL_SECONDS = max(OPEN_HOURS, IDLE_HOURS) * 3600
 
 class _EnvHolder:
     """The Worker env. It is the same object for every request in an isolate,
@@ -141,6 +151,7 @@ class BridgeShard(_Resident, DurableObject):
     def __init__(self, ctx=None, env=None) -> None:
         super().__init__(ctx, env)
         self.store = MemoryStore(max_bridges=SHARD_MAX_BRIDGES, max_bytes=SHARD_MAX_BYTES)
+        self.ledger: dict[str, list] = {}  # client key -> [[until, n], ...]; memory only
         self._armed = False
 
     async def op(self, payload: str) -> str:
@@ -165,11 +176,37 @@ class BridgeShard(_Resident, DurableObject):
             out = s.sweep_now(req["now_ts"])
         elif kind == "used":
             out = s.used()
+        elif kind == "charge":
+            out = self.charge([(str(k), int(q)) for k, q in req["keys"]], int(req["n"]), float(req["now"]),
+                              int(req.get("max_keys", LEDGER_MAX_KEYS)))
         elif kind == "touch":
             out = None
         else:
             raise ValueError("unknown op")
         return out
+
+    def _purge(self, now: float) -> None:
+        for key in list(self.ledger):
+            live = [c for c in self.ledger[key] if c[0] > now]
+            if live:
+                self.ledger[key] = live
+            else:
+                del self.ledger[key]
+
+    def charge(self, keys: list, n: int, now: float, max_keys: int) -> bool:
+        """Charge n bytes to every (key, quota) pair, all or nothing. Each
+        charge expires after LEDGER_TTL_SECONDS. A full key table refuses new
+        keys. The ledger never holds the object in memory by itself."""
+        self._purge(now)
+        new = sum(1 for k, _ in keys if k not in self.ledger)
+        if len(self.ledger) + new > max_keys:
+            return False
+        for k, quota in keys:
+            if sum(c[1] for c in self.ledger.get(k, ())) + n > quota:
+                return False
+        for k, _ in keys:
+            self.ledger.setdefault(k, []).append([now + LEDGER_TTL_SECONDS, n])
+        return True
 
     def holds_state(self) -> bool:
         return self.store.size() > 0
@@ -179,6 +216,7 @@ class BridgeShard(_Resident, DurableObject):
 
     def on_tick(self) -> None:
         self.store.sweep_now(ts(utcnow()))
+        self._purge(utcnow().timestamp())
 
 
 class MeldMeta(_Resident, DurableObject):
@@ -208,6 +246,13 @@ class MeldMeta(_Resident, DurableObject):
         elif kind == "take":  # fixed-window budget: True while key is under limit
             out = self.take(str(req["key"]), int(req["limit"]), int(req["window"]), float(req["now"]),
                             int(req.get("max_keys", 50000)))
+        elif kind == "take_all":  # every key in one call, all or nothing; a refusal is counted here
+            ok = self.take_all([(str(k), int(n)) for k, n in req["keys"]], int(req["window"]), float(req["now"]),
+                               int(req.get("max_keys", 50000)))
+            if not ok:
+                for event in req.get("deny_events") or []:
+                    self.counters.incr(str(req["day"]), str(event), 1)
+            out = ok
         elif kind == "drop":
             got = self.sets.get(req["name"], {})
             for key in req["keys"]:
@@ -236,6 +281,21 @@ class MeldMeta(_Resident, DurableObject):
         if (n or 0) >= limit:
             return False
         self.taken[key] = (n or 0) + 1
+        return True
+
+    def take_all(self, keys: list, window: int, now: float, max_keys: int) -> bool:
+        """take() for several keys at once: consumes nothing unless every key
+        is under its limit."""
+        w = (int(now // max(window, 1)), window)
+        if w != self.window:
+            self.window, self.taken = w, {}
+        new = sum(1 for k, _ in keys if k not in self.taken)
+        if len(self.taken) + new > max_keys:
+            return False
+        if any(self.taken.get(k, 0) >= limit for k, limit in keys):
+            return False
+        for k, _ in keys:
+            self.taken[k] = self.taken.get(k, 0) + 1
         return True
 
     def holds_state(self) -> bool:
@@ -285,6 +345,12 @@ class DOStore:
         return await _call(self._stub(shard_name(code)), {
             "op": "reply", "code": code, "content": content, "now_ts": ts(now)})
 
+    async def charge(self, keys: list, n: int, now: float) -> bool:
+        """Byte quota for the hosted layer: True when n bytes fit under every
+        (client key, quota) pair; nothing is charged otherwise."""
+        return await _call(self._stub(LEDGER_SHARD), {"op": "charge", "keys": [list(k) for k in keys],
+                                                      "n": int(n), "now": float(now)}) is True
+
     async def sweep(self, now_ts) -> int:
         n = 0
         for i in range(SHARDS):
@@ -311,13 +377,11 @@ class MetaClient:
         await self.call("incr", day=day, event=key)
 
 
-# Hosted Worker SHARE_ORIGIN values. base() and fetch() refuse anything else
-# and never fall back to the request Host header.
-APPROVED_SHARE_ORIGINS = {
-    "https://meld.mergeinc.us",
-    "https://meld.mergeinc.workers.dev",
-    "https://meld-staging.mergeinc.workers.dev",
-}
+# Hosted Worker SHARE_ORIGIN values (meld_spec.HOSTED_SHARE_ORIGINS, shared
+# with the hosted layer). base() and fetch() refuse anything else and never
+# fall back to the request Host header; fetch() also refuses a request whose
+# URL is not on SHARE_ORIGIN.
+APPROVED_SHARE_ORIGINS = frozenset(HOSTED_SHARE_ORIGINS)
 
 
 def _bridges():
@@ -425,18 +489,27 @@ async def serve(asgi_app, scope: dict, body: bytes):
     return sent["status"], sent["headers"], b"".join(sent["body"])
 
 
-def valid_origin(origin: str) -> bool:
+def valid_origin(origin) -> bool:
     """SHARE_ORIGIN must be exactly one of the hardcoded hosted origins."""
-    return origin in APPROVED_SHARE_ORIGINS
+    return isinstance(origin, str) and origin in APPROVED_SHARE_ORIGINS
+
+
+def on_origin(url, origin) -> bool:
+    """True when the request URL is on SHARE_ORIGIN itself (no other host,
+    port, or scheme)."""
+    return (isinstance(url, str) and valid_origin(origin)
+            and (url == origin or url.startswith(origin + "/") or url.startswith(origin + "?")))
 
 
 def _origin_of(env) -> str:
+    """SHARE_ORIGIN, or "" when env is None, it is unset, or it is not a string."""
     if env is None:
         return ""
     try:
-        return str(env.SHARE_ORIGIN or "").strip()
+        raw = env.SHARE_ORIGIN
     except AttributeError:
         return ""
+    return raw.strip() if isinstance(raw, str) else ""
 
 
 def _unavailable():
@@ -492,7 +565,8 @@ if asgi is not None:
             from workers.utils import _to_js_headers
 
             scope = asgi.request_to_scope(request, self.env)
-            if not valid_origin(_origin_of(self.env)):
+            origin = _origin_of(self.env)
+            if not valid_origin(origin) or not on_origin(str(request.url), origin):
                 status, headers, out = _unavailable()
             else:
                 body = b""

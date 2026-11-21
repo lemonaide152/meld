@@ -26,6 +26,12 @@ NOT_FOUND_BODY = {"detail": "Meld not found"}
 CAPACITY_STATUS = 503
 CAPACITY_BODY = {"detail": "meld is at capacity. Try again later."}
 
+# Hosted service origins (not in SPEC.md). The hosted Worker and its hosted-only
+# layer both read this one tuple; self-host ignores it. The Worker also requires
+# the request URL to be on its own SHARE_ORIGIN, so a production Worker never
+# serves with the staging origin and the reverse.
+HOSTED_SHARE_ORIGINS = ("https://meld.mergeinc.us", "https://meld-staging.mergeinc.workers.dev")
+
 CREATE_FIELDS = ("note", "context")
 LEGACY_FIELDS = ("for", "not_for")
 REJECTED_FIELDS = ("ttl", "email", "pin", "prev_code", "responder_pubkey", "signature")

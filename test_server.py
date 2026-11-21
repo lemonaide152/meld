@@ -683,6 +683,37 @@ def run_residency_and_edges() -> None:
         check("budget take: a new window starts over", take("a", 61.0) is True)
         check("budget take: a full key table refuses new keys", [take("b", 62.0), take("c", 62.0), take("d", 62.0)] == [True, True, False])
         check("budget take: budgets alone do not hold the object", not bm.holds_state() and not bm._armed)
+        tk = lambda keys, now, mk=3, deny=None: json.loads(asyncio.run(bm.op(json.dumps(
+            {"op": "take_all", "keys": keys, "window": 60, "now": now, "max_keys": mk,
+             "day": "2026-10-01", "deny_events": deny or []}))))
+        bm.window, bm.taken = (-1, 0), {}
+        check("budget take_all: all keys under limit consume one each",
+              tk([["c1", 2], ["total", 3]], 120.0) is True and bm.taken == {"c1": 1, "total": 1})
+        tk([["c1", 2], ["total", 3]], 121.0)
+        check("budget take_all: one key at its limit refuses and consumes nothing",
+              tk([["c1", 2], ["total", 3]], 122.0, deny=["rate_429:api"]) is False and bm.taken == {"c1": 2, "total": 2})
+        check("budget take_all: a refusal is counted in the same call",
+              ["2026-10-01", "rate_429:api", 1] in [list(r) for r in bm.counters.rows()] or
+              any(isinstance(r, dict) and r.get("event") == "rate_429:api" for r in bm.counters.rows()), str(bm.counters.rows()))
+        check("budget take_all: a full key table refuses new keys",
+              tk([["c2", 2], ["c3", 2]], 123.0) is False and "c2" not in bm.taken)
+        check("budget take_all: a new window starts over", tk([["c1", 2]], 181.0) is True)
+        led = worker.BridgeShard(None, None)
+        ch = lambda keys, n, now, mk=3: json.loads(asyncio.run(led.op(json.dumps(
+            {"op": "charge", "keys": keys, "n": n, "now": now, "max_keys": mk}))))
+        check("quota: charges fit under the quota, the next one over it is refused",
+              [ch([["k1", 100]], 60, 0.0), ch([["k1", 100]], 40, 1.0), ch([["k1", 100]], 1, 2.0)] == [True, True, False])
+        check("quota: another key has its own quota", ch([["k2", 100]], 100, 3.0) is True)
+        check("quota: all or nothing across keys", ch([["k4", 1000], ["k2", 100]], 1, 4.0) is False and "k4" not in led.ledger)
+        check("quota: a full key table refuses new keys", ch([["k5", 9]], 1, 5.0, mk=2) is False)
+        ttl = worker.LEDGER_TTL_SECONDS
+        check("quota: charges expire after the longest bridge lifetime",
+              ttl == max(worker.OPEN_HOURS, worker.IDLE_HOURS) * 3600 and ch([["k1", 100]], 100, ttl + 1.0) is True)
+        check("quota: the ledger alone does not hold the shard", not led.holds_state() and not led._armed)
+        led._purge(10 * ttl)
+        check("quota: expired charges are purged", led.ledger == {})
+        check("quota: the ledger shard is the only shard", worker.SHARDS == 1 and worker.LEDGER_SHARD == "bridges-0"
+              and worker.shard_name("anything") == worker.LEDGER_SHARD)
         st = worker.BridgeShard(None, None)
         st._tick()
         check("residency: no ctx or env means no touch and no error", True)
@@ -702,13 +733,45 @@ def run_residency_and_edges() -> None:
     banned = ("cdn-cache-control", "cloudflare-cdn-cache-control", "surrogate-control")
     check("no-store: no CDN or surrogate cache headers on those responses",
           all(all(h not in {k.lower() for k in x.headers} for h in banned) for x in resps))
-    for o, ok in (("https://meld.mergeinc.us", True), ("https://meld.mergeinc.workers.dev", True),
+    for o, ok in (("https://meld.mergeinc.us", True), ("https://meld.mergeinc.workers.dev", False),
                   ("https://meld-staging.mergeinc.workers.dev", True), ("https://attacker.example", False),
                   ("", False), ("http://meld.mergeinc.us", False), ("https://meld.mergeinc.us/", False),
                   ("https://meld.mergeinc.us:8443", False), ("https://u@meld.mergeinc.us", False),
                   ("https://Meld.mergeinc.us", False), ("https://meld..us", False), ("https://meld.us/m", False)):
         check(f"origin: valid_origin({o!r}) is {ok}", worker.valid_origin(o) is ok)
     approved = worker.APPROVED_SHARE_ORIGINS
+    from meld_spec import HOSTED_SHARE_ORIGINS
+    check("origin: the Worker's approved set is meld_spec.HOSTED_SHARE_ORIGINS",
+          approved == frozenset(HOSTED_SHARE_ORIGINS) and len(HOSTED_SHARE_ORIGINS) == 2)
+    for url, origin, ok in (("https://meld.mergeinc.us/api/melds", "https://meld.mergeinc.us", True),
+                            ("https://meld.mergeinc.us", "https://meld.mergeinc.us", True),
+                            ("https://meld.mergeinc.us?x=1", "https://meld.mergeinc.us", True),
+                            ("https://meld-staging.mergeinc.workers.dev/m/x", "https://meld-staging.mergeinc.workers.dev", True),
+                            ("https://meld.mergeinc.us/x", "https://meld-staging.mergeinc.workers.dev", False),
+                            ("https://meld-staging.mergeinc.workers.dev/x", "https://meld.mergeinc.us", False),
+                            ("https://meld.mergeinc.us.evil.example/x", "https://meld.mergeinc.us", False),
+                            ("https://meld.mergeinc.us:8443/x", "https://meld.mergeinc.us", False),
+                            ("http://meld.mergeinc.us/x", "https://meld.mergeinc.us", False),
+                            ("https://x.meld.workers.dev/x", "https://attacker.example", False),
+                            (None, "https://meld.mergeinc.us", False)):
+        check(f"origin: on_origin({url!r}, {origin!r}) is {ok}", worker.on_origin(url, origin) is ok)
+
+    class _Boom:
+        def __str__(self):
+            raise TypeError("no")
+
+        def __bool__(self):
+            raise TypeError("no")
+
+    for raw in (123, ["https://meld.mergeinc.us"], {"a": 1}, b"https://meld.mergeinc.us", _Boom(), None):
+        class _E:
+            SHARE_ORIGIN = raw
+        try:
+            got = worker._origin_of(_E)
+            check(f"origin: a non-string SHARE_ORIGIN ({type(raw).__name__}) reads as empty, no error",
+                  got == "" and not worker.valid_origin(got) and not worker.valid_origin(raw))
+        except Exception as e:  # noqa: BLE001
+            check(f"origin: a non-string SHARE_ORIGIN ({type(raw).__name__}) reads as empty, no error", False, repr(e))
     r_miss = TestClient(build_app(MemoryStore(), origin_from=lambda req: "")).post(
         "/api/melds", json={"note": "x"}, headers={"host": "evil.example"})
     check("origin: missing origin is 503 and does not use the request host",
