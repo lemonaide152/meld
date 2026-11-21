@@ -28,8 +28,9 @@ a self-host restart.
   memory and dropping every link it holds.
 - Per-client byte quota (hosted layer): the bridge shard also keeps a ledger
   of text bytes written per client key (an HMAC the hosted layer computes;
-  never an IP), each charge expiring after the longest bridge lifetime
-  (op "charge"). It lives in the same object as the bridges it covers, so an
+  never an IP), summed per key per hour and expiring once an hour's charges
+  are a full bridge lifetime old (op "charge"); at most 37 entries per key and
+  LEDGER_MAX_KEYS keys, so its memory is bounded whatever the write rate. It lives in the same object as the bridges it covers, so an
   eviction drops both together. LEDGER_SHARD is the only shard while SHARDS is 1.
 - Pilot counters and a deployment's extension state live in one MeldMeta
   object, in memory only. A restart or an idle eviction resets them. Its
@@ -60,8 +61,9 @@ KEEPALIVE_SECONDS = 30
 SHARD_MAX_BRIDGES = 1000
 SHARD_MAX_BYTES = 8 * 1024 * 1024
 LEDGER_SHARD = "bridges-0"  # holds the byte-quota ledger; the only shard while SHARDS is 1
-LEDGER_MAX_KEYS = 20000
+LEDGER_MAX_KEYS = 10000  # a full table refuses new keys (fail closed); bounded memory, see test_server
 LEDGER_TTL_SECONDS = max(OPEN_HOURS, IDLE_HOURS) * 3600
+LEDGER_BUCKET_SECONDS = 3600  # charges are summed per key per hour: at most TTL/bucket + 1 entries per key
 
 class _EnvHolder:
     """The Worker env. It is the same object for every request in an isolate,
@@ -151,7 +153,7 @@ class BridgeShard(_Resident, DurableObject):
     def __init__(self, ctx=None, env=None) -> None:
         super().__init__(ctx, env)
         self.store = MemoryStore(max_bridges=SHARD_MAX_BRIDGES, max_bytes=SHARD_MAX_BYTES)
-        self.ledger: dict[str, list] = {}  # client key -> [[until, n], ...]; memory only
+        self.ledger: dict[str, dict] = {}  # client key -> {hour bucket: bytes}; memory only
         self._armed = False
 
     async def op(self, payload: str) -> str:
@@ -178,34 +180,46 @@ class BridgeShard(_Resident, DurableObject):
             out = s.used()
         elif kind == "charge":
             out = self.charge([(str(k), int(q)) for k, q in req["keys"]], int(req["n"]), float(req["now"]),
-                              int(req.get("max_keys", LEDGER_MAX_KEYS)))
+                              min(int(req.get("max_keys", LEDGER_MAX_KEYS)), LEDGER_MAX_KEYS))
         elif kind == "touch":
             out = None
         else:
             raise ValueError("unknown op")
         return out
 
+    @staticmethod
+    def _live(buckets: dict, now: float) -> dict:
+        """Drop hour buckets whose every charge has expired (bucket end + TTL)."""
+        floor = (now - LEDGER_TTL_SECONDS) // LEDGER_BUCKET_SECONDS  # buckets ending before now - TTL
+        for b in [b for b in buckets if b < floor]:
+            del buckets[b]
+        return buckets
+
     def _purge(self, now: float) -> None:
         for key in list(self.ledger):
-            live = [c for c in self.ledger[key] if c[0] > now]
-            if live:
-                self.ledger[key] = live
-            else:
+            if not self._live(self.ledger[key], now):
                 del self.ledger[key]
 
     def charge(self, keys: list, n: int, now: float, max_keys: int) -> bool:
-        """Charge n bytes to every (key, quota) pair, all or nothing. Each
-        charge expires after LEDGER_TTL_SECONDS. A full key table refuses new
-        keys. The ledger never holds the object in memory by itself."""
-        self._purge(now)
-        new = sum(1 for k, _ in keys if k not in self.ledger)
+        """Charge n bytes to every (key, quota) pair, all or nothing. Charges
+        are summed per key per hour bucket and a bucket expires once its last
+        charge is LEDGER_TTL_SECONDS old, so a key holds at most
+        TTL/bucket + 1 entries however many writes it makes. A full key table
+        (max_keys, never above LEDGER_MAX_KEYS) refuses new keys. Expired keys
+        are purged every tick. The ledger never holds the object in memory."""
+        if n < 0:
+            return False
+        live = {k: self._live(self.ledger[k], now) for k, _ in keys if k in self.ledger}
+        new = sum(1 for k, _ in keys if k not in live)
         if len(self.ledger) + new > max_keys:
             return False
         for k, quota in keys:
-            if sum(c[1] for c in self.ledger.get(k, ())) + n > quota:
+            if sum(live.get(k, {}).values()) + n > quota:
                 return False
+        bucket = int(now // LEDGER_BUCKET_SECONDS)
         for k, _ in keys:
-            self.ledger.setdefault(k, []).append([now + LEDGER_TTL_SECONDS, n])
+            got = self.ledger.setdefault(k, {})
+            got[bucket] = got.get(bucket, 0) + n
         return True
 
     def holds_state(self) -> bool:

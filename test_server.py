@@ -712,9 +712,36 @@ def run_residency_and_edges() -> None:
         check("quota: all or nothing across keys", ch([["k4", 1000], ["k2", 100]], 1, 4.0) is False and "k4" not in led.ledger)
         check("quota: a full key table refuses new keys", ch([["k5", 9]], 1, 5.0, mk=2) is False)
         ttl = worker.LEDGER_TTL_SECONDS
-        check("quota: charges expire after the longest bridge lifetime",
-              ttl == max(worker.OPEN_HOURS, worker.IDLE_HOURS) * 3600 and ch([["k1", 100]], 100, ttl + 1.0) is True)
+        check("quota: charges still count until their hour bucket is a full lifetime old",
+              ch([["k1", 100]], 1, ttl + 1.0) is False)
+        check("quota: charges expire after the longest bridge lifetime (rounded up to the hour bucket)",
+              ttl == max(worker.OPEN_HOURS, worker.IDLE_HOURS) * 3600
+              and ch([["k1", 100]], 100, ttl + worker.LEDGER_BUCKET_SECONDS + 1.0) is True)
         check("quota: the ledger alone does not hold the shard", not led.holds_state() and not led._armed)
+        mem = worker.BridgeShard(None, None)
+        for i in range(5000):  # one key writing every 12 s for 36 h: one entry per hour, never one per write
+            mem.charge([("k", 10 ** 12)], 1, float(i * 26), 10)
+        check("quota: one key holds at most TTL/bucket + 1 hour buckets however many writes",
+              len(mem.ledger["k"]) <= worker.LEDGER_TTL_SECONDS // worker.LEDGER_BUCKET_SECONDS + 1, str(len(mem.ledger["k"])))
+        check("quota: a caller cannot raise max_keys above LEDGER_MAX_KEYS",
+              json.loads(asyncio.run(mem.op(json.dumps({"op": "charge", "keys": [["z", 9]], "n": 1, "now": 1.0,
+                                                         "max_keys": 10 ** 9})))) is True
+              and worker.LEDGER_MAX_KEYS <= 10000)
+        import tracemalloc
+        full = worker.BridgeShard(None, None)
+        tracemalloc.start()
+        base_mem = tracemalloc.get_traced_memory()[0]
+        hours = worker.LEDGER_TTL_SECONDS // worker.LEDGER_BUCKET_SECONDS + 1
+        for h in range(hours):  # worst case: every key charged in every hour bucket
+            for i in range(worker.LEDGER_MAX_KEYS):
+                full.charge([(f"{i:032x}", 10 ** 12)], 1, float(h * 3600 + 1), worker.LEDGER_MAX_KEYS)
+        used_mem = tracemalloc.get_traced_memory()[0] - base_mem
+        tracemalloc.stop()
+        refused = full.charge([("one-more-key".ljust(32, "x"), 10 ** 12)], 1, float(hours * 3600 - 10), worker.LEDGER_MAX_KEYS)
+        check(f"quota: a full ledger ({worker.LEDGER_MAX_KEYS} keys x {hours} buckets) stays under 24 MB ({used_mem // 1024} KiB)",
+              used_mem < 24 * 1024 * 1024)
+        check("quota: a full key table refuses a new key (fail closed)", refused is False)
+        check("quota: negative charges are refused", full.charge([("k", 10)], -5, 1.0, 10) is False)
         led._purge(10 * ttl)
         check("quota: expired charges are purged", led.ledger == {})
         check("quota: the ledger shard is the only shard", worker.SHARDS == 1 and worker.LEDGER_SHARD == "bridges-0"
