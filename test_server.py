@@ -615,6 +615,110 @@ def run_f2_f3(kind: str) -> None:
         check(p + f"committed {name} carries the locked notice near the top", notice in head)
 
 
+def run_residency_and_edges() -> None:
+    """Residency touch, MeldMeta holds only while it has sets, no-store,
+    SHARE_ORIGIN validation, and the capped body read."""
+    class Ctx:
+        id = "self-id"
+
+    touched = []
+
+    class Stub:
+        def __init__(self, obj):
+            self.obj = obj
+
+        async def op(self, payload):
+            touched.append(payload)
+            return await self.obj.op(payload)
+
+    spawned = []
+    shard = worker.BridgeShard(Ctx(), None)
+
+    class NS:
+        def get(self, oid):
+            return Stub(shard) if oid == "self-id" else None
+
+    class E:
+        BRIDGES = NS()
+    shard.env = E
+    old_spawn = worker._Resident.spawn
+    worker._Resident.spawn = staticmethod(lambda coro: spawned.append(coro))
+    try:
+        asyncio.run(shard.op(json.dumps({"op": "create", "code": "c1", "note": "n",
+                                         "created_at": "2026-10-01T00:00:00.000Z", "expires_at": "2099-10-03T00:00:00.000Z"})))
+        tick = [cb for cb, _ in TIMERS if getattr(cb, "__self__", None) is shard][-1]
+        tick()
+        check("residency: a tick while holding a bridge re-arms and schedules one self touch", shard._armed and len(spawned) == 1)
+        asyncio.run(spawned.pop())
+        check("residency: the touch is one incoming call through the object's own stub",
+              touched == ['{"op": "touch"}'])
+        check("residency: touch returns null and changes nothing", shard.store.size() == 1)
+        shard.store.sweep_now("2100-01-01T00:00:00.000Z")
+        shard._armed = False
+        n = len(spawned)
+        shard._tick()
+        check("residency: an empty shard lets its timer lapse and sends no touch", not shard._armed and len(spawned) == n)
+        m = worker.MeldMeta(None, None)
+        asyncio.run(m.op(json.dumps({"op": "incr", "day": "2026-10-01", "event": "created"})))
+        check("residency: MeldMeta with counters only does not hold itself", not m.holds_state() and not m._armed)
+        asyncio.run(m.op(json.dumps({"op": "put", "name": "learn", "key": "k", "value": 1})))
+        check("residency: MeldMeta holds while a set is non-empty", m.holds_state() and m._armed)
+        asyncio.run(m.op(json.dumps({"op": "drop", "name": "learn", "keys": ["k"]})))
+        check("residency: MeldMeta stops holding once its sets are empty", not m.holds_state())
+        st = worker.BridgeShard(None, None)
+        st._tick()
+        check("residency: no ctx or env means no touch and no error", True)
+    finally:
+        worker._Resident.spawn = old_spawn
+    src = (ROOT / "worker.py").read_text()
+    check("residency: no storage API, alarm, or outbound fetch in worker.py",
+          not re.search(r"\.storage\b|setAlarm|\balarm\(|js\.fetch|from js import fetch|pyodide\.http", src))
+    c = TestClient(build_app(MemoryStore(), public_url="https://meld.test"))
+    r = c.post("/api/melds", json={"note": "x"})
+    code = r.json()["code"]
+    resps = [r, c.get(f"/api/melds/{code}"), c.post(f"/api/melds/{code}/resolve", json={"context": "y"}),
+             c.get("/api/melds/AAAAAAAAAAAAAAAAAAAAAA"), c.get(f"/m/{code}", headers={"accept": "application/json"}),
+             c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}), c.get("/health")]
+    check("no-store: every JSON and MCP response carries Cache-Control: no-store",
+          all(x.headers.get("cache-control") == "no-store" for x in resps), str([x.headers.get("cache-control") for x in resps]))
+    for o, ok in (("https://meld.mergeinc.us", True), ("https://meld-staging.mergeinc.workers.dev", True),
+                  ("", False), ("http://meld.mergeinc.us", False), ("https://meld.mergeinc.us/", False),
+                  ("https://meld.mergeinc.us:8443", False), ("https://u@meld.mergeinc.us", False),
+                  ("https://Meld.mergeinc.us", False), ("https://meld..us", False), ("https://meld.us/m", False)):
+        check(f"origin: valid_origin({o!r}) is {ok}", worker.valid_origin(o) is ok)
+
+    class Chunk:
+        def __init__(self, data):
+            self.done, self.value = data is None, type("V", (), {"to_bytes": lambda s, d=data: d})()
+
+    class Reader:
+        def __init__(self, chunks):
+            self.chunks, self.reads, self.cancelled = list(chunks), 0, False
+
+        async def read(self):
+            self.reads += 1
+            return Chunk(self.chunks.pop(0) if self.chunks else None)
+
+        def cancel(self):
+            self.cancelled = True
+
+    def req(headers, chunks):
+        rd = Reader(chunks)
+        body = type("B", (), {"getReader": lambda s: rd})()
+        return type("R", (), {"headers": headers, "js_object": type("J", (), {"body": body})()})(), rd
+
+    cap = meld_app.MAX_BODY_BYTES
+    r1, rd1 = req({"content-length": str(cap + 1)}, [b"x" * 10])
+    check("body cap: a declared length over the cap is never read", asyncio.run(worker._read_capped(r1)) == b"" and rd1.reads == 0)
+    big = [b"x" * 65536] * (cap // 65536 + 40)
+    r2, rd2 = req({}, big)
+    got = asyncio.run(worker._read_capped(r2))
+    check("body cap: a chunked body stops at cap + 1 bytes", len(got) == cap + 1 and rd2.reads < len(big) and rd2.cancelled,
+          f"{len(got)} {rd2.reads}")
+    r3, _ = req({"content-length": "5"}, [b"ab", b"cde"])
+    check("body cap: a small body reads in full", asyncio.run(worker._read_capped(r3)) == b"abcde")
+
+
 if __name__ == "__main__":
     run_suite("memory")
     run_suite("do")
@@ -623,6 +727,7 @@ if __name__ == "__main__":
     run_hooks()
     run_worker()
     run_capacity()
+    run_residency_and_edges()
     run_spec_checks()
     print(f"\n{passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
