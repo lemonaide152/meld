@@ -267,6 +267,9 @@ class MeldMeta(_Resident, DurableObject):
             for event in (req.get("count") or []) + ([] if ok else (req.get("deny_events") or [])):
                 self.counters.incr(str(req["day"]), str(event), 1)
             out = ok
+            if req.get("explain") is True:  # which keys are at their limit, so a caller can cache them
+                out = {"ok": ok, "at_limit": [] if ok else
+                       [k for k, n in req["keys"] if self.taken.get(str(k), 0) >= int(n)]}
         elif kind == "drop":
             got = self.sets.get(req["name"], {})
             for key in req["keys"]:

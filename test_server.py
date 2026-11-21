@@ -700,6 +700,10 @@ def run_residency_and_edges() -> None:
         check("budget take_all: \"count\" events are counted whatever the outcome",
               tk2 is True and any("rate_429:ui" in (list(r.values()) if isinstance(r, dict) else list(r)) for r in bm.counters.rows()))
         bm.taken.pop("c9", None)
+        ex1 = json.loads(asyncio.run(bm.op(json.dumps({"op": "take_all", "keys": [["c1", 2], ["total", 2]], "window": 60,
+                                                       "now": 125.0, "max_keys": 9, "day": "2026-10-01", "explain": True}))))
+        check("budget take_all explain: a refusal names the keys at their limit",
+              ex1 == {"ok": False, "at_limit": ["c1", "total"]}, str(ex1))
         check("budget take_all: a full key table refuses new keys",
               tk([["c2", 2], ["c3", 2]], 123.0) is False and "c2" not in bm.taken)
         check("budget take_all: a new window starts over", tk([["c1", 2]], 181.0) is True)
