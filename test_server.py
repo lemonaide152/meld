@@ -695,6 +695,11 @@ def run_residency_and_edges() -> None:
         check("budget take_all: a refusal is counted in the same call",
               ["2026-10-01", "rate_429:api", 1] in [list(r) for r in bm.counters.rows()] or
               any(isinstance(r, dict) and r.get("event") == "rate_429:api" for r in bm.counters.rows()), str(bm.counters.rows()))
+        tk2 = json.loads(asyncio.run(bm.op(json.dumps({"op": "take_all", "keys": [["c9", 5]], "window": 60, "now": 124.0,
+                                                       "max_keys": 9, "day": "2026-10-01", "count": ["rate_429:ui"]}))))
+        check("budget take_all: \"count\" events are counted whatever the outcome",
+              tk2 is True and any("rate_429:ui" in (list(r.values()) if isinstance(r, dict) else list(r)) for r in bm.counters.rows()))
+        bm.taken.pop("c9", None)
         check("budget take_all: a full key table refuses new keys",
               tk([["c2", 2], ["c3", 2]], 123.0) is False and "c2" not in bm.taken)
         check("budget take_all: a new window starts over", tk([["c1", 2]], 181.0) is True)
@@ -745,16 +750,16 @@ def run_residency_and_edges() -> None:
           approved == frozenset(HOSTED_SHARE_ORIGINS) and len(HOSTED_SHARE_ORIGINS) == 2)
     for url, origin, ok in (("https://meld.mergeinc.us/api/melds", "https://meld.mergeinc.us", True),
                             ("https://meld.mergeinc.us", "https://meld.mergeinc.us", True),
-                            ("https://meld.mergeinc.us?x=1", "https://meld.mergeinc.us", True),
+                            ("https://meld.mergeinc.workers.dev/m/x", "https://meld.mergeinc.us", True),
                             ("https://meld-staging.mergeinc.workers.dev/m/x", "https://meld-staging.mergeinc.workers.dev", True),
                             ("https://meld.mergeinc.us/x", "https://meld-staging.mergeinc.workers.dev", False),
+                            ("https://meld.mergeinc.us?x", "https://meld-staging.mergeinc.workers.dev", False),
+                            ("https://meld.mergeinc.us", "https://meld-staging.mergeinc.workers.dev", False),
                             ("https://meld-staging.mergeinc.workers.dev/x", "https://meld.mergeinc.us", False),
-                            ("https://meld.mergeinc.us.evil.example/x", "https://meld.mergeinc.us", False),
-                            ("https://meld.mergeinc.us:8443/x", "https://meld.mergeinc.us", False),
-                            ("http://meld.mergeinc.us/x", "https://meld.mergeinc.us", False),
-                            ("https://x.meld.workers.dev/x", "https://attacker.example", False),
+                            ("https://meld.mergeinc.us/x", "https://meld.mergeinc.workers.dev", False),
+                            ("https://meld.mergeinc.us/x", "https://attacker.example", False),
                             (None, "https://meld.mergeinc.us", False)):
-        check(f"origin: on_origin({url!r}, {origin!r}) is {ok}", worker.on_origin(url, origin) is ok)
+        check(f"origin: request_allowed({url!r}, {origin!r}) is {ok}", worker.request_allowed(url, origin) is ok)
 
     class _Boom:
         def __str__(self):

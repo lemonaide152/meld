@@ -246,12 +246,12 @@ class MeldMeta(_Resident, DurableObject):
         elif kind == "take":  # fixed-window budget: True while key is under limit
             out = self.take(str(req["key"]), int(req["limit"]), int(req["window"]), float(req["now"]),
                             int(req.get("max_keys", 50000)))
-        elif kind == "take_all":  # every key in one call, all or nothing; a refusal is counted here
+        elif kind == "take_all":  # every key in one call, all or nothing; a refusal (and any
+            # refusals the caller answered from its own cache, "count") is counted here
             ok = self.take_all([(str(k), int(n)) for k, n in req["keys"]], int(req["window"]), float(req["now"]),
                                int(req.get("max_keys", 50000)))
-            if not ok:
-                for event in req.get("deny_events") or []:
-                    self.counters.incr(str(req["day"]), str(event), 1)
+            for event in (req.get("count") or []) + ([] if ok else (req.get("deny_events") or [])):
+                self.counters.incr(str(req["day"]), str(event), 1)
             out = ok
         elif kind == "drop":
             got = self.sets.get(req["name"], {})
@@ -380,7 +380,7 @@ class MetaClient:
 # Hosted Worker SHARE_ORIGIN values (meld_spec.HOSTED_SHARE_ORIGINS, shared
 # with the hosted layer). base() and fetch() refuse anything else and never
 # fall back to the request Host header; fetch() also refuses a request whose
-# URL is not on SHARE_ORIGIN.
+# URL is on a different approved origin (request_allowed).
 APPROVED_SHARE_ORIGINS = frozenset(HOSTED_SHARE_ORIGINS)
 
 
@@ -494,11 +494,19 @@ def valid_origin(origin) -> bool:
     return isinstance(origin, str) and origin in APPROVED_SHARE_ORIGINS
 
 
-def on_origin(url, origin) -> bool:
-    """True when the request URL is on SHARE_ORIGIN itself (no other host,
-    port, or scheme)."""
-    return (isinstance(url, str) and valid_origin(origin)
-            and (url == origin or url.startswith(origin + "/") or url.startswith(origin + "?")))
+def _on(url: str, origin: str) -> bool:
+    return url == origin or url.startswith(origin + "/") or url.startswith(origin + "?")
+
+
+def request_allowed(url, origin) -> bool:
+    """False when SHARE_ORIGIN is not approved, or the request URL is on a
+    different approved origin: a production Worker configured with the
+    staging origin (or the reverse) refuses every request on its own host.
+    Other hosts that route to the same Worker (its workers.dev name) keep
+    serving; links are always minted on SHARE_ORIGIN, never the request host."""
+    if not isinstance(url, str) or not valid_origin(origin):
+        return False
+    return not any(_on(url, o) for o in APPROVED_SHARE_ORIGINS if o != origin)
 
 
 def _origin_of(env) -> str:
@@ -566,7 +574,7 @@ if asgi is not None:
 
             scope = asgi.request_to_scope(request, self.env)
             origin = _origin_of(self.env)
-            if not valid_origin(origin) or not on_origin(str(request.url), origin):
+            if not valid_origin(origin) or not request_allowed(str(request.url), origin):
                 status, headers, out = _unavailable()
             else:
                 body = b""
