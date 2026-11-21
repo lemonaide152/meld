@@ -727,10 +727,16 @@ def run_residency_and_edges() -> None:
             mem.charge([("k", 10 ** 12)], 1, float(i * 26), 10)
         check("quota: one key holds at most TTL/bucket + 1 hour buckets however many writes",
               len(mem.ledger["k"]) <= worker.LEDGER_TTL_SECONDS // worker.LEDGER_BUCKET_SECONDS + 1, str(len(mem.ledger["k"])))
+        saved_max = worker.LEDGER_MAX_KEYS
+        try:
+            worker.LEDGER_MAX_KEYS = 2
+            cap = worker.BridgeShard(None, None)
+            got = [json.loads(asyncio.run(cap.op(json.dumps({"op": "charge", "keys": [[f"q{i}", 9]], "n": 1, "now": 1.0,
+                                                               "max_keys": 10 ** 9})))) for i in range(3)]
+        finally:
+            worker.LEDGER_MAX_KEYS = saved_max
         check("quota: a caller cannot raise max_keys above LEDGER_MAX_KEYS",
-              json.loads(asyncio.run(mem.op(json.dumps({"op": "charge", "keys": [["z", 9]], "n": 1, "now": 1.0,
-                                                         "max_keys": 10 ** 9})))) is True
-              and worker.LEDGER_MAX_KEYS <= 10000)
+              got == [True, True, False] and worker.LEDGER_MAX_KEYS <= 10000, str(got))
         import tracemalloc
         full = worker.BridgeShard(None, None)
         tracemalloc.start()
@@ -745,7 +751,10 @@ def run_residency_and_edges() -> None:
         check(f"quota: a full ledger ({worker.LEDGER_MAX_KEYS} keys x {hours} buckets) stays under 24 MB ({used_mem // 1024} KiB)",
               used_mem < 24 * 1024 * 1024)
         check("quota: a full key table refuses a new key (fail closed)", refused is False)
-        check("quota: negative charges are refused", full.charge([("k", 10)], -5, 1.0, 10) is False)
+        neg = worker.BridgeShard(None, None)
+        neg.charge([("k", 10)], 10, 1.0, 10)
+        check("quota: negative charges are refused (no quota refund by a negative n)",
+              neg.charge([("k", 10)], -5, 2.0, 10) is False and neg.charge([("k", 10)], 1, 3.0, 10) is False)
         led._purge(10 * ttl)
         check("quota: expired charges are purged", led.ledger == {})
         check("quota: the ledger shard is the only shard", worker.SHARDS == 1 and worker.LEDGER_SHARD == "bridges-0"
