@@ -7,13 +7,19 @@ deploy drops the links it held; they then return the uniform 404, the same as
 a self-host restart.
 
 - Routing: a code picks one of SHARDS objects by SHA-256. Changing SHARDS
-  remaps codes, which drops live links the same way a restart does.
-- Residency: while an object holds state it keeps one pending in-memory timer
+  remaps codes, which drops live links the same way a restart does. SHARDS is
+  1 to cap residency cost: at most one bridge object is held in memory, and
+  only while it holds a live bridge (about 10,800 GB-s a day at 128 MB if a
+  live bridge exists all day, nothing while none does).
+- Residency: while a bridge object holds a live (unexpired) bridge it keeps one pending in-memory timer
   (setTimeout). A pending timer alone does not keep a Durable Object in memory:
   an object with no incoming calls is evicted after a minute or two. So each
   tick also sends the object one "touch" call through its own stub, an
   incoming call with no payload, and runs the sweep. An empty object lets its
-  timer lapse and is evicted as before. No storage API and no alarm.
+  timer lapse and is evicted as before. Each tick sweeps first, so an object
+  whose last bridge expired stops touching on that tick. MeldMeta never holds
+  itself in memory: its counters, sets and budgets reset when it is evicted.
+  No storage API and no alarm.
 - Sweep: every tick (KEEPALIVE_SECONDS), plus the 5-minute cron, plus a lazy
   check on each read and reply.
 - Memory guard: each shard caps its live bridges and their text bytes
@@ -21,7 +27,7 @@ a self-host restart.
   one 503 body and nothing is stored, instead of the isolate running out of
   memory and dropping every link it holds.
 - Pilot counters and a deployment's extension state live in one MeldMeta
-  object, in memory only. A restart resets them.
+  object, in memory only. A restart or an idle eviction resets them.
 - Logging: nothing here prints or logs. Bridge text never leaves the
   objects except in the HTTP response to the link holder.
 """
@@ -42,7 +48,7 @@ except ImportError:  # not on Workers (tests import this module directly)
         def __init__(self, ctx=None, env=None) -> None:
             self.ctx, self.env = ctx, env
 
-SHARDS = 4
+SHARDS = 1
 KEEPALIVE_SECONDS = 30
 SHARD_MAX_BRIDGES = 1000
 SHARD_MAX_BYTES = 8 * 1024 * 1024
@@ -233,9 +239,10 @@ class MeldMeta(_Resident, DurableObject):
         return True
 
     def holds_state(self) -> bool:
-        """Only extension state (sets) holds the object. Counters alone do not:
-        an idle object with only counters is evicted and they reset."""
-        return any(self.sets.values())
+        """MeldMeta never holds itself in memory (residency cost): counters,
+        sets and budgets live only while requests keep the object in memory,
+        and reset when it is evicted."""
+        return False
 
     def own_namespace(self):
         return self.env.META if self.env is not None else None

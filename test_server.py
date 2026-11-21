@@ -213,7 +213,7 @@ def run_suite(kind: str) -> None:
     check(p + "sweep deletes expired bridges", swept >= 1, str(swept))
     if d1 is not None:  # the Durable Object store
         shards = d1.objects
-        check(p + "bridges spread over the shards by code", len(shards) > 1 and set(shards) <= {f"bridges-{i}" for i in range(worker.SHARDS)}, str(list(shards)))
+        check(p + "bridges map onto the SHARDS objects by code", len(shards) >= 1 and set(shards) <= {f"bridges-{i}" for i in range(worker.SHARDS)}, str(list(shards)))
         check(p + "only live bridges remain in shard memory", sum(o.store.size() for o in shards.values()) >= 1 and all(
             m["expires_at"] > meld_spec.ts(clock.now) for o in shards.values() for m in o.store._melds.values()))
         before = c.get(f"/api/melds/{live}").status_code
@@ -662,9 +662,19 @@ def run_residency_and_edges() -> None:
         asyncio.run(m.op(json.dumps({"op": "incr", "day": "2026-10-01", "event": "created"})))
         check("residency: MeldMeta with counters only does not hold itself", not m.holds_state() and not m._armed)
         asyncio.run(m.op(json.dumps({"op": "put", "name": "learn", "key": "k", "value": 1})))
-        check("residency: MeldMeta holds while a set is non-empty", m.holds_state() and m._armed)
+        check("residency: MeldMeta never holds itself, even with a non-empty set", not m.holds_state() and not m._armed)
         asyncio.run(m.op(json.dumps({"op": "drop", "name": "learn", "keys": ["k"]})))
-        check("residency: MeldMeta stops holding once its sets are empty", not m.holds_state())
+        check("residency: MeldMeta still does not hold after drop", not m.holds_state() and not m._armed)
+        check("residency: SHARDS is capped at one bridge object", worker.SHARDS == 1)
+        ex = worker.BridgeShard(Ctx(), None)
+        ex.env = E
+        asyncio.run(ex.op(json.dumps({"op": "create", "code": "c2", "note": "n",
+                                      "created_at": "2026-10-01T00:00:00.000Z", "expires_at": "2026-10-02T00:00:00.000Z"})))
+        ex._armed = False
+        n2 = len(spawned)
+        ex._tick()
+        check("residency: a tick after the last bridge expired sweeps it and sends no touch",
+              ex.store.size() == 0 and not ex._armed and len(spawned) == n2)
         bm = worker.MeldMeta(None, None)
         take = lambda key, now, limit=2: json.loads(asyncio.run(bm.op(json.dumps(
             {"op": "take", "key": key, "limit": limit, "window": 60, "now": now, "max_keys": 3}))))
