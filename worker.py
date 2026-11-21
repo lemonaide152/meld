@@ -28,9 +28,11 @@ a self-host restart.
   memory and dropping every link it holds.
 - Per-client byte quota (hosted layer): the bridge shard also keeps a ledger
   of text bytes written per client key (an HMAC the hosted layer computes;
-  never an IP), summed per key per hour and expiring once an hour's charges
-  are a full bridge lifetime old (op "charge"); at most 37 entries per key and
-  LEDGER_MAX_KEYS keys, so its memory is bounded whatever the write rate. It lives in the same object as the bridges it covers, so an
+  never an IP), summed per key per hour in a fixed 37-slot array per key and
+  expiring once an hour's charges are a full bridge lifetime old (op
+  "charge"). At most LEDGER_MAX_KEYS keys (a full table evicts the least
+  recently charged key) and LEDGER_MAX_CHILDREN tracked children per prefix,
+  so its memory is bounded whatever the write rate. It lives in the same object as the bridges it covers, so an
   eviction drops both together. LEDGER_SHARD is the only shard while SHARDS is 1.
 - Pilot counters and a deployment's extension state live in one MeldMeta
   object, in memory only. A restart or an idle eviction resets them. Its
@@ -43,6 +45,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from array import array
 
 from meld_app import build_app
 from meld_spec import HOSTED_SHARE_ORIGINS, IDLE_HOURS, OPEN_HOURS, parse_ts, ts, utcnow
@@ -61,9 +64,11 @@ KEEPALIVE_SECONDS = 30
 SHARD_MAX_BRIDGES = 1000
 SHARD_MAX_BYTES = 8 * 1024 * 1024
 LEDGER_SHARD = "bridges-0"  # holds the byte-quota ledger; the only shard while SHARDS is 1
-LEDGER_MAX_KEYS = 10000  # a full table refuses new keys (fail closed); bounded memory, see test_server
+LEDGER_MAX_KEYS = 10000  # a full table evicts its least recently charged key; bounded memory, see test_server
+LEDGER_MAX_CHILDREN = 64  # per parent (prefix) key; past this a new child is not tracked, the parent still charged
 LEDGER_TTL_SECONDS = max(OPEN_HOURS, IDLE_HOURS) * 3600
-LEDGER_BUCKET_SECONDS = 3600  # charges are summed per key per hour: at most TTL/bucket + 1 entries per key
+LEDGER_BUCKET_SECONDS = 3600  # charges are summed per key per hour
+LEDGER_SLOTS = LEDGER_TTL_SECONDS // LEDGER_BUCKET_SECONDS + 1  # 37 hour slots per key, fixed size
 
 class _EnvHolder:
     """The Worker env. It is the same object for every request in an isolate,
@@ -153,7 +158,11 @@ class BridgeShard(_Resident, DurableObject):
     def __init__(self, ctx=None, env=None) -> None:
         super().__init__(ctx, env)
         self.store = MemoryStore(max_bridges=SHARD_MAX_BRIDGES, max_bytes=SHARD_MAX_BYTES)
-        self.ledger: dict[str, dict] = {}  # client key -> {hour bucket: bytes}; memory only
+        # client key -> array('q') of LEDGER_SLOTS hour ids then LEDGER_SLOTS byte sums (slot = hour % SLOTS).
+        # Insertion order is recency: a charged key moves to the end; the first key is evicted when full.
+        self.ledger: dict[str, array] = {}
+        self.parent: dict[str, str] = {}  # child key -> parent key, for tracked children only
+        self.children: dict[str, set] = {}  # parent key -> its tracked child keys
         self._armed = False
 
     async def op(self, payload: str) -> str:
@@ -179,7 +188,8 @@ class BridgeShard(_Resident, DurableObject):
         elif kind == "used":
             out = s.used()
         elif kind == "charge":
-            out = self.charge([(str(k), int(q)) for k, q in req["keys"]], int(req["n"]), float(req["now"]),
+            out = self.charge([(str(e[0]), int(e[1]), str(e[2]) if len(e) > 2 and e[2] is not None else None)
+                               for e in req["keys"]], int(req["n"]), float(req["now"]),
                               min(int(req.get("max_keys", LEDGER_MAX_KEYS)), LEDGER_MAX_KEYS))
         elif kind == "touch":
             out = None
@@ -188,38 +198,85 @@ class BridgeShard(_Resident, DurableObject):
         return out
 
     @staticmethod
-    def _live(buckets: dict, now: float) -> dict:
-        """Drop hour buckets whose every charge has expired (bucket end + TTL)."""
-        floor = (now - LEDGER_TTL_SECONDS) // LEDGER_BUCKET_SECONDS  # buckets ending before now - TTL
-        for b in [b for b in buckets if b < floor]:
-            del buckets[b]
-        return buckets
+    def _floor(now: float) -> int:
+        """Oldest hour id whose charges still count (its last charge is under TTL old)."""
+        return int((now - LEDGER_TTL_SECONDS) // LEDGER_BUCKET_SECONDS)
+
+    @staticmethod
+    def _used(slots: array, floor: int) -> int:
+        return sum(slots[LEDGER_SLOTS + i] for i in range(LEDGER_SLOTS) if slots[i] >= floor)
+
+    def _drop(self, key: str) -> None:
+        self.ledger.pop(key, None)
+        parent = self.parent.pop(key, None)
+        if parent is not None:
+            kids = self.children.get(parent)
+            if kids is not None:
+                kids.discard(key)
+                if not kids:
+                    del self.children[parent]
+        for kid in self.children.pop(key, ()):  # its children stay as plain (untracked-parent) keys
+            self.parent.pop(kid, None)
 
     def _purge(self, now: float) -> None:
-        for key in list(self.ledger):
-            if not self._live(self.ledger[key], now):
-                del self.ledger[key]
+        floor = self._floor(now)
+        for key in [k for k, slots in self.ledger.items() if self._used(slots, floor) == 0]:
+            self._drop(key)
 
     def charge(self, keys: list, n: int, now: float, max_keys: int) -> bool:
-        """Charge n bytes to every (key, quota) pair, all or nothing. Charges
-        are summed per key per hour bucket and a bucket expires once its last
-        charge is LEDGER_TTL_SECONDS old, so a key holds at most
-        TTL/bucket + 1 entries however many writes it makes. A full key table
-        (max_keys, never above LEDGER_MAX_KEYS) refuses new keys. Expired keys
-        are purged every tick. The ledger never holds the object in memory."""
+        """Charge n bytes to every (key, quota[, parent]) entry, all or nothing.
+
+        Memory is fixed per key: LEDGER_SLOTS hour slots in one array('q'),
+        so a key costs the same however many writes it makes. A child key
+        (an address or /64 under a prefix) is tracked only while its parent
+        has fewer than LEDGER_MAX_CHILDREN tracked children; past that only the
+        parent is charged, so one prefix cannot flood the table. When the
+        table is full, expired keys (always the least recently charged) are
+        dropped first, then the least recently charged live keys are evicted
+        (a new client is never refused). Every tick also purges expired keys. The ledger never holds the
+        object in memory by itself."""
         if n < 0:
             return False
-        live = {k: self._live(self.ledger[k], now) for k, _ in keys if k in self.ledger}
-        new = sum(1 for k, _ in keys if k not in live)
-        if len(self.ledger) + new > max_keys:
-            return False
-        for k, quota in keys:
-            if sum(live.get(k, {}).values()) + n > quota:
+        floor = self._floor(now)
+        plan = []
+        for entry in keys:
+            k, quota, parent = entry[0], entry[1], entry[2] if len(entry) > 2 else None
+            if (k not in self.ledger and parent is not None
+                    and len(self.children.get(parent, ())) >= LEDGER_MAX_CHILDREN):
+                continue  # untracked child: its prefix key still carries the charge
+            plan.append((k, quota, parent))
+        for k, quota, _ in plan:
+            slots = self.ledger.get(k)
+            if (self._used(slots, floor) if slots is not None else 0) + n > quota:
                 return False
-        bucket = int(now // LEDGER_BUCKET_SECONDS)
-        for k, _ in keys:
-            got = self.ledger.setdefault(k, {})
-            got[bucket] = got.get(bucket, 0) + n
+        new = [e for e in plan if e[0] not in self.ledger]
+        if new and len(self.ledger) + len(new) > max_keys:
+            # Recency order puts expired keys first: drop them (each at most once, so
+            # amortized O(1)); expired keys never count toward the cap or push out live ones.
+            while self.ledger:
+                front = next(iter(self.ledger))
+                if self._used(self.ledger[front], floor) != 0:
+                    break
+                self._drop(front)
+            keep = {k for k, _, _ in plan}
+            while len(self.ledger) + len(new) > max_keys:
+                victim = next((k for k in self.ledger if k not in keep), None)
+                if victim is None:
+                    return False
+                self._drop(victim)
+        hour = int(now // LEDGER_BUCKET_SECONDS)
+        i = hour % LEDGER_SLOTS
+        for k, _, parent in plan:
+            slots = self.ledger.pop(k, None)
+            if slots is None:
+                slots = array("q", [0]) * (2 * LEDGER_SLOTS)
+                if parent is not None and parent != k:
+                    self.parent[k] = parent
+                    self.children.setdefault(parent, set()).add(k)
+            if slots[i] != hour:
+                slots[i], slots[LEDGER_SLOTS + i] = hour, 0
+            slots[LEDGER_SLOTS + i] += n
+            self.ledger[k] = slots  # most recently charged last
         return True
 
     def holds_state(self) -> bool:
@@ -364,7 +421,7 @@ class DOStore:
 
     async def charge(self, keys: list, n: int, now: float) -> bool:
         """Byte quota for the hosted layer: True when n bytes fit under every
-        (client key, quota) pair; nothing is charged otherwise."""
+        (client key, quota[, parent key]) entry; nothing is charged otherwise."""
         return await _call(self._stub(LEDGER_SHARD), {"op": "charge", "keys": [list(k) for k in keys],
                                                       "n": int(n), "now": float(now)}) is True
 

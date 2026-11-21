@@ -714,7 +714,11 @@ def run_residency_and_edges() -> None:
               [ch([["k1", 100]], 60, 0.0), ch([["k1", 100]], 40, 1.0), ch([["k1", 100]], 1, 2.0)] == [True, True, False])
         check("quota: another key has its own quota", ch([["k2", 100]], 100, 3.0) is True)
         check("quota: all or nothing across keys", ch([["k4", 1000], ["k2", 100]], 1, 4.0) is False and "k4" not in led.ledger)
-        check("quota: a full key table refuses new keys", ch([["k5", 9]], 1, 5.0, mk=2) is False)
+        check("quota: a full key table evicts the least recently charged key instead of refusing",
+              ch([["k5", 9]], 1, 5.0, mk=2) is True and "k5" in led.ledger and len(led.ledger) <= 2
+              and "k1" not in led.ledger, str(list(led.ledger)))
+        led.ledger.clear(); led.parent.clear(); led.children.clear()
+        ch([["k1", 100]], 100, 0.5)
         ttl = worker.LEDGER_TTL_SECONDS
         check("quota: charges still count until their hour bucket is a full lifetime old",
               ch([["k1", 100]], 1, ttl + 1.0) is False)
@@ -722,35 +726,89 @@ def run_residency_and_edges() -> None:
               ttl == max(worker.OPEN_HOURS, worker.IDLE_HOURS) * 3600
               and ch([["k1", 100]], 100, ttl + worker.LEDGER_BUCKET_SECONDS + 1.0) is True)
         check("quota: the ledger alone does not hold the shard", not led.holds_state() and not led._armed)
+        T0 = 500_000 * 3600.0  # realistic epoch-hour ids (~2027), never cached small ints
         mem = worker.BridgeShard(None, None)
-        for i in range(5000):  # one key writing every 12 s for 36 h: one entry per hour, never one per write
-            mem.charge([("k", 10 ** 12)], 1, float(i * 26), 10)
-        check("quota: one key holds at most TTL/bucket + 1 hour buckets however many writes",
-              len(mem.ledger["k"]) <= worker.LEDGER_TTL_SECONDS // worker.LEDGER_BUCKET_SECONDS + 1, str(len(mem.ledger["k"])))
+        for i in range(5000):  # one key writing every 26 s for 36 h: fixed-size slots, never one entry per write
+            mem.charge([("k", 10 ** 12)], 40_000 + i, T0 + i * 26, 10)
+        check("quota: a key's ledger entry is a fixed array of 37 hour slots however many writes",
+              len(mem.ledger["k"]) == 2 * worker.LEDGER_SLOTS and worker.LEDGER_SLOTS == 37, str(len(mem.ledger["k"])))
+        floor = mem._floor(T0 + 5000 * 26)
+        check("quota: the slot sum equals the live charges",
+              mem._used(mem.ledger["k"], floor) == sum(40_000 + i for i in range(5000)
+                                                       if int((T0 + i * 26) // 3600) >= floor))
         saved_max = worker.LEDGER_MAX_KEYS
         try:
             worker.LEDGER_MAX_KEYS = 2
             cap = worker.BridgeShard(None, None)
-            got = [json.loads(asyncio.run(cap.op(json.dumps({"op": "charge", "keys": [[f"q{i}", 9]], "n": 1, "now": 1.0,
-                                                               "max_keys": 10 ** 9})))) for i in range(3)]
+            for i in range(3):
+                asyncio.run(cap.op(json.dumps({"op": "charge", "keys": [[f"q{i}", 9]], "n": 1, "now": T0 + i,
+                                               "max_keys": 10 ** 9})))
         finally:
             worker.LEDGER_MAX_KEYS = saved_max
         check("quota: a caller cannot raise max_keys above LEDGER_MAX_KEYS",
-              got == [True, True, False] and worker.LEDGER_MAX_KEYS <= 10000, str(got))
+              len(cap.ledger) == 2 and "q0" not in cap.ledger and worker.LEDGER_MAX_KEYS <= 10000, str(list(cap.ledger)))
+        import random
         import tracemalloc
+        rnd = random.Random(7)
         full = worker.BridgeShard(None, None)
         tracemalloc.start()
         base_mem = tracemalloc.get_traced_memory()[0]
-        hours = worker.LEDGER_TTL_SECONDS // worker.LEDGER_BUCKET_SECONDS + 1
-        for h in range(hours):  # worst case: every key charged in every hour bucket
-            for i in range(worker.LEDGER_MAX_KEYS):
-                full.charge([(f"{i:032x}", 10 ** 12)], 1, float(h * 3600 + 1), worker.LEDGER_MAX_KEYS)
+        hours = worker.LEDGER_SLOTS
+        for h in range(hours):  # worst case: every key (half children of 64-wide prefixes) charged every hour
+            now_h = T0 + h * 3600 + 1
+            for i in range(worker.LEDGER_MAX_KEYS // 2):
+                full.charge([(f"{i:032x}", 10 ** 12, f"p{i // 64:031x}"), (f"p{i // 64:031x}", 10 ** 12)],
+                            rnd.randint(200, 65536), now_h, worker.LEDGER_MAX_KEYS)
+            for i in range(worker.LEDGER_MAX_KEYS // 2, worker.LEDGER_MAX_KEYS - 200):
+                full.charge([(f"{i:032x}", 10 ** 12)], rnd.randint(200, 65536), now_h, worker.LEDGER_MAX_KEYS)
         used_mem = tracemalloc.get_traced_memory()[0] - base_mem
         tracemalloc.stop()
-        refused = full.charge([("one-more-key".ljust(32, "x"), 10 ** 12)], 1, float(hours * 3600 - 10), worker.LEDGER_MAX_KEYS)
-        check(f"quota: a full ledger ({worker.LEDGER_MAX_KEYS} keys x {hours} buckets) stays under 24 MB ({used_mem // 1024} KiB)",
-              used_mem < 24 * 1024 * 1024)
-        check("quota: a full key table refuses a new key (fail closed)", refused is False)
+        check(f"quota: a full ledger ({len(full.ledger)} keys x {hours} slots, epoch-hour ids, body-size charges) "
+              f"stays under 16 MB ({used_mem // 1024} KiB; bound 24 MB)",
+              used_mem < 16 * 1024 * 1024 and len(full.ledger) <= worker.LEDGER_MAX_KEYS)
+        ok_new = full.charge([("one-more-key".ljust(32, "x"), 10 ** 12)], 1, T0 + hours * 3600, worker.LEDGER_MAX_KEYS)
+        check("quota: a full table still accepts a new client (evicts, never refuses)",
+              ok_new is True and len(full.ledger) <= worker.LEDGER_MAX_KEYS)
+        # one /48 flood: 20,000 distinct /64s under one prefix
+        fl = worker.BridgeShard(None, None)
+        fl.charge([("victim-64", 10 ** 9, "victim-48"), ("victim-48", 10 ** 9)], 1, T0, worker.LEDGER_MAX_KEYS)
+        for i in range(20_000):
+            fl.charge([(f"a64-{i}", 10 ** 9, "attacker-48"), ("attacker-48", 10 ** 12)], 1, T0 + 1 + i * 0.05,
+                      worker.LEDGER_MAX_KEYS)
+        check("quota: a single /48 flood tracks at most LEDGER_MAX_CHILDREN children plus its prefix key",
+              len(fl.ledger) == 2 + worker.LEDGER_MAX_CHILDREN + 1
+              and len(fl.children["attacker-48"]) == worker.LEDGER_MAX_CHILDREN, str(len(fl.ledger)))
+        check("quota: after the /48 flood an unrelated client is still charged and tracked",
+              fl.charge([("new-64", 10 ** 9, "new-48"), ("new-48", 10 ** 9)], 1, T0 + 2000, worker.LEDGER_MAX_KEYS)
+              and "new-64" in fl.ledger and "victim-64" in fl.ledger)
+        check("quota: the flood's prefix key still carries every charge (untracked children included)",
+              fl._used(fl.ledger["attacker-48"], fl._floor(T0 + 2000)) == 20_000)
+        # v4: ~10,000 addresses across 40 /24s: at most 64 tracked per /24
+        v4 = worker.BridgeShard(None, None)
+        for i in range(10_000):
+            net = f"198.{i // 250 % 256}.{i // 250}.0/24"
+            v4.charge([(f"v4-{i}", 10 ** 9, net), (net, 10 ** 12)], 1, T0 + i * 0.1, worker.LEDGER_MAX_KEYS)
+        nets = {f"198.{i // 250 % 256}.{i // 250}.0/24" for i in range(10_000)}
+        check("quota: a v4 spread over 40 /24s tracks at most 64 addresses per /24 and leaves room",
+              len(v4.ledger) == len(nets) * (worker.LEDGER_MAX_CHILDREN + 1) < worker.LEDGER_MAX_KEYS
+              and v4.charge([("v4-new", 10 ** 9, "203.0.113.0/24"), ("203.0.113.0/24", 10 ** 9)], 1, T0 + 1001,
+                            worker.LEDGER_MAX_KEYS), str(len(v4.ledger)))
+        # expired keys do not count toward the cap: purged before any eviction
+        ex = worker.BridgeShard(None, None)
+        for i in range(5):
+            ex.charge([(f"old{i}", 10 ** 9)], 10, T0, 5)
+        ex.charge([("fresh", 10 ** 9)], 10, T0 + worker.LEDGER_TTL_SECONDS + 7200, 5)
+        ex.charge([("live", 10 ** 9)], 10, T0 + worker.LEDGER_TTL_SECONDS + 7300, 5)
+        check("quota: expired keys are purged, not counted, when the table is full",
+              set(ex.ledger) == {"fresh", "live"}, str(list(ex.ledger)))
+        # eviction drops a parent's child links consistently
+        ev = worker.BridgeShard(None, None)
+        ev.charge([("c1", 10 ** 9, "P"), ("P", 10 ** 9)], 1, T0, 2)
+        ev.charge([("x", 10 ** 9)], 1, T0 + 1, 2)
+        check("quota: evicting a key keeps parent/child links consistent",
+              all(p in ev.ledger or c not in ev.parent for c, p in ev.parent.items())
+              and all(all(k in ev.parent for k in kids) for kids in ev.children.values()),
+              str((list(ev.ledger), ev.parent, ev.children)))
         neg = worker.BridgeShard(None, None)
         neg.charge([("k", 10)], 10, 1.0, 10)
         check("quota: negative charges are refused (no quota refund by a negative n)",
