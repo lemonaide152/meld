@@ -43,8 +43,6 @@ SHARDS = 4
 KEEPALIVE_SECONDS = 60
 SHARD_MAX_BRIDGES = 1000
 SHARD_MAX_BYTES = 8 * 1024 * 1024
-BRIDGES_BINDING = "BRIDGES"
-META_BINDING = "META"
 
 class _EnvHolder:
     """The Worker env. It is the same object for every request in an isolate,
@@ -236,9 +234,14 @@ class MetaClient:
         await self.call("incr", day=day, event=key)
 
 
-def _binding(name: str):
+def _bridges():
     env = _env.get()
-    return getattr(env, name, None) if env is not None else None
+    return getattr(env, "BRIDGES", None) if env is not None else None
+
+
+def _meta():
+    env = _env.get()
+    return getattr(env, "META", None) if env is not None else None
 
 
 def _notices(request) -> tuple:
@@ -258,8 +261,8 @@ try:  # optional static card image; bytes only, no behavior
 except ImportError:
     ASSETS = {}
 
-store = DOStore(lambda: _binding(BRIDGES_BINDING))
-meta = MetaClient(lambda: _binding(META_BINDING))
+store = DOStore(_bridges)
+meta = MetaClient(_meta)
 _meld_app = build_app(store, hooks=FunnelHooks(lambda: meta if meta.available() else None),
                       assets=ASSETS, origin_from=_origin, notices_from=_notices)
 _meld_app.meta = meta
