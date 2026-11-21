@@ -665,6 +665,14 @@ def run_residency_and_edges() -> None:
         check("residency: MeldMeta holds while a set is non-empty", m.holds_state() and m._armed)
         asyncio.run(m.op(json.dumps({"op": "drop", "name": "learn", "keys": ["k"]})))
         check("residency: MeldMeta stops holding once its sets are empty", not m.holds_state())
+        bm = worker.MeldMeta(None, None)
+        take = lambda key, now, limit=2: json.loads(asyncio.run(bm.op(json.dumps(
+            {"op": "take", "key": key, "limit": limit, "window": 60, "now": now, "max_keys": 3}))))
+        check("budget take: allows up to the limit in a window, then refuses",
+              [take("a", 10.0), take("a", 11.0), take("a", 12.0)] == [True, True, False])
+        check("budget take: a new window starts over", take("a", 61.0) is True)
+        check("budget take: a full key table refuses new keys", [take("b", 62.0), take("c", 62.0), take("d", 62.0)] == [True, True, False])
+        check("budget take: budgets alone do not hold the object", not bm.holds_state() and not bm._armed)
         st = worker.BridgeShard(None, None)
         st._tick()
         check("residency: no ctx or env means no touch and no error", True)

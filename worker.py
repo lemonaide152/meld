@@ -182,6 +182,8 @@ class MeldMeta(_Resident, DurableObject):
         super().__init__(ctx, env)
         self.counters = MemoryCounters()
         self.sets: dict[str, dict] = {}
+        self.window = (-1, 0)  # (window number, window seconds) for "take"
+        self.taken: dict[str, int] = {}
         self._armed = False
 
     async def op(self, payload: str) -> str:
@@ -197,6 +199,9 @@ class MeldMeta(_Resident, DurableObject):
             out = None
         elif kind == "items":
             out = dict(self.sets.get(req["name"], {}))
+        elif kind == "take":  # fixed-window budget: True while key is under limit
+            out = self.take(str(req["key"]), int(req["limit"]), int(req["window"]), float(req["now"]),
+                            int(req.get("max_keys", 50000)))
         elif kind == "drop":
             got = self.sets.get(req["name"], {})
             for key in req["keys"]:
@@ -211,6 +216,21 @@ class MeldMeta(_Resident, DurableObject):
         if self.holds_state():
             self._arm()
         return json.dumps(out)
+
+    def take(self, key: str, limit: int, window: int, now: float, max_keys: int) -> bool:
+        """One unit of a fixed-window budget, in memory only. A new window
+        clears every key. A full key table refuses new keys. Budgets do not
+        hold the object in memory; an eviction just starts a fresh window."""
+        w = (int(now // max(window, 1)), window)
+        if w != self.window:
+            self.window, self.taken = w, {}
+        n = self.taken.get(key)
+        if n is None and len(self.taken) >= max_keys:
+            return False
+        if (n or 0) >= limit:
+            return False
+        self.taken[key] = (n or 0) + 1
+        return True
 
     def holds_state(self) -> bool:
         """Only extension state (sets) holds the object. Counters alone do not:
