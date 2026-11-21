@@ -111,8 +111,10 @@ class _Resident:
         except Exception:
             pass
 
+    _armed = False
+
     def _arm(self) -> None:
-        if getattr(self, "_armed", False):
+        if self._armed:
             return
         self._armed = bool(self.timer(self._tick, KEEPALIVE_SECONDS))
 
@@ -282,25 +284,50 @@ class MetaClient:
         await self.call("incr", day=day, event=key)
 
 
+# Hosted Worker SHARE_ORIGIN values. base() and fetch() refuse anything else
+# and never fall back to the request Host header.
+APPROVED_SHARE_ORIGINS = {
+    "https://meld.mergeinc.us",
+    "https://meld.mergeinc.workers.dev",
+    "https://meld-staging.mergeinc.workers.dev",
+}
+
+
 def _bridges():
     env = _env.get()
-    return getattr(env, "BRIDGES", None) if env is not None else None
+    if env is None:
+        return None
+    try:
+        return env.BRIDGES
+    except AttributeError:
+        return None
 
 
 def _meta():
     env = _env.get()
-    return getattr(env, "META", None) if env is not None else None
+    if env is None:
+        return None
+    try:
+        return env.META
+    except AttributeError:
+        return None
 
 
 def _notices(request) -> tuple:
     """Extra trust lines from the TRUST_NOTICES var, separated by '|'."""
     env = _env.get()
-    raw = str(getattr(env, "TRUST_NOTICES", "") or "") if env is not None else ""
+    raw = ""
+    if env is not None:
+        try:
+            raw = str(env.TRUST_NOTICES or "")
+        except AttributeError:
+            raw = ""
     return tuple(n.strip() for n in raw.split("|") if n.strip())
 
 
 def _origin(request) -> str:
-    return _origin_of(_env.get())
+    origin = _origin_of(_env.get())
+    return origin if valid_origin(origin) else ""
 
 
 try:  # optional static card image; bytes only, no behavior
@@ -311,7 +338,8 @@ except ImportError:
 store = DOStore(_bridges)
 meta = MetaClient(_meta)
 _meld_app = build_app(store, hooks=FunnelHooks(lambda: meta if meta.available() else None),
-                      assets=ASSETS, origin_from=_origin, notices_from=_notices)
+                      assets=ASSETS, origin_from=_origin, notices_from=_notices,
+                      allowed_origins=APPROVED_SHARE_ORIGINS)
 _meld_app.meta = meta
 core = _meld_app.meld
 
@@ -371,15 +399,8 @@ async def serve(asgi_app, scope: dict, body: bytes):
 
 
 def valid_origin(origin: str) -> bool:
-    """SHARE_ORIGIN must be a bare https origin (scheme and host, no path,
-    port, user info, query, or fragment). Without one the Worker answers 503
-    instead of minting links from the request's Host header."""
-    if not origin.startswith("https://"):
-        return False
-    host = origin[len("https://"):]
-    if not host or len(host) > 253 or host.startswith(".") or host.endswith(".") or ".." in host:
-        return False
-    return all(c.isascii() and (c.isalnum() or c in ".-") for c in host) and host.lower() == host
+    """SHARE_ORIGIN must be exactly one of the hardcoded hosted origins."""
+    return origin in APPROVED_SHARE_ORIGINS
 
 
 def _origin_of(env) -> str:

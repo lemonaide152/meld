@@ -306,7 +306,7 @@ def main(argv) -> int:
         from fastapi.testclient import TestClient
         from meld_app import build_app
         from meld_store import MemoryStore
-        exercise(TestClient(build_app(MemoryStore())), doc)
+        exercise(TestClient(build_app(MemoryStore(), public_url="https://meld.test")), doc)
     if errors:
         for e in errors:
             print("FAIL", e)

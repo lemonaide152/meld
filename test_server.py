@@ -395,7 +395,7 @@ def run_worker() -> None:
     class Env:
         BRIDGES = bridges
         META = meta
-        SHARE_ORIGIN = "https://meld-staging.example"
+        SHARE_ORIGIN = "https://meld-staging.mergeinc.workers.dev"
 
     clock = Clock()
     meld_app.utcnow = clock
@@ -425,7 +425,7 @@ def run_worker() -> None:
 
     TIMERS.clear()
     s, j = asyncio.run(asgi_call("POST", "/api/melds", {"note": "hosted"}))
-    check("worker: create through a Durable Object with SHARE_ORIGIN", s == 200 and j["url"].startswith("https://meld-staging.example/m/"), str(j))
+    check("worker: create through a Durable Object with SHARE_ORIGIN", s == 200 and j["url"].startswith("https://meld-staging.mergeinc.workers.dev/m/"), str(j))
     code = j["code"]
     shard = bridges.objects[worker.shard_name(code)]
     check("worker: bridge held in that shard's memory only", code in shard.store._melds and shard.ctx is None)
@@ -681,11 +681,31 @@ def run_residency_and_edges() -> None:
              c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}), c.get("/health")]
     check("no-store: every JSON and MCP response carries Cache-Control: no-store",
           all(x.headers.get("cache-control") == "no-store" for x in resps), str([x.headers.get("cache-control") for x in resps]))
-    for o, ok in (("https://meld.mergeinc.us", True), ("https://meld-staging.mergeinc.workers.dev", True),
+    banned = ("cdn-cache-control", "cloudflare-cdn-cache-control", "surrogate-control")
+    check("no-store: no CDN or surrogate cache headers on those responses",
+          all(all(h not in {k.lower() for k in x.headers} for h in banned) for x in resps))
+    for o, ok in (("https://meld.mergeinc.us", True), ("https://meld.mergeinc.workers.dev", True),
+                  ("https://meld-staging.mergeinc.workers.dev", True), ("https://attacker.example", False),
                   ("", False), ("http://meld.mergeinc.us", False), ("https://meld.mergeinc.us/", False),
                   ("https://meld.mergeinc.us:8443", False), ("https://u@meld.mergeinc.us", False),
                   ("https://Meld.mergeinc.us", False), ("https://meld..us", False), ("https://meld.us/m", False)):
         check(f"origin: valid_origin({o!r}) is {ok}", worker.valid_origin(o) is ok)
+    approved = worker.APPROVED_SHARE_ORIGINS
+    r_miss = TestClient(build_app(MemoryStore(), origin_from=lambda req: "")).post(
+        "/api/melds", json={"note": "x"}, headers={"host": "evil.example"})
+    check("origin: missing origin is 503 and does not use the request host",
+          r_miss.status_code == 503 and "evil.example" not in r_miss.text)
+    r_bad = TestClient(build_app(MemoryStore(), origin_from=lambda req: "https://attacker.example",
+                                 allowed_origins=approved)).post("/api/melds", json={"note": "x"})
+    check("origin: an origin outside the approved set is 503", r_bad.status_code == 503)
+    r_ok = TestClient(build_app(MemoryStore(), origin_from=lambda req: "https://meld.mergeinc.us",
+                                allowed_origins=approved)).post("/api/melds", json={"note": "x"})
+    check("origin: an approved SHARE_ORIGIN is used for links",
+          r_ok.status_code == 200 and r_ok.json()["url"].startswith("https://meld.mergeinc.us/"))
+    r_host = TestClient(build_app(MemoryStore())).post(
+        "/api/melds", json={"note": "x"}, headers={"host": "evil.example"})
+    check("origin: base() never falls back to the request host",
+          r_host.status_code == 503 and "evil.example" not in r_host.text)
 
     class Chunk:
         def __init__(self, data):

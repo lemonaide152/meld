@@ -11,7 +11,7 @@ import json
 import secrets
 from typing import Any, Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
 import meld_docs
@@ -292,16 +292,20 @@ def untrusted(meld: dict) -> list:
 
 
 def build_app(store, *, public_url: Optional[str] = None, hooks=None, assets: Optional[dict] = None,
-              background_sweep: bool = False, origin_from=None, notices_from=None) -> Any:
+              background_sweep: bool = False, origin_from=None, notices_from=None,
+              allowed_origins: Optional[set[str]] = None) -> Any:
     """The meld ASGI app.
 
-    public_url    fixed origin for links (else the request's own origin)
+    public_url    fixed origin for links (self-host and tests)
     hooks         object with `async event(name, **fields)`; pilot instrumentation only
     assets        {path: (bytes, media_type)} static files such as /og.png
     background_sweep  run the sweep every SWEEP_MINUTES in-process (self-host)
     origin_from   callable(request) -> origin, for hosts that read it from env
     notices_from  callable(request) -> tuple of extra trust lines a deployment must show
                   (trust.md and the page), for hosts that read them from env
+    allowed_origins  if set, base() returns 503 unless the origin is in this set.
+                  The hosted Worker passes its hardcoded approved origins.
+                  base() never falls back to the request Host header.
     """
     assets = dict(assets or {})
     core = Meld(store, hooks)
@@ -321,13 +325,15 @@ def build_app(store, *, public_url: Optional[str] = None, hooks=None, assets: Op
             app.state.sweeper = asyncio.create_task(loop())
 
     def base(request: Request) -> str:
+        # Never mint links from the request Host header.
+        origin = ""
         if public_url:
-            return public_url.rstrip("/")
-        if origin_from is not None:
-            got = origin_from(request)
-            if got:
-                return got.rstrip("/")
-        return str(request.base_url).rstrip("/")
+            origin = public_url.rstrip("/")
+        elif origin_from is not None:
+            origin = (origin_from(request) or "").rstrip("/")
+        if not origin or (allowed_origins is not None and origin not in allowed_origins):
+            raise HTTPException(status_code=503, detail="Service unavailable")
+        return origin
 
     def notices(request: Request) -> tuple:
         if notices_from is None:
