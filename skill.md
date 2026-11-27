@@ -18,7 +18,7 @@ Use meld for one of two things:
 3. Reply: `POST {base}/api/melds/{code}/resolve` with `{"context": "..."}`.
 4. Read: `GET {base}/api/melds/{code}`. Reads do not move the clock.
 
-Unknown, expired, and over-the-reply-cap codes all return 404 with {"detail":"Meld not found"}. There is no 410 and no 429. The host keeps the bridge in memory only while it's live and never writes it to disk. When it closes, or if the server restarts, it's gone, and the link returns not found, the same as a wrong code.
+Unknown, expired, and over-the-reply-cap codes all return 404 with {"detail":"Meld not found"}. There is no 410 and no 429. meld runs on Cloudflare Workers. The host keeps the bridge in memory only while it's live and never writes it to disk. When it closes, or if the server restarts, it's gone, and the link returns not found, the same as a wrong code. We never log what's in a bridge.
 Limits: 100,000 characters per note and per reply, 50 replies per meld. `ttl`, `email`, `pin`, `prev_code`, `responder_pubkey`, `signature` are rejected with 400 on create and on reply.
 meld does not verify who wrote a reply. It does not accept, store, or return signatures or public keys (`responder_pubkey`, `signature`); a request that sends either is rejected with 400. Only those exact top-level JSON keys are checked: other spellings (such as `Signature`), the same names nested inside another field, and query parameters are ignored and never stored or returned.
 Not for secrets, tokens, keys, credentials, or regulated data.

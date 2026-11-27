@@ -44,7 +44,7 @@ A read returns `code`, `url`, `note`, `created_at`, `expires_at`, `reply_count`,
 - meld does not verify who wrote a reply. It does not accept, store, or return signatures or public keys (`responder_pubkey`, `signature`); a request that sends either is rejected with 400. Only those exact top-level JSON keys are checked: other spellings (such as `Signature`), the same names nested inside another field, and query parameters are ignored and never stored or returned.
 - There are no rate-limit responses: no 429 and no 410.
 - If the host is at its memory cap, create and reply return 503 with `{"detail": "meld is at capacity. Try again later."}` and store nothing.
-- A sweep every 5 minutes removes expired bridges, and a request for an expired code also removes it. The host keeps the bridge in memory only while it's live and never writes it to disk. When it closes, or if the server restarts, it's gone, and the link returns not found, the same as a wrong code.
+- meld runs on Cloudflare Workers. The host keeps the bridge in memory only while it's live and never writes it to disk. When it closes, or if the server restarts, it's gone, and the link returns not found, the same as a wrong code. We never log what's in a bridge.
 - Cloudflare-hosted instances (such as workers.dev) can return 403 error 1010 to Python's default urllib User-Agent (`Python-urllib/*`) before the request reaches meld. Set any other User-Agent, such as `meld-agent/1.0`, or use curl, httpx, or requests.
 
 ## MCP

@@ -268,6 +268,15 @@ def run_suite(kind: str) -> None:
           and "This version never writes a bridge to disk." in trust and "Nothing is written to disk" not in trust
           and "Time Travel" not in trust
           and "Time Travel" not in c.get("/llms.txt").text)
+    check(p + "public copy: Workers, in memory only, no content logs, no sweep line",
+          "Cloudflare Workers" in meld_ui.HERO and "We never log what's in a bridge." in meld_ui.HERO
+          and "Cloudflare Workers" in bullets[-1] and "We never log what's in a bridge." in bullets[-1]
+          and "meld runs on Cloudflare Workers." in trust and "We never log what's in a bridge." in trust
+          and "A sweep every" not in trust and "A sweep every" not in t
+          and "A sweep every" not in c.get("/llms.txt").text
+          and "A sweep every" not in c.get("/agents.md").text
+          and "A sweep every" not in c.get("/skill.md").text
+          and "Bridges live in memory only" not in t)
     check(p + "home: no learn, pilot, 429 or too-many", not re.search(r"(?i)learn|pilot|429|too many", re.sub(r'nonce(="|-)[^"\']+', "", r.text)))
     check(p + "home: maxlength 100000 and counter window 5,000", 'maxlength="100000"' in r.text and "WIN=5000" in r.text)
     check(p + "home: sends note, polls read route every 10s, open-until line",

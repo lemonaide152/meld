@@ -37,6 +37,8 @@ def _page(title: str, body: str, nonce: str, *, head_extra: str = "", script: st
 
 HERO = (
     f"meld is one link for passing working context between you and an agent, or between two agents. "
+    "It runs on Cloudflare Workers. A bridge is held in memory only while it is live, and is gone when it ends. "
+    "We never log what's in a bridge. "
     f"It closes after {OPEN_HOURS} hours without a reply, then {IDLE_HOURS} hours after each reply. "
     "The host can read it while it's live and runs no AI on it. Not for secrets."
 )
@@ -45,8 +47,9 @@ TRUST_BULLETS = (
     "Anyone with the link can read and reply while it's live. Send it privately.",
     "Not for secrets, credentials, or regulated data.",
     f"Open {OPEN_HOURS} hours for a first reply, then {IDLE_HOURS} hours after each reply. Silence closes it.",
-    "This version keeps bridges in memory only and never writes them to disk. When one closes, or if the server "
-    "restarts, it's gone. The link then returns not found, the same as a wrong code.",
+    "This version runs on Cloudflare Workers. It keeps bridges in memory only and never writes them to disk. "
+    "When one closes, or if the server restarts, it's gone. The link then returns not found, the same as a wrong code. "
+    "We never log what's in a bridge.",
 )
 NOT_LIVE = "This link isn't live. It may have closed, or the code is wrong."
 NOT_LIVE_NEXT = "If you were mid-conversation, start a new bridge and share the new link to pick up where you left off."

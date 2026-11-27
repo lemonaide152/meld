@@ -7,7 +7,7 @@ One capability URL between a human and an agent, or between two agents. The link
 - Unknown, expired, and over-the-reply-cap codes all return **404** `{"detail":"Meld not found"}`. No 410, no 429.
 - Host-readable while live. Anyone with the link can read and reply. **Not for secrets, credentials, or regulated data.** No AI in the loop.
 
-[SPEC.md](SPEC.md) is the source of truth. This repo is the reference implementation: the self-host server and the hosted pilot (Cloudflare Python Workers + Durable Objects) run the same `meld_app.py`. Every deployment is memory-only.
+[SPEC.md](SPEC.md) is the source of truth. This repo is the reference implementation: the self-host server and the hosted pilot (Cloudflare Python Workers + Durable Objects) run the same `meld_app.py`. Every deployment keeps bridges in memory only while they are live. When a bridge ends, it is gone. The code never logs what's in a bridge.
 
 Each party keeps its own state. If a bridge expires, either party creates a new one and shares the new link. A new bridge knows nothing about an old one.
 
@@ -33,7 +33,7 @@ docker compose up -d --build                    # local
 docker compose --profile tls up -d --build      # set MELD_SITE and MELD_PUBLIC_URL first
 ```
 
-Self-host is memory-only. A restart drops every live link. A sweep runs every 5 minutes in-process, and every read or reply also treats an expired bridge as gone.
+Self-host keeps bridges in memory only. A restart drops every live link. Expired bridges are gone from memory; a 5-minute in-process cleanup (and any later read or reply) is how the process drops them. The server does not log bridge content.
 
 ## Use it
 
@@ -59,7 +59,7 @@ Two uses only: a human writes a note on the web page and an agent replies on the
 | `meld_docs.py` | Generates `llms.txt`, `agents.md`, `skill.md`, `TRUST.md`, `openapi.json`, `mcp.json`, `agent.json`. |
 | `meld_ui.py` | The web page. |
 | `server.py` | Self-host entry (uvicorn). |
-| `worker.py`, `wrangler.toml.example` | Hosted entry for Cloudflare Python Workers: bridges in Durable Object memory, no database. |
+| `worker.py`, `wrangler.toml.example` | Hosted entry for Cloudflare Python Workers: bridges in Durable Object memory, no database, no content logs. |
 | `pilot.py` | Pilot counters, in memory only (outside SPEC.md; cannot change a response). |
 | `check_spec.py` | CI gate: drift, empty schemas, timestamps, live response validation (`--live URL`). |
 
@@ -78,7 +78,7 @@ cp wrangler.toml.example wrangler.toml   # set SHARE_ORIGIN
 npx wrangler deploy
 ```
 
-Bridges live in `BridgeShard` Durable Objects, in Python memory only: no database, no KV, no Durable Object storage. A shard that holds a live bridge keeps one pending in-memory timer, which keeps it resident and runs the sweep each minute; the 5-minute cron sweeps every shard too. A deploy, a runtime restart, or an eviction drops the links that shard held, and they return the uniform 404. Pilot counters live in one `MeldMeta` object, also in memory, and reset on restart.
+Hosted bridges live in `BridgeShard` Durable Objects, in Python memory only: no database, no KV, no Durable Object storage. The worker does not log bridge content (Workers Logs and Logpush are off). A shard that holds a live bridge keeps one pending in-memory timer, which keeps it resident and drops expired bridges each minute; a 5-minute cron covers every shard too. A deploy, a runtime restart, or an eviction drops the links that shard held, and they return the uniform 404. Pilot counters (counts, not content) live in one `MeldMeta` object, also in memory, and reset on restart.
 
 See [TRUST.md](TRUST.md) for what the host can see.
 

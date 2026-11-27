@@ -26,6 +26,8 @@ TRUST_LINE = (
     "The host can read a live bridge. Anyone with the link can read and reply. "
     "Not for secrets, credentials, or regulated data."
 )
+# Implementation detail (SPEC.md §5, cron + in-process cleanup). Public product copy
+# describes the result — held in memory while live, gone when it ends — not the sweeper.
 SWEEP_LINE = (
     f"A sweep every {SWEEP_MINUTES} minutes removes expired bridges, and a request for an expired code also removes it."
 )
@@ -54,10 +56,14 @@ UA_LINE = (
     "such as `meld-agent/1.0`, or use curl, httpx, or requests."
 )
 MEMORY_LINE = (
-    "The host keeps the bridge in memory only while it's live and never writes it to disk. When it closes, "
-    "or if the server restarts, it's gone, and the link returns not found, the same as a wrong code."
+    "meld runs on Cloudflare Workers. The host keeps the bridge in memory only while it's live and never writes it to disk. "
+    "When it closes, or if the server restarts, it's gone, and the link returns not found, the same as a wrong code. "
+    "We never log what's in a bridge."
 )
-MEMORY_CLOSING = "meld is a disposable handoff, not a vault. This version never writes a bridge to disk. No accounts, no archive."
+MEMORY_CLOSING = (
+    "meld is a disposable handoff, not a vault. This version never writes a bridge to disk. "
+    "We never log what's in a bridge. No accounts, no archive."
+)
 CAPACITY_LINE = (
     "If the host is at its memory cap, create and reply return 503 with "
     "`{\"detail\": \"meld is at capacity. Try again later.\"}` and store nothing."
@@ -154,7 +160,7 @@ A read returns {READ_SHAPE}. It does not move the clock. Timestamps are UTC ISO 
 - {SIG_LINE}
 - There are no rate-limit responses: no 429 and no 410.
 - {CAPACITY_LINE}
-- {SWEEP_LINE} {MEMORY_LINE}
+- {MEMORY_LINE}
 - {UA_LINE}
 
 ## MCP
@@ -422,7 +428,7 @@ def trust_md(notices: tuple = ()) -> str:
 - The host does not summarize, rewrite, or run a model on a bridge. No AI in the loop.
 - {RULE}
 - Termination is the timer only. Silence closes the bridge. There is no owner token and no dissolve endpoint.
-- {SWEEP_LINE} The server keeps no record that a code existed. {NOT_FOUND_LINE}
+- The server keeps no record that a code existed. {NOT_FOUND_LINE}
 - Codes carry at least 128 random bits (192 today). They are not sequential.
 - Link-preview crawlers on `/m/{{code}}` get an expires-only card. The card does not include the exchange and is not a read.
 {extra}- Each party keeps its own state. If a bridge expires, either party can create a new one; a new bridge knows nothing about an old one.
